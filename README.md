@@ -20,6 +20,40 @@ npm start
 
 Depois do build, a aplicação fica em http://127.0.0.1:3001. Em `NODE_ENV=production`, cookies exigem HTTPS. Configure `ALLOWED_ORIGINS` com as origens exatas autorizadas, separadas por vírgula. Fora de produção, HTTP em localhost/127.0.0.1/IPv6 loopback é permitido em qualquer porta.
 
+## Executar com Docker (demonstração local)
+
+Instale e abra o Docker Desktop, com containers Linux e Docker Compose v2. Não precisa instalar Node.js ou executar `npm install` no computador para esta opção. Após clonar o repositório, entre na pasta e execute:
+
+```powershell
+docker compose up --build -d
+docker compose ps
+docker compose logs -f app
+```
+
+A primeira construção precisa de internet para baixar a imagem Node e as dependências. Quando o serviço iniciar, abra **http://127.0.0.1:8080**. O frontend compilado e a API são servidos juntos; não execute `npm run dev` dentro do container. As contas e os dados fictícios são preparados automaticamente na inicialização. Login: `admin@demo.kedu.local`, senha inicial `Kedu-demo-2026!`.
+
+O banco e os arquivos enviados ficam no volume nomeado `kedu-data`, separado do banco `data/kedu.sqlite` usado fora do Docker. Reiniciar ou recriar o container preserva esse volume. O build não copia `.env`, banco local, relatórios internos ou credenciais para a imagem. A aplicação roda como usuário sem privilégios de root.
+
+Para parar e retomar, preservando os dados:
+
+```powershell
+docker compose down
+docker compose up -d
+```
+
+Para atualizar após baixar alterações:
+
+```powershell
+git pull
+docker compose up --build -d
+```
+
+Para usar outra porta, crie ou edite o `.env` local com `DEMO_PORT=8081` e recrie o serviço. É possível definir `DEMO_PASSWORD` antes da primeira inicialização; alterar a variável depois não redefine senhas existentes. Não envie o `.env` ao GitHub.
+
+`docker compose down --volumes` **apaga o banco e os arquivos da demonstração Docker**. Use somente se quiser reiniciar a demonstração do zero; o banco local fora do Docker não é afetado.
+
+Esta configuração é exclusivamente para avaliação no próprio computador: a porta publicada está restrita a `127.0.0.1`, o GLPI fica em demonstração e o ambiente permite modelos demonstrativos e cookies HTTP locais. Não é configuração de produção nem fornece um link público. Para publicação real, configurar HTTPS, origens autorizadas, segredos, backups e modelos oficiais. A variável `HOST` permite escutar na interface do container; sem configuração, a execução local continua restrita ao loopback.
+
 ## Banco e atualização de instalações anteriores
 
 Migrações: `migrations/001.sql`, `002.sql` e `003.sql`. O servidor as aplica ao iniciar. Faça backup consistente do banco antes de atualizar uma instalação com dados reais. Preserve `data/kedu.sqlite` e não versione banco, arquivos reais ou `.env`.

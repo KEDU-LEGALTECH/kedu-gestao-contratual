@@ -1102,7 +1102,7 @@ app.use((err: any, _req: any, res: any, _next: any) =>
   }),
 );
 if (process.env.NODE_ENV !== "test")
-  app.listen(Number(process.env.PORT || 3001), "127.0.0.1", () =>
-    console.log("Kedu API: http://127.0.0.1:3001"),
+  app.listen(Number(process.env.PORT || 3001), process.env.HOST || "127.0.0.1", () =>
+    console.log(`Kedu API: http://${process.env.HOST || "127.0.0.1"}:${process.env.PORT || 3001}`),
   );
 export default app;

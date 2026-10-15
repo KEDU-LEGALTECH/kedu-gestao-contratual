@@ -1,0 +1,23 @@
+# Local demonstration only. The app seeds its own demo database on startup.
+services:
+  app:
+    build: .
+    init: true
+    ports:
+      - "127.0.0.1:${DEMO_PORT:-8080}:3001"
+    environment:
+      NODE_ENV: development
+      HOST: 0.0.0.0
+      PORT: "3001"
+      DATABASE_PATH: /app/data/kedu.sqlite
+      GLPI_MODE: demo
+      DEMO_PASSWORD: ${DEMO_PASSWORD:-Kedu-demo-2026!}
+      TZ: America/Sao_Paulo
+    volumes:
+      - kedu-data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+volumes:
+  kedu-data:
