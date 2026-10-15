@@ -1,0 +1,22 @@
+node_modules/
+dist/
+data/*
+!data/.gitkeep
+.env
+.env.*
+!.env.example
+
+# Local databases, credentials and generated internal review materials.
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.pem
+*.key
+entregas/
+
+# Local tooling output.
+*.log
+coverage/
+.DS_Store
+Thumbs.db
