@@ -30,6 +30,7 @@ import {
 import "./style.css";
 import { Reports } from "./Reports";
 import { GovernancePanel, SignedHistoryPanel } from "./GovernancePanel";
+import { requiredDataFields, validateData } from "../shared/data-validation";
 const stages = [
   "Recebido",
   "Aguardando informações",
@@ -97,7 +98,7 @@ async function api(path: string, body?: any, method?: string) {
       body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
   });
   const data = await r.json();
-  if (!r.ok) throw Error(data.error);
+  if (!r.ok) throw Object.assign(Error(data.error), { fields: data.fields });
   return data;
 }
 const Badge = ({ stage }: { stage: string }) => (
@@ -116,6 +117,13 @@ const nav = [
   ["Configurações", Settings],
 ] as const;
 export function App() {
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [missingFields, setMissingFields] = useState<string[]>([]);
+  const focusField = (key: string) => {
+    const input = document.getElementById("data-" + key);
+    input?.scrollIntoView({ behavior: "smooth", block: "center" });
+    input?.focus({ preventScroll: true });
+  };
   const [user, setUser] = useState<any>(null),
     [data, setData] = useState<any>(null),
     [page, setPage] = useState("Dashboard"),
@@ -195,11 +203,17 @@ export function App() {
       setSuccess(message);
     } catch (e: any) {
       setError(e.message);
+      if (e.fields) {
+        setFieldErrors(e.fields);
+        requestAnimationFrame(() => focusField(Object.keys(e.fields)[0]));
+      }
     } finally {
       setBusy(false);
     }
   }
   async function open(id: string) {
+    setFieldErrors({});
+    setMissingFields([]);
     setBusy(true);
     try {
       setDetail(await api("/demands/" + id));
@@ -590,10 +604,32 @@ export function App() {
                     </span>
                   </div>
                   <form
+                    onChange={(event) => {
+                      const form = event.currentTarget;
+                      const values = Object.fromEntries(new FormData(form));
+                      const target = event.target as unknown as HTMLInputElement;
+                      setFieldErrors((previous) => {
+                        const next = { ...previous };
+                        if (previous[target.name]) {
+                          const issue = validateData(values)[target.name];
+                          if (issue) next[target.name] = issue;
+                          else delete next[target.name];
+                        }
+                        return next;
+                      });
+                      setMissingFields(requiredDataFields.filter(key => !String(values[key] ?? "").trim()));
+                    }}
                     onSubmit={(e) =>
                       submit(
                         e,
                         (b) => {
+                          const issues = validateData(b);
+                          setFieldErrors(issues);
+                          setMissingFields(requiredDataFields.filter(key => !String(b[key] ?? "").trim()));
+                          if (Object.keys(issues).length) {
+                            requestAnimationFrame(() => focusField(Object.keys(issues)[0]));
+                            throw Error("Corrija os campos destacados antes de salvar.");
+                          }
                           const output = {
                             ...b,
                             checklist: b.checklist === "on",
@@ -616,10 +652,14 @@ export function App() {
                             !["banco", "agencia", "conta"].includes(key),
                         )
                         .map(([key, label]) => (
-                          <label key={key}>
+                          <label key={key} className={fieldErrors[key] ? "data-field invalid-field" : missingFields.includes(key) ? "data-field missing-field" : "data-field"}>
                             {label}
+                            {requiredDataFields.includes(key) && <span className="required-marker">Obrigatório para avançar</span>}
                             {key === "modalidade" ? (
                               <select
+                                id={"data-" + key}
+                                aria-invalid={!!fieldErrors[key]}
+                                aria-describedby={fieldErrors[key] || missingFields.includes(key) ? "issue-" + key : undefined}
                                 name={key}
                                 key={detail.id + detail.data_version + key}
                                 defaultValue={detail.data[key] || ""}
@@ -632,7 +672,17 @@ export function App() {
                               </select>
                             ) : (
                               <input
+                                id={"data-" + key}
+                                aria-invalid={!!fieldErrors[key]}
+                                aria-describedby={fieldErrors[key] || missingFields.includes(key) ? "issue-" + key : undefined}
                                 name={key}
+                                placeholder={
+                                  ["remuneracao", "garantia", "repasse", "cashback"].includes(key)
+                                    ? "Ex.: 3,30%"
+                                    : key === "valor"
+                                      ? "Ex.: 10.000,00"
+                                      : undefined
+                                }
                                 defaultValue={detail.data[key] || ""}
                                 key={detail.id + detail.data_version + key}
                                 type={
@@ -651,6 +701,15 @@ export function App() {
                                   ["matriz", "aditivo"].includes(key)
                                 }
                               />
+                            )}
+                            {(fieldErrors[key] || missingFields.includes(key)) && (
+                              <span id={"issue-" + key} className="field-message">
+                                <TriangleAlert size={15} aria-hidden="true" />
+                                {fieldErrors[key] || "Preencha este campo antes de confirmar os dados."}
+                              </span>
+                            )}
+                            {["remuneracao", "garantia", "repasse", "cashback"].includes(key) && (
+                              <small>Use duas casas decimais e %, por exemplo: 3,30%.</small>
                             )}
                           </label>
                         ))}
@@ -671,11 +730,22 @@ export function App() {
                         Dados bancários restritos ao seu perfil.
                       </p>
                     )}
+                    {(Object.keys(fieldErrors).length > 0 || missingFields.length > 0) && (
+                      <div className="field-summary" role="status">
+                        <strong>Revise os campos indicados</strong>
+                        <p>Campos vazios podem ser salvos como rascunho, mas impedem a confirmação.</p>
+                        <ul>{[...new Set([...Object.keys(fieldErrors), ...missingFields])].filter(key => can("bank") || !["banco", "agencia", "conta"].includes(key)).map(key => (
+                          <li key={key}><button type="button" onClick={() => focusField(key)}>{labels[key] || key}</button>: {fieldErrors[key] || "não preenchido"}</li>
+                        ))}</ul>
+                      </div>
+                    )}
                     {can("write") && (
                       <button className="secondary" disabled={busy}>
-                        Salvar dados
+                        {busy ? "Salvando…" : "Salvar dados"}
                       </button>
                     )}
+                    {error && <p role="alert" className="inline-warning">{error}</p>}
+                    {success && <p role="status" className="positive">{success}</p>}
                   </form>
                   {can("confirm") && (
                     <button

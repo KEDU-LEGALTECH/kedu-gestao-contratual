@@ -39,6 +39,7 @@ import {
   GlpiTicket,
 } from "./integrations.js";
 import { basisPoints, cents } from "./decimal.js";
+import { validateData } from "../shared/data-validation.js";
 import { allowedOrigin } from "./origins.js";
 import {
   registerGovernance,
@@ -400,6 +401,9 @@ app.put("/api/demands/:id/data", (req: any, res) => {
     .record(z.string(), z.union([z.string().max(500), z.boolean()]))
     .parse(req.body);
   const existing = JSON.parse(d.data);
+  const fieldErrors = validateData({ ...existing, ...incoming });
+  if (Object.keys(fieldErrors).length)
+    return res.status(400).json({ error: "Corrija os campos destacados antes de salvar.", fields: fieldErrors });
   for (const [key, value] of Object.entries(incoming)) {
     if (![...fields, "checklist"].includes(key))
       throw Error("Campo não autorizado.");

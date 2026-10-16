@@ -10,5 +10,7 @@
 !src/**
 !server/
 !server/**
+!shared/
+!shared/**
 !migrations/
 !migrations/**

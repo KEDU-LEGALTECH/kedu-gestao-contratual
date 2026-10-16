@@ -1712,3 +1712,45 @@ input[type="checkbox"] {
     flex-wrap: wrap;
   }
 }
+.data-field .required-marker {
+  display: block;
+  font-size: 11px;
+  font-weight: 400;
+  color: #536a75;
+}
+.data-field.invalid-field input, .data-field.invalid-field select {
+  border: 2px solid #b42318;
+  background: #fff6f5;
+}
+.data-field.missing-field input, .data-field.missing-field select {
+  border: 2px solid #986000;
+  background: #fffbf0;
+}
+.field-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: #9b2017;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.field-message svg { flex-shrink: 0; margin-top: 2px; }
+.missing-field .field-message { color: #795000; }
+.field-summary {
+  border: 1px solid #bb7a10;
+  border-left: 4px solid #bb7a10;
+  border-radius: 8px;
+  background: #fffbf0;
+  padding: 16px;
+  margin: 16px 0;
+  color: #513900;
+}
+.field-summary p, .field-summary li { font-size: 13px; }
+.field-summary button {
+  background: transparent;
+  border: 0;
+  padding: 3px 0;
+  color: #034657;
+  text-decoration: underline;
+  text-align: left;
+}

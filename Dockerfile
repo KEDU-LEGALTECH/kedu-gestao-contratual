@@ -6,6 +6,7 @@ RUN npm ci
 COPY tsconfig.json vite.config.ts index.html ./
 COPY src ./src
 COPY server ./server
+COPY shared ./shared
 COPY migrations ./migrations
 RUN npm run build && npm prune --omit=dev
 # Fail during build rather than shipping an image with a missing TS runtime.
@@ -17,6 +18,7 @@ ENV NODE_ENV=development HOST=0.0.0.0 PORT=3001 DATABASE_PATH=/app/data/kedu.sql
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --from=build --chown=node:node /app/server ./server
+COPY --from=build --chown=node:node /app/shared ./shared
 COPY --from=build --chown=node:node /app/migrations ./migrations
 COPY --from=build --chown=node:node /app/package.json ./package.json
 RUN mkdir -p /app/data && chown node:node /app/data
