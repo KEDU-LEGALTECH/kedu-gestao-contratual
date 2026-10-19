@@ -7,7 +7,8 @@ import { structuredProfile, inspectStructured } from "./structured-docx.js";
 import {
   deriveOfficial,
   homologationNotice,
-  officialInputs,
+  fieldLabels,
+  derivedFrom,
   officialProblems,
   officialRequired,
   previewNotice,
@@ -123,11 +124,12 @@ export function officialValues(
       continue;
     }
     if (!values[slot]?.trim()) {
-      gaps.push(slot);
-      if (mode === "preview") values[slot] = "⟨PENDENTE: " + (officialInputs[slot] || slot) + "⟩";
+      gaps.push(derivedFrom[slot] || slot);
+      if (mode === "preview")
+        values[slot] = "⟨PENDENTE: " + (fieldLabels[derivedFrom[slot] || slot] || slot) + "⟩";
     }
   }
-  return { values, gaps };
+  return { values, gaps: Array.from(new Set(gaps)) };
 }
 export function listOfficial() {
   return all(

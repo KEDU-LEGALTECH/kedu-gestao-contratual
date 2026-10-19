@@ -14,3 +14,7 @@
 !shared/**
 !migrations/
 !migrations/**
+!templates/
+!templates/official/
+!templates/official/*.docx
+!templates/official/catalog.json

@@ -261,3 +261,17 @@ test("Falha de leitura fica registrada no histórico de sincronização", async 
   assert.equal(log.status, "Falha");
   assert.match(log.message, /ERROR_SESSION_TOKEN_INVALID/);
 });
+
+test("Validação cruzada aponta taxa, CNPJ e razão social divergentes do chamado", async () => {
+  const { crossCheck } = await import("../server/glpi-analysis.js");
+  const ticket = {
+    externalId: "900", title: "Solicitação de contrato", status: "2", created: "", updated: "", category: "", groups: [],
+    content: "<p>RAZÃO SOCIAL: Escola Exemplo Ltda.</p><p>CNPJ: 11.444.777/0001-61</p><p>TAXA: 7,7%</p>",
+    followups: [], documents: [], documentsAvailable: true,
+  };
+  const analysis = analyzeTicket(ticket, { schools: [], matrices: [] });
+  assert.deepEqual(crossCheck(analysis, "900", { cnpj: "11.444.777/0001-61", razaoSocial: "Escola Exemplo Ltda.", remuneracao: "7,70%" }), []);
+  const issues = crossCheck(analysis, "900", { cnpj: "11.444.777/0001-62", razaoSocial: "Outra Escola", remuneracao: "7,80%" });
+  assert.equal(issues.length, 3);
+  assert.match(issues.join("\n"), /Taxa da demanda \(7,80%\) difere da taxa do chamado GLPI #900 \(7,7%\)/);
+});

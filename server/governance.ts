@@ -2,6 +2,7 @@ import { all, one, run, localDate, id, now } from "./db.js";
 import { requiredFor } from "../shared/request-policy.js";
 import { officialProblems } from "../shared/official-fields.js";
 import { responsibilityFor } from "../shared/responsibility.js";
+import { analyzeTicket, crossCheck } from "./glpi-analysis.js";
 export const subtypes = [
   "Conta bancária",
   "Vigência",
@@ -152,6 +153,15 @@ export function requirements(d: any) {
     reviewDeadline: g.reportDate ? reviewDeadline(g.reportDate) : null,
   };
 }
+/** Divergences between the demand and the GLPI ticket it was imported from. */
+export function ticketCrossCheck(d: any, data: any) {
+  const ticket = d.glpi_id
+    ? one("SELECT payload FROM glpi_tickets WHERE external_id=? AND demand_id=?", d.glpi_id, d.id)
+    : null;
+  if (!ticket) return [];
+  const analysis = analyzeTicket(JSON.parse(ticket.payload), { schools: [], matrices: [] });
+  return crossCheck(analysis, d.glpi_id, data);
+}
 export function governanceMissing(d: any) {
   const g = details(d),
     r = requirements(d),
@@ -242,6 +252,7 @@ export function governanceMissing(d: any) {
     }
   }
   missing.push(...officialProblems(d.type, g.subtype || "", data));
+  missing.push(...ticketCrossCheck(d, data));
   if (d.type === "Migração de modalidade") {
     // Manual §4.3: migration is never a simple addendum; it needs a distrato and a new contract.
     for (const [key, type, label] of [

@@ -113,7 +113,7 @@ export function seed() {
       numero: "100",
       bairro: "Centro",
       cidade: "Fortaleza",
-      estado: "CE",
+      estado: "Ceará",
       cep: "60000-000",
       representanteNome: "Administrador Fictício",
       representanteCpf: "000.000.000-00",

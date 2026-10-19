@@ -39,8 +39,8 @@ export function validateData(values: Record<string, unknown>) {
   integer("diaSegundoRepasse", 1, 31, "Informe o dia do mês (1 a 31).");
   if (text("cep") && !/^\d{5}-\d{3}$/.test(text("cep")))
     errors.cep = "Use o formato 00000-000.";
-  if (text("estado") && !/^[A-Z]{2}$/.test(text("estado")))
-    errors.estado = "Informe a sigla da UF em maiúsculas, por exemplo: CE.";
+  if (text("estado") && !/^[A-Za-zÀ-ÿ ]{2,30}$/.test(text("estado")))
+    errors.estado = "Informe o estado, preferencialmente por extenso, por exemplo: Ceará.";
   if (text("representanteCpf") && !/^\d{3}\.\d{3}\.\d{3}-\d{2}$/.test(text("representanteCpf")))
     errors.representanteCpf = "Use o formato 000.000.000-00.";
   if (text("incorporaMatricula") && !["Sim", "Não"].includes(text("incorporaMatricula")))

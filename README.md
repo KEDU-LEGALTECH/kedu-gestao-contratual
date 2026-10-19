@@ -58,7 +58,7 @@ Esta configuração é exclusivamente para avaliação no próprio computador: a
 
 ## Banco e atualização de instalações anteriores
 
-Migrações: `migrations/001.sql`, `002.sql` e `003.sql`. O servidor as aplica ao iniciar. Faça backup consistente do banco antes de atualizar uma instalação com dados reais. Preserve `data/kedu.sqlite` e não versione banco, arquivos reais ou `.env`.
+Migrações: `migrations/001.sql` a `006.sql`. O servidor as aplica ao iniciar (004: retratos de aditivos e cashback em centavos; 005: origem, homologação e prévias dos modelos oficiais; 006: chamados GLPI importados e suas versões imutáveis). Faça backup consistente do banco antes de atualizar uma instalação com dados reais. Preserve `data/kedu.sqlite` e não versione banco, arquivos reais ou `.env`.
 
 A migração de governança reinicia a confirmação e invalida aprovações de demandas abertas da versão anterior uma única vez. Demandas concluídas/canceladas preservam seu histórico. Os novos requisitos precisam ser completados antes de avançar. Se uma demanda antiga estiver em assinatura com pendências, devolva-a com justificativa antes de corrigir os dados. Modelos demonstrativos antigos permanecem no histórico; quando necessário, o servidor cria nova versão e inativa a anterior para novas gerações. Não altera conteúdo de versão aprovada.
 
@@ -99,28 +99,35 @@ Etapas: Recebido, Aguardando informações, Em elaboração, Em conferência, Em
 
 ## Aditivos e regras jurídicas
 
-| Tipo                                            | Validações mínimas |
-| ----------------------------------------------- | ------------------ |
-| Conta bancária                                  | Risco + Financeiro |
-| Vigência                                        | Risco              |
-| Percentual/data de repasse                      | Risco              |
-| Cashback                                        | Risco              |
-| Taxa de remuneração                             | Risco              |
-| Casos jurídicos, demais instrumentos e exceções | Risco + Jurídico   |
+As validações obrigatórias seguem a matriz de responsabilidades do Manual de Contratos (`shared/responsibility.ts`), exibida no detalhe de cada demanda com executor, validadores, observadores e seção do manual.
 
-Alteração de corpo fixo, poderes societários, renovação com pendências e outros casos jurídicos retiram a autonomia do aditivo simples. Configurações permite exigir Jurídico adicionalmente para subtipos indicados na lista `legalPolicies`. Os casos obrigatórios não podem ser dispensados pela configuração. Mudanças de política reabrem demandas ativas para nova confirmação/versão e invalidam aprovações.
+| Tipo | Validações exigidas | Observação |
+| --- | --- | --- |
+| Aditivo de vigência, repasse, cashback ou taxa | Risco | Jurídico observa (§5.2) |
+| Aditivo de conta bancária | Risco + Financeiro | §5.2 |
+| Contrato de garantia — Completa ou Conjunta | Risco | Jurídico e Financeiro observam (§3, §4.2) |
+| Contrato de garantia — Prevista | Risco + Jurídico | Manual ambíguo; mantido o controle jurídico até validação |
+| Migração de modalidade | Risco + Jurídico | Exige demandas de distrato e de novo contrato vinculadas (§4.3) |
+| Antecipação K-invest e parcelamento | Jurídico + Financeiro | Confissão de Dívida obrigatória (§9) |
+| Distrato | Jurídico + Financeiro | “Ciência do Financeiro” registrada como validação (§8.2) |
+| CNPJ solidário, renovação com pendências, alteração societária | Risco + Jurídico | §5.3 e §6 |
+| Contratos educacional, marketing e fornecedor; descredenciamento | Jurídico | §3 e §11 |
 
-Modalidades governadas: Garantia Completa, Garantia Conjunta e Garantia Prevista. CNPJ solidário exige o CNPJ adicional e comprovação de nexo econômico. K-invest e parcelamento exigem Confissão de Dívida. Migração exige distrato e novo contrato como evidências verificadas. Renovação com pendências exige contratos anteriores e demonstrativo financeiro. O conteúdo e a adequação jurídica dessas evidências dependem de revisão humana registrada.
+Alteração de corpo fixo, poderes societários e demais exceções acrescentam o controle jurídico. Configurações permite exigir o Jurídico também para tipos ou subtipos indicados em `legalPolicies`; mudanças de política reabrem demandas ativas para nova confirmação e invalidam aprovações.
+
+Outras regras aplicadas: o representante legal informado no documento precisa constar entre os signatários com poderes conferidos; a migração não pode ser concluída antes do distrato e do novo contrato; o registro da assinatura é bloqueado se a última conferência da versão atual não for conforme; a conclusão exige o arquivo assinado; e, quando a demanda veio de um chamado GLPI, CNPJ, razão social e taxa (se o formulário trouxer) divergentes do chamado viram pendência.
+
+Modalidades governadas: Garantia Completa, Garantia Conjunta e Garantia Prevista. CNPJ solidário exige o CNPJ adicional e comprovação de nexo econômico. Renovação com pendências exige contratos anteriores e demonstrativo financeiro. O conteúdo e a adequação jurídica das evidências dependem de revisão humana registrada.
 
 ### Numeração pelo histórico assinado
 
 Em Contratos e aditivos, Risco/Administrador registra o último número efetivamente assinado consultado manualmente no Clicksign ou Clint, referência, data e declaração de conferência. Use zero se houver apenas matriz. O histórico confirmado é imutável e não pode retroceder. Não existe consulta automática a esses serviços.
 
-O próximo número é exatamente o último assinado confirmado + 1. A reserva usa transação `BEGIN IMMEDIATE` e índice único por matriz. Se já existir reserva desse número, outra solicitação é bloqueada. Não se pulam números apenas porque outra minuta está em andamento. Reservas canceladas não são reutilizadas automaticamente: a equipe precisa reconciliar a situação real antes de nova emissão. Na conclusão de um aditivo, o histórico local recebe o número e a referência do documento declarado como assinado.
+O próximo número é exatamente o último assinado confirmado + 1. A reserva usa transação `BEGIN IMMEDIATE` e índice único por matriz. Reservas canceladas não são reutilizadas automaticamente. Na conclusão de um aditivo, o histórico local recebe o número e a referência do documento declarado como assinado.
 
 ## Telas e indicadores
 
-Dashboard; Demandas em tabela/Kanban; Detalhe com controle jurídico e checklist; Escolas; Contratos/aditivos; Modelos; Relatórios; Configurações. Busca por escola/CNPJ/GLPI e filtros por responsável, etapa, tipo, prioridade e prazo. Kanban é de visualização: não permite arrastar para contornar regras.
+Dashboard; Demandas em tabela/Kanban; Chamados GLPI (triagem somente leitura); Detalhe com modelo oficial, prévias, responsáveis, origem dos dados, controle jurídico e checklist; Escolas; Contratos/aditivos; Modelos; Relatórios; Configurações. Busca por escola/CNPJ/GLPI e filtros por responsável, etapa, tipo, prioridade e prazo. Kanban é de visualização: não permite arrastar para contornar regras.
 
 Datas são apresentadas em America/Sao_Paulo. No dashboard: abertas excluem Concluído/Cancelado; vencidas são abertas com prazo anterior a hoje; aprovação/assinatura usam a etapa atual; concluídas e tempo médio usam conclusões no mês atual. Tempo médio: dias corridos da criação à conclusão. Relatórios filtram criação, com datas inclusivas, e mostram responsável, etapas, vencimentos, tempo e última conferência divergente. CSV respeita permissão e filtros, neutralizando fórmulas maliciosas.
 
@@ -130,23 +137,39 @@ Dinheiro é persistido como centavos e percentuais em pontos-base inteiros (7,70
 
 ## Modelos, DOCX e evidências
 
-O catálogo inclui cinco tipos de aditivo com versões demonstrativas específicas e um contrato demonstrativo. Todos são identificados como MODELO DE DEMONSTRAÇÃO — SEM APROVAÇÃO JURÍDICA. Não contêm cláusulas jurídicas inventadas. Em produção, geração por modelo demonstrativo é bloqueada. Os corpos fixos oficiais de `manual_contratos.md` e `modelos_aditivo.md` não estavam nos materiais recebidos; o Jurídico deve fornecer e homologar os documentos reais.
+### Modelos oficiais do Canva
 
-Cadastre um modelo com tipo/subtipo e indique se é demonstrativo ou oficial a submeter à aprovação. Rascunhos precisam de aprovação do Jurídico. Versões aprovadas são imutáveis; alterações criam nova versão. Inativação preserva o histórico. Um modelo de outro tipo/subtipo não pode gerar ou servir de base à minuta.
+Os modelos vigentes do Canva prevalecem. `templates/official/` contém as oito adaptações para automação (três contratos e cinco aditivos), o `catalog.json` com hashes e os arquivos de proveniência. Na inicialização, o servidor registra cada arquivo listado no catálogo como **rascunho pendente de homologação**, uma única vez por hash; um arquivo alterado gera nova versão e nunca altera as anteriores.
 
-Docxtemplater/PizZip preenche apenas variáveis autorizadas, sem IA reescrevendo cláusulas. Neste interpretador, o quadro resumo usa um parágrafo por campo, no formato `remuneracao: {remuneracao}`. A conferência compara os campos e a sequência de parágrafos fixos normalizados, sem depender do hash global. Detecta variáveis com chaves e marcadores comuns como `[DADO]`, `[NOME]`, `[CNPJ]`, `[VALOR]` e `[DATA]`. Falhas de interpretação resultam em inconclusiva ou rejeição segura no upload.
+As adaptações são geradas por `scripts/build-official-models.py` a partir dos PDFs do Canva (em `data/canva-conversion/qa`, fora do Git; requer Python com `python-docx` 1.2 e PyMuPDF). As caixas posicionadas viram parágrafos sombreados e tabelas; os campos do Canva viram controles de conteúdo Word bloqueados (`kedu:<campo>`). O script falha se qualquer palavra de um PDF não chegar ao DOCX ou se sobrar marcador sem mapeamento. Logotipo gráfico, ícones, rodapé de cada página e numeração de páginas não são reproduzidos — parte da homologação visual.
 
-Minutas/modelos DOCX: até 5 MB, 512 componentes ZIP e 20 MB descompactados. Conteúdo ativo, referências externas, caminhos inseguros, alterações controladas, campos Word dinâmicos, desenhos, objetos e cabeçalhos/rodapés não são suportados. Modelos jurídicos complexos precisam de homologação e evolução do interpretador; não se promete fidelidade a qualquer DOCX.
+Fluxo: dados confirmados → **prévia** (marca “NÃO UTILIZAR PARA ASSINATURA” e mostra “⟨PENDENTE: campo⟩” onde faltar dado) → conferência visual → **homologação** pelo Jurídico, com referência e declaração, vinculada ao hash exato do arquivo e imutável → **geração** da minuta, apenas com versão homologada e sem pendências → conferência campo a campo e do corpo fixo → revisão humana → validações → assinatura → conclusão. Prévias não podem ser enviadas como minuta. Modelos estruturados não são liberados pelo botão genérico “Aprovar versão”.
 
-Evidências: DOCX ou PDF até 8 MB, com download autorizado como anexo. O arquivo mais recente de cada tipo exige verificação própria, mesmo que exista versão antiga verificada. PDF é armazenado como evidência/final assinado, não conferido automaticamente. Minutas PDF continuam fora da conferência. Arquivo assinado não pode ser substituído silenciosamente.
+Valores derivados (`shared/official-fields.ts` e `shared/extenso.ts`): datas por extenso (“1º de novembro de 2026”), mês e ano, números e valores por extenso, percentuais por extenso (“sete inteiros e setenta centésimos por cento”), percentual restante da Garantia Prevista e ordinal do aditivo a partir da numeração reservada (“SEGUNDO ADITIVO AO”). Nada é deduzido de dados ausentes: duração incompatível com início e fim e datas fora do dia 01 nas Garantias Completa e Conjunta bloqueiam a geração.
+
+Divergências entre manuais e Canva ficam listadas na tela Modelos para validação da equipe (título do aditivo, procurador, PIX, testemunhas, redação do cashback, soma dos repasses, numeração “3.6.2.” repetida na fonte da Garantia Prevista). O sistema não corrige a redação da fonte.
+
+Os arquivos `templates/official/aditivo-vigencia-v1.docx`, `vigencia-provenance.json`, `scripts/build-vigencia-template.py` e `shared/vigencia-model.ts` são da primeira tentativa e foram substituídos; não estão no catálogo e podem ser removidos.
+
+### Modelos demonstrativos e envio manual
+
+O catálogo também mantém um contrato e cinco aditivos demonstrativos, identificados como DEMONSTRAÇÃO e bloqueados em produção. Ao cadastrar um DOCX pela tela Modelos, um arquivo com controles `kedu:` e perfil reconhecido é tratado como modelo estruturado (exige prévia e homologação; para contrato, informe a modalidade); os demais seguem o formato de demonstração `campo: {campo}`.
+
+Minutas/modelos DOCX: até 5 MB, 512 componentes ZIP e 20 MB descompactados. Conteúdo ativo, referências externas, caminhos inseguros, alterações controladas, campos Word dinâmicos, desenhos, objetos, caixas de texto e cabeçalhos/rodapés são rejeitados ou tornam a conferência inconclusiva.
+
+Evidências: DOCX ou PDF até 8 MB, com download autorizado como anexo. O arquivo mais recente de cada tipo exige verificação própria. PDF é armazenado como evidência ou documento final assinado, sem conferência automática. Arquivo assinado não pode ser substituído silenciosamente.
 
 ## GLPI e integrações externas
 
-A instalação informada é GLPI 10.0.26. O teste sem credenciais em `https://helpdesk.kedu.com.br/apirest.php/initSession` respondeu exigindo App-Token. Isso confirma que o serviço responde, mas não valida credenciais, acesso aos grupos, formulários ou anexos. O adaptador real ainda não foi implementado: `GLPI_MODE=real` continua bloqueado. `.env.example` documenta as variáveis; segredos ficam no servidor. Não há escrita em chamados, webhooks ou sincronização periódica ativa.
+Instalação informada: GLPI 10.0.26, API em `https://helpdesk.kedu.com.br/apirest.php`. O adaptador real (`server/glpi.ts`) segue a documentação oficial da API REST do GLPI 10 (`apirest.md`): `initSession` com `App-Token` e `Authorization: user_token`, `Session-Token` nas chamadas, `killSession` ao final, paginação por `range`/`Content-Range` e subitens `/:itemtype/:id/:sub_itemtype`. **Somente GET**; nenhum endpoint de plugin, webhook ou escrita.
 
-O adaptador demonstrativo importa quatro registros em duas páginas, com identificador externo único, controle de paginação, limites, timeout, tentativas limitadas e histórico. Repetir a importação não duplica nem sobrescreve registros locais. Na origem fictícia, ID/escola/tipo/prioridade vêm do adaptador; CNPJ/razão social são do cadastro local; condições confirmadas, documentos, etapas e aprovações são locais.
+Leitura: resolve os grupos autorizados por nome exato (`GLPI_GROUPS`, padrão “JURIDICO CONTRATOS;JURIDICO REVISÃO”) ou por id (`GLPI_GROUP_IDS`); lê `Group/<id>/Group_Ticket` filtrando o tipo de ator (`GLPI_ACTOR_TYPES`, padrão 2 = atribuído); e, por chamado, `Ticket/<id>`, `ITILFollowup` e `Document_Item` + `Document/<id>` (somente nome, tipo e hash; os arquivos não são baixados). Há tempo limite por requisição, tentativas limitadas apenas para falhas temporárias, limite de chamados e tokens ocultos nas mensagens.
 
-Para modo real: identificar versão/API, consultar documentação oficial correspondente, implementar autenticação/leitura/mapeamento e homologar em chamados de teste. Preencher tokens não ativa uma integração inexistente. Não há escrita em chamados reais. `SignatureProvider` é interface futura; Clicksign/Clint não estão conectados e nenhum envio/assinatura é simulado como integração ativa.
+Importação (`server/glpi-sync.ts`): os chamados vão para uma fila de triagem (tela **Chamados GLPI**), idempotente por número e conteúdo. A análise (`server/glpi-analysis.ts`) extrai razão social, CNPJ (normalizado e com dígito verificado), motivo, observações e anexos, sempre com a origem; sugere tipo e subtipo; localiza a escola pelo CNPJ e o contrato matriz assinado; e lista pendências sem inventar dados. Uma pessoa confere escola, tipo e contrato antes de criar a demanda vinculada; só o motivo é copiado do chamado. Alterações posteriores no GLPI geram nova versão imutável, sinalização e auditoria, sem sobrescrever dados, documentos ou aprovações locais. Falhas ficam no histórico de sincronização. O agendamento é opcional (`GLPI_SYNC_INTERVAL_MINUTES` de 5 a 1440; padrão desativado).
+
+Exemplo real 2026101296: o sistema aponta que o dia exato da nova vigência e o efeito sobre a data final não foram informados, que os anexos precisam ser conferidos e registrados como evidências e que um arquivo chamado “primeiro aditivo” não comprova a sequência assinada.
+
+Para ativar: no `.env` local (nunca no Git), `GLPI_MODE=real`, `GLPI_URL`, `GLPI_APP_TOKEN` e `GLPI_USER_TOKEN`; reinicie e use “Sincronizar agora”. **Ainda não validado com as credenciais reais**: os testes usam um servidor GLPI simulado. Na primeira execução real, confirme que os grupos são encontrados, que `Group_Ticket` é legível pelo perfil do token, como o formulário aparece no conteúdo do chamado e se os anexos são retornados. Anexar o documento assinado e encerrar o chamado continuam sendo feitos no GLPI; a central registra essa declaração separadamente da conclusão local. `SignatureProvider` é interface futura; Clicksign/Clint não estão conectados.
 
 ## Segurança e limites operacionais
 
@@ -167,13 +190,13 @@ npm test
 npm run build
 ```
 
-Testes usam banco temporário independente e HTTP local; o ambiente precisa permitir loopback. Cobrem diferenças de taxas/CNPJ/conta, obrigatórios, corpo fixo, placeholders, conferência inconclusiva, invalidação, idempotência, permissões, numeração concorrente pelo histórico assinado, imutabilidade, CSV, fluxo completo, autonomia dos cinco aditivos, Risco/Financeiro, documentos especiais, poderes, reporte semanal, minuta externa e evidência substituída. Build inclui TypeScript.
+Testes usam banco temporário independente e HTTP local. São cinco arquivos: `essential` (fluxo, permissões, conferência, numeração, CSV e regras anteriores), `official-models` (extensos, catálogo, os oito modelos, aditivo de vigência de ponta a ponta com prévia, homologação, adulteração, aprovação, assinatura e conclusão), `glpi` (servidor GLPI simulado: somente GET, paginação, grupos, tipo de ator, tempo limite, tokens ocultos, idempotência, mudanças externas, validação cruzada), `rules` (matriz de responsabilidades, migração, signatários, encerramento no GLPI) e testes menores de validação, origens e produção. Build inclui TypeScript.
 
 Interface adaptada à identidade analisada em kedu.com.br: Poppins, azul petróleo, azul vivo, fundos claros e componentes consistentes; tokens em `src/style.css`. Google Fonts exige rede, com Arial de fallback.
 
-A alteração de Corpo Fixo detectada pela conferência ativa controle jurídico obrigatório persistente. O formulário de governança não consegue remover esse encaminhamento automático. Ressalvas/reprovações humanas exigem ocorrências estruturadas (localização, problema, correção, gravidade); uma ocorrência crítica só pode ser registrada como reprovação.
+A alteração de Corpo Fixo detectada pela conferência ativa controle jurídico obrigatório persistente. Ressalvas/reprovações humanas exigem ocorrências estruturadas (localização, problema, correção, gravidade); uma ocorrência crítica só pode ser registrada como reprovação.
 
-Após a conclusão local de um aditivo, a próxima emissão exige nova confirmação manual do último assinado no Clicksign/Clint. A reconferência fica em registro separado, sem editar o histórico anterior. Operações jurídicas sobre contrato existente exigem matriz assinada da mesma escola já na criação.
+Após a conclusão local de um aditivo, a próxima emissão exige nova confirmação manual do último assinado no Clicksign/Clint. Operações jurídicas sobre contrato existente exigem matriz assinada da mesma escola já na criação.
 
 ## Adequação aos manuais e ao exemplo de chamado
 
@@ -187,6 +210,6 @@ O checklist passou a exigir identificação do responsável, cartão CNPJ com co
 
 O campo **Valor do cashback (R$)** é monetário (`cashbackValor`); o antigo cashback percentual permanece identificado como legado e não é convertido silenciosamente. Uma demanda histórica em assinatura que precisar complementar as novas exigências deve ser devolvida com justificativa e passar novamente por elaboração e aprovação.
 
-Os oito DOCX convertidos do Canva em `entregas/` ainda não estão homologados nem cadastrados como modelos de automação. A estrutura gráfica em caixas posicionadas requer adaptação ao gerador e ao leitor seguro; não se removeu a proteção que rejeita estruturas não suportadas para fazê-los parecer compatíveis. Os modelos do aplicativo continuam demonstrativos. A integração real, o mapeamento de anexos/formulários e a homologação dos modelos oficiais são etapas pendentes.
+As conversões gráficas do Canva em `entregas/modelos_canva` servem apenas de referência visual; a automação usa as adaptações de `templates/official` (ver “Modelos oficiais do Canva”), ainda pendentes de homologação jurídica.
 
 Para conferir a adequação: `npm test` cobre aditivo de vigência sem exigências comerciais alheias, datas incompletas, retrato imutável, restrição bancária, edição concorrente e invalidação após nova conferência. `npm run build` inclui a checagem de tipos.

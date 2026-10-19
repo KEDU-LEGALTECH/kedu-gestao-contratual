@@ -33,6 +33,10 @@ import { GovernancePanel, SignedHistoryPanel } from "./GovernancePanel";
 import { requiredDataFields, validateData } from "../shared/data-validation";
 import { bankFields } from "../shared/request-policy";
 import { AddendumComparison } from "./AddendumComparison";
+import { OfficialPanel } from "./OfficialPanel";
+import { GlpiPage } from "./GlpiPage";
+import { OfficialTemplates } from "./OfficialTemplates";
+import { officialInputs } from "../shared/official-fields";
 const stages = [
   "Recebido",
   "Aguardando informações",
@@ -86,6 +90,30 @@ const labels: Record<string, string> = {
   documentoTitular: "CPF/CNPJ do titular",
   pix: "Chave PIX (quando aplicável)",
   motivo: "Motivo e descrição da alteração",
+  ...officialInputs,
+  demandaDistrato: "Demanda do distrato vinculada (ID, ex.: KD-…)",
+  demandaNovoContrato: "Demanda do novo contrato vinculada (ID)",
+};
+const migrationKeys = ["demandaDistrato", "demandaNovoContrato"];
+/** Fields shown in the data form: addenda use the server list; other types hide unrelated fields. */
+function formKeys(detail: any) {
+  if (detail.visibleFields)
+    return Object.keys(labels).filter((key) => detail.visibleFields.includes(key));
+  return Object.keys(labels).filter(
+    (key) =>
+      (!migrationKeys.includes(key) || detail.type === "Migração de modalidade") &&
+      (!(key in officialInputs) || (detail.officialFields || []).includes(key)),
+  );
+}
+const placeholders: Record<string, string> = {
+  cep: "Ex.: 60000-000",
+  estado: "Ex.: Ceará",
+  representanteCpf: "Ex.: 000.000.000-00",
+  duracaoMeses: "Ex.: 12",
+  diaRepasse: "Dia do mês, ex.: 10",
+  diaSegundoRepasse: "Dia do mês, ex.: 20",
+  parcelas: "Ex.: 2",
+  alunos: "Ex.: 300",
 };
 const date = (s: string) =>
   s
@@ -117,6 +145,7 @@ const Badge = ({ stage }: { stage: string }) => (
 const nav = [
   ["Dashboard", LayoutDashboard],
   ["Demandas", Files],
+  ["Chamados GLPI", Inbox],
   ["Escolas", School],
   ["Contratos e aditivos", FileCheck2],
   ["Modelos", BookOpen],
@@ -483,6 +512,9 @@ export function App() {
               {title === "Demandas" && (
                 <span className="nav-count">{data.metrics.open}</span>
               )}
+              {title === "Chamados GLPI" && data.metrics.glpiTriage > 0 && (
+                <span className="nav-count">{data.metrics.glpiTriage}</span>
+              )}
             </button>
           ))}
         </nav>
@@ -539,12 +571,14 @@ export function App() {
         <main>
           <div className="demo-banner">
             <span>
-              <span className="demo-dot" /> Modo demonstração — GLPI não
-              conectado
+              <span className="demo-dot" />{" "}
+              {data.glpi?.mode === "real"
+                ? "GLPI em modo real — somente leitura"
+                : "Modo demonstração — GLPI com chamados fictícios"}
             </span>
             <button
               onClick={() => {
-                setPage("Configurações");
+                setPage("Chamados GLPI");
                 setDetail(null);
               }}
             >
@@ -687,12 +721,8 @@ export function App() {
                     }
                   >
                     <div className="form-grid">
-                      {Object.entries(labels)
-                        .filter(
-                          ([key]) =>
-                            !detail.visibleFields ||
-                            detail.visibleFields.includes(key),
-                        )
+                      {formKeys(detail)
+                        .map((key) => [key, labels[key]] as [string, string])
                         .filter(
                           ([key]) => can("bank") || !bankFields.includes(key),
                         )
@@ -735,6 +765,18 @@ export function App() {
                                 <option>Garantia Conjunta</option>
                                 <option>Garantia Prevista</option>
                               </select>
+                            ) : key === "incorporaMatricula" ? (
+                              <select
+                                id={"data-" + key}
+                                name={key}
+                                key={detail.id + detail.data_version + key}
+                                defaultValue={detail.data[key] || ""}
+                                disabled={!can("write")}
+                              >
+                                <option value="">Selecione</option>
+                                <option>Sim</option>
+                                <option>Não</option>
+                              </select>
                             ) : (
                               <input
                                 id={"data-" + key}
@@ -752,11 +794,12 @@ export function App() {
                                     "garantia",
                                     "repasse",
                                     "cashback",
+                                    "repasseSegundo",
                                   ].includes(key)
                                     ? "Ex.: 3,30%"
                                     : ["valor", "cashbackValor"].includes(key)
                                       ? "Ex.: 10.000,00"
-                                      : undefined
+                                      : placeholders[key]
                                 }
                                 defaultValue={detail.data[key] || ""}
                                 key={detail.id + detail.data_version + key}
@@ -1166,6 +1209,14 @@ export function App() {
                   </section>
                 </div>
               </div>
+              <OfficialPanel
+                detail={detail}
+                labels={labels}
+                can={can}
+                action={action}
+                api={api}
+                busy={busy}
+              />
               <GovernancePanel
                 detail={detail}
                 can={can}
@@ -1780,9 +1831,16 @@ export function App() {
               )}
               {page === "Modelos" && (
                 <>
+                  <OfficialTemplates
+                    data={data}
+                    can={can}
+                    action={action}
+                    api={api}
+                    busy={busy}
+                  />
                   <div className="alert info">
-                    <BookOpen size={19} /> MODELO DE DEMONSTRAÇÃO — SEM
-                    APROVAÇÃO JURÍDICA. A aprovação no sistema é operacional.
+                    <BookOpen size={19} /> Modelos “DEMONSTRAÇÃO” não têm
+                    aprovação jurídica e são bloqueados em produção.
                   </div>
                   <section className="panel">
                     <div className="panel-heading">
@@ -1814,7 +1872,7 @@ export function App() {
                         >
                           {t.status}
                         </span>
-                        {can("legal") && t.status === "rascunho" && (
+                        {can("legal") && t.status === "rascunho" && !t.official && (
                           <button
                             className="secondary"
                             onClick={() =>
@@ -1867,6 +1925,16 @@ export function App() {
                   </section>
                 </>
               )}
+              {page === "Chamados GLPI" && (
+                <GlpiPage
+                  data={data}
+                  can={can}
+                  action={action}
+                  api={api}
+                  busy={busy}
+                  open={open}
+                />
+              )}
               {page === "Relatórios" && (
                 <Reports
                   users={data.users}
@@ -1880,7 +1948,9 @@ export function App() {
                     <section className="panel">
                       <div className="panel-heading">
                         <h2>Integração GLPI</h2>
-                        <span className="badge warn">Não conectado</span>
+                        <span className="badge warn">
+                          {data.glpi?.mode === "real" ? "Modo real" : "Demonstração"}
+                        </span>
                       </div>
                       <div className="integration-brand">
                         <span className="file-icon">
@@ -1892,29 +1962,16 @@ export function App() {
                         </div>
                       </div>
                       <p className="muted">
-                        A demonstração importa quatro solicitações fictícias em
-                        duas páginas. Repetir a importação preserva registros e
-                        alterações locais.
+                        Leitura dos grupos autorizados por app_token e
+                        user_token configurados somente no servidor (.env).
+                        Nenhuma escrita é feita no GLPI.
                       </p>
-                      {can("sync") && (
-                        <button
-                          className="primary"
-                          disabled={busy}
-                          onClick={() =>
-                            action(
-                              () => api("/sync", {}),
-                              "Sincronização demonstrativa concluída.",
-                            )
-                          }
-                        >
-                          <RefreshCw size={16} /> Sincronizar demonstração
-                        </button>
-                      )}
-                      <div className="inline-warning">
-                        Modo real ainda não implementado. A autenticação, as
-                        permissões e o mapeamento dos dados precisam ser validados.
-                        URL e tokens são configurados apenas no servidor (.env).
-                      </div>
+                      <button
+                        className="primary"
+                        onClick={() => setPage("Chamados GLPI")}
+                      >
+                        <RefreshCw size={16} /> Abrir chamados e sincronização
+                      </button>
                     </section>
                     <section className="panel">
                       <h2>Mapeamento de campos e políticas</h2>
@@ -2334,6 +2391,15 @@ export function App() {
                     ].map((t) => (
                       <option key={t}>{t}</option>
                     ))}
+                  </select>
+                </label>
+                <label>
+                  Modalidade (modelos estruturados de contrato)
+                  <select name="modality">
+                    <option value="">Não aplicável</option>
+                    <option>Garantia Completa</option>
+                    <option>Garantia Conjunta</option>
+                    <option>Garantia Prevista</option>
                   </select>
                 </label>
                 <label>

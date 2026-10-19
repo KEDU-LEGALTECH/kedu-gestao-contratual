@@ -10,7 +10,14 @@ services:
       HOST: 0.0.0.0
       PORT: "3001"
       DATABASE_PATH: /app/data/kedu.sqlite
-      GLPI_MODE: demo
+      # Demonstration by default. Real read-only GLPI only with GLPI_MODE=real and tokens in the local .env.
+      GLPI_MODE: ${GLPI_MODE:-demo}
+      GLPI_URL: ${GLPI_URL:-}
+      GLPI_APP_TOKEN: ${GLPI_APP_TOKEN:-}
+      GLPI_USER_TOKEN: ${GLPI_USER_TOKEN:-}
+      GLPI_GROUPS: ${GLPI_GROUPS:-JURIDICO CONTRATOS;JURIDICO REVISÃO}
+      GLPI_GROUP_IDS: ${GLPI_GROUP_IDS:-}
+      GLPI_SYNC_INTERVAL_MINUTES: ${GLPI_SYNC_INTERVAL_MINUTES:-0}
       DEMO_SEED: "true"
       DEMO_PASSWORD: ${DEMO_PASSWORD:-Kedu-demo-2026!}
       TZ: America/Sao_Paulo

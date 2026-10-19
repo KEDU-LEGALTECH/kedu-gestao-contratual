@@ -8,6 +8,7 @@ COPY src ./src
 COPY server ./server
 COPY shared ./shared
 COPY migrations ./migrations
+COPY templates ./templates
 RUN npm run build && npm prune --omit=dev
 # Fail during build rather than shipping an image with a missing TS runtime.
 RUN node --import tsx -e "console.log('TypeScript runtime available')"
@@ -20,6 +21,7 @@ COPY --from=build --chown=node:node /app/dist ./dist
 COPY --from=build --chown=node:node /app/server ./server
 COPY --from=build --chown=node:node /app/shared ./shared
 COPY --from=build --chown=node:node /app/migrations ./migrations
+COPY --from=build --chown=node:node /app/templates ./templates
 COPY --from=build --chown=node:node /app/package.json ./package.json
 RUN mkdir -p /app/data && chown node:node /app/data
 USER node

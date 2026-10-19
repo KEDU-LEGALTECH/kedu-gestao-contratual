@@ -30,6 +30,8 @@ const LABELS: [string, RegExp][] = [
   ["motivo", /^(?:\d+\)\s*)?MOTIVO(?: DO ADITIVO)?\s*[:\-–]?\s*(.*)$/i],
   ["observacoes", /^(?:\d+\)\s*)?OBSERVA[ÇC][ÕO]ES(?: OU CONSIDERA[ÇC][ÕO]ES ADICIONAIS)?\s*[:\-–]?\s*(.*)$/i],
   ["anexos", /^(?:\d+\)\s*)?ANEXOS\s*[:\-–]?\s*(.*)$/i],
+  // Only used for cross-checking when the form has such a field; the real form mapping is pending.
+  ["remuneracao", /^(?:\d+\)\s*)?TAXA(?: DE REMUNERA[ÇC][ÃA]O)?(?: KEDU)?\s*[:\-–]\s*(.*)$/i],
 ];
 /** Reads "LABEL: value" pairs of the GLPI form answer; a label alone takes the next line. */
 export function extractFields(lines: string[]) {
@@ -146,6 +148,24 @@ export function analyzeTicket(
   if (suggestion.type === "Aditivo")
     pendencies.push("Número sequencial do aditivo depende da confirmação manual do último assinado no Clicksign/Clint");
   return { fields, suggestion, schoolId, matrixId, pendencies };
+}
+/** Compares the confirmed demand data with what the linked ticket states (validation approach). */
+export function crossCheck(analysis: TicketAnalysis, ticketId: string, data: Record<string, any>) {
+  const issues: string[] = [];
+  const cnpj = analysis.fields.cnpj?.value;
+  if (cnpj && data.cnpj && cnpjDigits(cnpj) !== cnpjDigits(data.cnpj))
+    issues.push(`CNPJ da demanda difere do informado no chamado GLPI #${ticketId} (${cnpj})`);
+  const name = analysis.fields.razaoSocial?.value;
+  if (name && data.razaoSocial && normalize(name) !== normalize(data.razaoSocial))
+    issues.push(`Razão social da demanda difere do chamado GLPI #${ticketId}; confirme na Receita Federal`);
+  const rate = analysis.fields.remuneracao?.value;
+  const percent = (v: string) => {
+    const m = /(\d{1,3})(?:[.,](\d{1,2}))?\s*%/.exec(v || "");
+    return m ? Number(m[1]) * 100 + Number((m[2] || "0").padEnd(2, "0")) : null;
+  };
+  if (rate && data.remuneracao && percent(rate) !== null && percent(rate) !== percent(data.remuneracao))
+    issues.push(`Taxa da demanda (${data.remuneracao}) difere da taxa do chamado GLPI #${ticketId} (${rate})`);
+  return issues;
 }
 function normalize(s: string) {
   return String(s || "")

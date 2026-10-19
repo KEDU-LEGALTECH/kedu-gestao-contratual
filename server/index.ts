@@ -55,7 +55,7 @@ import {
   sha256,
 } from "./official-templates.js";
 import { structuredProfile, inspectStructured } from "./structured-docx.js";
-import { officialInputs } from "../shared/official-fields.js";
+import { fieldLabels as officialInputs } from "../shared/official-fields.js";
 import { officialVisible } from "../shared/request-policy.js";
 import {
   registerGovernance,
@@ -213,13 +213,18 @@ app.get("/api/bootstrap", (req: any, res) => {
         ? all("SELECT id,name,role,email FROM users WHERE id=?", req.user.id)
         : all("SELECT id,name,role,email FROM users"),
     templates: all(
-      "SELECT t.*,c.document_type,c.subtype,c.demonstration,v.id AS version_id,v.version,CASE WHEN EXISTS(SELECT 1 FROM inactive_template_versions iv WHERE iv.version_id=v.id) THEN 'inativo' ELSE v.status END AS status FROM templates t JOIN template_versions v ON v.template_id=t.id LEFT JOIN template_catalog c ON c.version_id=v.id",
+      "SELECT t.*,c.document_type,c.subtype,c.demonstration,EXISTS(SELECT 1 FROM template_sources ts WHERE ts.version_id=v.id) AS official,v.id AS version_id,v.version,CASE WHEN EXISTS(SELECT 1 FROM inactive_template_versions iv WHERE iv.version_id=v.id) THEN 'inativo' ELSE v.status END AS status FROM templates t JOIN template_versions v ON v.template_id=t.id LEFT JOIN template_catalog c ON c.version_id=v.id",
     ),
     sync: all("SELECT * FROM sync_logs ORDER BY created DESC LIMIT 20"),
     settings: all(
       "SELECT * FROM settings WHERE key IN ('legalPolicies','glpiMapping')",
     ),
+    glpi: { mode: process.env.GLPI_MODE === "real" ? "real" : "demo" },
     metrics: {
+      glpiTriage: one("SELECT COUNT(*) n FROM glpi_tickets WHERE demand_id IS NULL OR state LIKE 'alterado%'").n,
+      glpiClosure: demands.filter(
+        (d) => d.stage === "Concluído" && !JSON.parse(one("SELECT payload FROM case_details WHERE demand_id=?", d.id)?.payload || "{}").glpiClosure,
+      ).length,
       open: open.length,
       overdue: open.filter((d) => d.due < localDate()).length,
       approval: demands.filter((d) => d.stage === "Em aprovação").length,
@@ -520,6 +525,15 @@ app.get("/api/demands/:id", (req: any, res) => {
       "SELECT a.*,u.name FROM approvals a JOIN documents d ON d.id=a.document_id JOIN users u ON u.id=a.user_id WHERE d.demand_id=?",
       d.id,
     ),
+    origins: details(d).origins || {},
+    glpiClosure: details(d).glpiClosure || null,
+    glpiTicket: d.glpi_id
+      ? one(
+          "SELECT external_id,state,mode,changed_at FROM glpi_tickets WHERE external_id=? AND demand_id=?",
+          d.glpi_id,
+          d.id,
+        ) || null
+      : null,
     history: all(
       "SELECT a.*,u.name FROM audit a LEFT JOIN users u ON u.id=a.user_id WHERE demand_id=? ORDER BY created DESC",
       d.id,

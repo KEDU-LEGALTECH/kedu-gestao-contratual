@@ -17,7 +17,7 @@ export const officialInputs: Record<string, string> = {
   numero: "Número",
   bairro: "Bairro",
   cidade: "Cidade",
-  estado: "Estado (UF)",
+  estado: "Estado (por extenso, como no Canva: “Estado de …”)",
   cep: "CEP",
   representanteNome: "Representante legal",
   representanteCpf: "CPF do representante",
@@ -69,6 +69,48 @@ export const officialSlotKeys = [
   "pix",
   "cashbackValor",
 ];
+/** Input each derived value depends on, so pending items are reported by the field people fill in. */
+export const derivedFrom: Record<string, string> = {
+  ordinalAditivo: "aditivo",
+  dataAssinaturaMatrizExtenso: "dataAssinaturaMatriz",
+  dataFormalizacaoExtenso: "dataFormalizacao",
+  inicioExtenso: "inicio",
+  fimExtenso: "fim",
+  inicioMes: "inicio",
+  inicioAno: "inicio",
+  fimMes: "fim",
+  fimAno: "fim",
+  diaRepasseExtenso: "diaRepasse",
+  diaSegundoRepasseExtenso: "diaSegundoRepasse",
+  parcelasExtenso: "parcelas",
+  duracaoExtenso: "duracaoMeses",
+  taxaExtenso: "remuneracao",
+  repasseExtenso: "repasse",
+  repasseSegundoExtenso: "repasseSegundo",
+  percentualRestante: "garantia",
+  restanteExtenso: "garantia",
+  valorExtenso: "valor",
+};
+export const fieldLabels: Record<string, string> = {
+  ...officialInputs,
+  aditivo: "Número do aditivo (histórico assinado)",
+  dataAssinaturaMatriz: "Data de assinatura da matriz",
+  dataFormalizacao: "Data de formalização",
+  inicio: "Início da vigência",
+  fim: "Fim da vigência",
+  remuneracao: "Taxa de remuneração",
+  repasse: "Percentual de repasse",
+  garantia: "Percentual de garantia",
+  valor: "Valor de referência",
+  razaoSocial: "Razão social",
+  cnpj: "CNPJ",
+  banco: "Banco",
+  agencia: "Agência",
+  conta: "Conta",
+  titularConta: "Titular da conta",
+  documentoTitular: "CPF/CNPJ do titular",
+  cashbackValor: "Valor do cashback (R$)",
+};
 export const homologationNotice =
   "MINUTA PARA HOMOLOGAÇÃO — MODELO PENDENTE DE HOMOLOGAÇÃO JURÍDICA — NÃO UTILIZAR PARA ASSINATURA";
 export const previewNotice = "PRÉVIA PARA CONFERÊNCIA — NÃO UTILIZAR PARA ASSINATURA";
