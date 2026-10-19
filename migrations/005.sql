@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS template_sources(version_id TEXT PRIMARY KEY REFERENCES template_versions(id),profile TEXT NOT NULL,source_url TEXT NOT NULL,source_hash TEXT NOT NULL,template_hash TEXT NOT NULL,modality TEXT NOT NULL,slots TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS template_homologations(version_id TEXT PRIMARY KEY REFERENCES template_versions(id),user_id TEXT NOT NULL REFERENCES users(id),reference TEXT NOT NULL,created TEXT NOT NULL,template_hash TEXT NOT NULL);
+CREATE TRIGGER IF NOT EXISTS immutable_homologation BEFORE UPDATE ON template_homologations BEGIN SELECT RAISE(ABORT,'Homologação imutável'); END;
+CREATE TRIGGER IF NOT EXISTS no_delete_homologation BEFORE DELETE ON template_homologations BEGIN SELECT RAISE(ABORT,'Homologação imutável'); END;
+CREATE TABLE IF NOT EXISTS template_previews(id TEXT PRIMARY KEY,demand_id TEXT NOT NULL REFERENCES demands(id),template_version TEXT NOT NULL REFERENCES template_versions(id),data_version INTEGER NOT NULL,snapshot TEXT NOT NULL,bytes BLOB NOT NULL,author TEXT NOT NULL REFERENCES users(id),created TEXT NOT NULL);

@@ -11,6 +11,7 @@ export const roles = [
   "Consulta",
 ];
 export function seed() {
+  if (process.env.NODE_ENV === "production" || process.env.DEMO_SEED !== "true") return;
   if (one("SELECT id FROM demands LIMIT 1")) return;
   roles.forEach((role, i) =>
     run(
@@ -90,7 +91,7 @@ export function seed() {
       "c" + i,
       "s" + i,
       "2026-01-01",
-      "2027-12-31",
+      "2028-01-01",
       i === 4 ? "Assinado" : "Em preparação",
     );
     const data = {
@@ -105,8 +106,25 @@ export function seed() {
       agencia: "1234",
       conta: i === 1 ? "" : "12345-6",
       inicio: "2026-01-01",
-      fim: "2027-12-31",
+      fim: "2028-01-01",
       dataRepasse: "2026-11-10",
+      nomeFantasia: name,
+      rua: "Rua Demonstrativa",
+      numero: "100",
+      bairro: "Centro",
+      cidade: "Fortaleza",
+      estado: "CE",
+      cep: "60000-000",
+      representanteNome: "Administrador Fictício",
+      representanteCpf: "000.000.000-00",
+      duracaoMeses: "24",
+      alunos: "300",
+      incorporaMatricula: "Não",
+      cashbackValor: "0,00",
+      parcelas: "1",
+      diaRepasse: "10",
+      titularConta: name + " Educação Ltda.",
+      documentoTitular: cnpj,
       modalidade: "Garantia Completa",
       endereco: "Rua Demonstrativa, 100 — Fortaleza, CE",
       localidade: "Fortaleza, CE",
@@ -148,13 +166,13 @@ export function seed() {
       ],
       legalFlags: [],
     });
-    if (i !== 1)
+    if (i !== 1) for (const kind of ['contrato_social','identificacao','cartao_cnpj','comprovante_bancario'])
       run(
         "INSERT INTO evidence_files VALUES(?,?,?,?,?,?,?,?,?,?)",
-        "e-demo-" + i,
+        "e-demo-" + i + '-' + kind,
         did,
-        "contrato_social",
-        "DEMONSTRAÇÃO — contrato social.docx",
+        kind,
+        "DEMONSTRAÇÃO — " + kind + ".docx",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         demoTemplate(),
         "u0",
@@ -237,7 +255,12 @@ export function seed() {
     ]),
   );
 }
+if (process.env.NODE_ENV === "production" && process.env.DEMO_SEED === "true")
+  throw Error("Carga demonstrativa proibida em produção.");
+if (process.env.NODE_ENV === "production" && one("SELECT id FROM users WHERE email LIKE '%@demo.kedu.local' LIMIT 1"))
+  throw Error("Banco contém contas demonstrativas. Use um banco separado com usuários reais em produção.");
 seed();
+if (process.env.NODE_ENV !== "production" && process.env.DEMO_SEED === "true") {
 for (const [i, role, email, name] of [
   [6, "Risco", "risco@demo.kedu.local", "Risco demonstrativo"],
   [7, "Financeiro", "financeiro@demo.kedu.local", "Financeiro demonstrativo"],
@@ -252,3 +275,4 @@ for (const [i, role, email, name] of [
   );
 for (const demand of db.prepare("SELECT id,data FROM demands").all() as any[])
   saveTerms(demand.id, JSON.parse(demand.data));
+}

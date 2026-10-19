@@ -4,6 +4,8 @@ Aplicação local em português, com React/TypeScript/Vite, Express/TypeScript e
 
 ## Preparar e iniciar
 
+A carga fictícia requer `DEMO_SEED=true`, já definido no `.env.example` e no Compose local. Sem essa ativação, não são criados usuários, demandas ou modelos demonstrativos. Em instalações locais anteriores, acrescente essa variável ao `.env` se quiser continuar usando a carga demonstrativa.
+
 ```powershell
 npm ci
 if (!(Test-Path .env)) { Copy-Item .env.example .env }
@@ -140,13 +142,19 @@ Evidências: DOCX ou PDF até 8 MB, com download autorizado como anexo. O arquiv
 
 ## GLPI e integrações externas
 
-O usuário informou que ainda não possui acesso ao GLPI. O modo real permanece bloqueado. Não foram inventados endpoints, autenticação ou webhooks. `.env.example` documenta `GLPI_MODE`, `GLPI_URL`, `GLPI_VERSION`, `GLPI_APP_TOKEN` e `GLPI_USER_TOKEN`. Segredos ficam no servidor.
+A instalação informada é GLPI 10.0.26. O teste sem credenciais em `https://helpdesk.kedu.com.br/apirest.php/initSession` respondeu exigindo App-Token. Isso confirma que o serviço responde, mas não valida credenciais, acesso aos grupos, formulários ou anexos. O adaptador real ainda não foi implementado: `GLPI_MODE=real` continua bloqueado. `.env.example` documenta as variáveis; segredos ficam no servidor. Não há escrita em chamados, webhooks ou sincronização periódica ativa.
 
 O adaptador demonstrativo importa quatro registros em duas páginas, com identificador externo único, controle de paginação, limites, timeout, tentativas limitadas e histórico. Repetir a importação não duplica nem sobrescreve registros locais. Na origem fictícia, ID/escola/tipo/prioridade vêm do adaptador; CNPJ/razão social são do cadastro local; condições confirmadas, documentos, etapas e aprovações são locais.
 
 Para modo real: identificar versão/API, consultar documentação oficial correspondente, implementar autenticação/leitura/mapeamento e homologar em chamados de teste. Preencher tokens não ativa uma integração inexistente. Não há escrita em chamados reais. `SignatureProvider` é interface futura; Clicksign/Clint não estão conectados e nenhum envio/assinatura é simulado como integração ativa.
 
 ## Segurança e limites operacionais
+
+A revisão de segurança adicionou rejeição de campos duplicados no DOCX e controle de versão no salvamento comercial. A API exige `expected_version` igual a `data_version`; versões antigas ou ausentes recebem HTTP 409, sem sobrescrever dados. A interface envia a versão aberta; em conflito, reabra a demanda e revise antes de reenviar.
+
+Cadastro/edição de escolas e representantes exigem a permissão `schools`, disponível para Administrador, Operação e Risco. Solicitantes consultam somente escolas e contratos vinculados às próprias demandas, veem somente seu usuário na lista e não podem criar vínculos com escolas alheias. A operação deve preparar a primeira vinculação quando necessário.
+
+Em produção, configure `DEMO_SEED=false` e use banco separado sem contas demonstrativas. O servidor recusa a inicialização se a carga fictícia estiver ativada ou se encontrar usuários `@demo.kedu.local`; não apaga nem transforma o banco antigo. Para provisionar o primeiro administrador em banco vazio, defina `ADMIN_NAME`, `ADMIN_EMAIL` e `ADMIN_PASSWORD` (mínimo 16 caracteres, exclusiva) no ambiente protegido e execute `npm run admin:prepare`. Remova `ADMIN_PASSWORD` após a execução. Nunca publique essas variáveis nem reutilize a senha demonstrativa. Prepare HTTPS e origens autorizadas antes de disponibilizar o ambiente real.
 
 Senhas com scrypt/salt; sessões aleatórias de oito horas em cookie HttpOnly/SameSite Strict; limite de login; autorização no backend e downloads; validação de dados; controle de origem; arquivos com limites; auditoria sem ações de edição/exclusão expostas. O banco local contém dados sensíveis e não possui cifragem em repouso própria. A implantação precisa de HTTPS, proteção de armazenamento, backup/restauração, retenção, gestão corporativa de identidades e revisão dos acessos compartilhados.
 
@@ -166,3 +174,19 @@ Interface adaptada à identidade analisada em kedu.com.br: Poppins, azul petról
 A alteração de Corpo Fixo detectada pela conferência ativa controle jurídico obrigatório persistente. O formulário de governança não consegue remover esse encaminhamento automático. Ressalvas/reprovações humanas exigem ocorrências estruturadas (localização, problema, correção, gravidade); uma ocorrência crítica só pode ser registrada como reprovação.
 
 Após a conclusão local de um aditivo, a próxima emissão exige nova confirmação manual do último assinado no Clicksign/Clint. A reconferência fica em registro separado, sem editar o histórico anterior. Operações jurídicas sobre contrato existente exigem matriz assinada da mesma escola já na criação.
+
+## Adequação aos manuais e ao exemplo de chamado
+
+A migração `004.sql` é aplicada automaticamente na inicialização e preserva os registros anteriores. Cria retratos imutáveis dos dados anteriores dos aditivos e armazenamento do valor de cashback em centavos. Não carrega dados do chamado real nem transforma os anexos em evidências verificadas.
+
+Na criação de um aditivo, selecione o subtipo e uma matriz assinada da escola escolhida. O formulário filtra as matrizes e os campos da proposta por operação: vigência exige início e fim exatos; taxa exige remuneração; repasse exige percentual e data; conta exige banco, agência, conta e titularidade; cashback exige valor em reais. Dados de identificação, formalização, histórico e evidências continuam obrigatórios. Demais operações conservam as exigências anteriores até sua adequação específica.
+
+No detalhe, em **O que será alterado**, registre os valores atuais conferidos no contrato e no histórico assinado, com referência documental e declaração humana. Depois preencha e salve a proposta. O sistema não deduz o dia de um mês citado no chamado, não consulta Clicksign, não confirma a autenticidade da fonte e não corrige automaticamente valores. A nova confirmação do retrato incrementa a versão dos dados e invalida aprovações. As minutas geradas registram o retrato anterior e a proposta na versão exata. Os modelos demonstrativos recebem nova versão quando a estrutura muda; versões aprovadas anteriores são preservadas.
+
+O checklist passou a exigir identificação do responsável, cartão CNPJ com conferência cadastral e comprovante bancário, além do contrato social. Conta de terceiro acrescenta procuração pública específica; Garantia Prevista acrescenta anexo de assunção da dívida. Esses controles são evidências verificadas manualmente, sem consulta automática à Receita Federal. O distrato exige também Financeiro. Não se atribui aprovação jurídica automática aos documentos.
+
+O campo **Valor do cashback (R$)** é monetário (`cashbackValor`); o antigo cashback percentual permanece identificado como legado e não é convertido silenciosamente. Uma demanda histórica em assinatura que precisar complementar as novas exigências deve ser devolvida com justificativa e passar novamente por elaboração e aprovação.
+
+Os oito DOCX convertidos do Canva em `entregas/` ainda não estão homologados nem cadastrados como modelos de automação. A estrutura gráfica em caixas posicionadas requer adaptação ao gerador e ao leitor seguro; não se removeu a proteção que rejeita estruturas não suportadas para fazê-los parecer compatíveis. Os modelos do aplicativo continuam demonstrativos. A integração real, o mapeamento de anexos/formulários e a homologação dos modelos oficiais são etapas pendentes.
+
+Para conferir a adequação: `npm test` cobre aditivo de vigência sem exigências comerciais alheias, datas incompletas, retrato imutável, restrição bancária, edição concorrente e invalidação após nova conferência. `npm run build` inclui a checagem de tipos.

@@ -1,6 +1,7 @@
 import { basisPoints, cents } from "./decimal.js";
 import { one, all, run, id, now, db, audit } from "./db.js";
 import { governanceMissing, requirements, humanMissing } from "./governance.js";
+import { requiredFor } from "../shared/request-policy.js";
 export const stages = [
   "Recebido",
   "Aguardando informações",
@@ -15,6 +16,7 @@ export const stages = [
 export const permissions: Record<string, string[]> = {
   Administrador: [
     "write",
+    "schools",
     "confirm",
     "review",
     "commercial",
@@ -28,11 +30,28 @@ export const permissions: Record<string, string[]> = {
     "finance",
   ],
   Solicitante: ["write"],
-  Operação: ["write", "confirm", "review", "bank", "files", "export"],
+  Operação: [
+    "write",
+    "schools",
+    "confirm",
+    "review",
+    "bank",
+    "files",
+    "export",
+  ],
   Jurídico: ["review", "legal", "bank", "files", "export"],
   Aprovador: ["commercial", "bank", "files", "export"],
   Consulta: [],
-  Risco: ["write", "confirm", "review", "risk", "bank", "files", "export"],
+  Risco: [
+    "write",
+    "schools",
+    "confirm",
+    "review",
+    "risk",
+    "bank",
+    "files",
+    "export",
+  ],
   Financeiro: ["finance", "bank", "files", "export", "review"],
 };
 export function permit(user: any, action: string) {
@@ -49,21 +68,7 @@ export function access(user: any, demand: any) {
 }
 export function required(d: any) {
   const data = JSON.parse(d.data);
-  return [
-    "cnpj",
-    "razaoSocial",
-    "remuneracao",
-    "garantia",
-    "repasse",
-    "valor",
-    "banco",
-    "agencia",
-    "conta",
-    "inicio",
-    "fim",
-    "dataRepasse",
-    "modalidade",
-  ]
+  return requiredFor(d.type, requirements(d).subtype, data.modalidade || "")
     .filter((f) => typeof data[f] !== "string" || !data[f].trim())
     .concat(
       data.checklist ? [] : ["Documentação obrigatória"],
@@ -83,6 +88,13 @@ export function invalidate(d: string) {
   );
 }
 export function saveTerms(demandId: string, data: any) {
+  if (data.cashbackValor)
+    run(
+      "INSERT INTO cashback_values VALUES(?,?) ON CONFLICT(demand_id) DO UPDATE SET amount_cents=excluded.amount_cents",
+      demandId,
+      cents(data.cashbackValor),
+    );
+  else run("DELETE FROM cashback_values WHERE demand_id=?", demandId);
   if (!["remuneracao", "garantia", "repasse", "valor"].every((k) => data[k]))
     return;
   run(
@@ -235,8 +247,8 @@ export function transition(user: any, d: any, stage: string, reason?: string) {
       run(
         "UPDATE contracts SET status=?,start=?,end=? WHERE id=?",
         "Assinado",
-        terms.inicio,
-        terms.fim,
+        terms.inicio || null,
+        terms.fim || null,
         d.contract_id,
       );
     }

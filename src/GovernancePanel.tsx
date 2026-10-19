@@ -94,6 +94,7 @@ export function GovernancePanel({ detail, can, action, api, busy }: Props) {
   return (
     <>
       <section className="panel governance-summary">
+        {['Em assinatura','Concluído'].includes(detail.stage) && <div className="inline-warning"><strong>Registro externo no GLPI</strong><p>A conclusão aqui não encerra o chamado. Após confirmar a assinatura, uma pessoa autorizada deve anexar o documento assinado e registrar a conclusão no GLPI. A integração prevista é somente de leitura.</p></div>}
         <div className="panel-heading">
           <div>
             <h2>

@@ -9,6 +9,7 @@ process.env.DATABASE_PATH = join(
   "test.sqlite",
 );
 process.env.NODE_ENV = "test";
+process.env.DEMO_SEED = "true";
 const { default: app, csvCell } = await import("../server/index.js");
 const { all, one, run, db } = await import("../server/db.js");
 const { generate, review, demoTemplate, fixed } =
@@ -18,6 +19,21 @@ const server = app.listen(0, "127.0.0.1");
 await new Promise<void>((resolve) => server.on("listening", resolve));
 const base = `http://127.0.0.1:${(server.address() as any).port}/api`;
 async function request(path: string, body?: any, cookie = "", method?: string) {
+  if (
+    path.endsWith("/data") &&
+    method === "PUT" &&
+    body &&
+    !("expected_version" in body)
+  ) {
+    const demandId = path.split("/")[2];
+    body = {
+      ...body,
+      expected_version: one(
+        "SELECT data_version FROM demands WHERE id=?",
+        demandId,
+      )?.data_version,
+    };
+  }
   const res = await fetch(base + path, {
     method: method || (body ? "POST" : "GET"),
     headers: { "Content-Type": "application/json", cookie },
@@ -35,9 +51,27 @@ const admin = (
     password: "Kedu-demo-2026!",
   })
 ).cookie;
-const snapshot = JSON.parse(
-  one("SELECT data FROM demands WHERE id=?", "KD-0001").data,
-);
+const snapshot = {
+  ...JSON.parse(one("SELECT data FROM demands WHERE id=?", "KD-0001").data),
+  titularConta: "Instituição fictícia",
+  documentoTitular: "10.234.567/0001-90",
+  representanteNome: "Administrador de teste",
+  parcelas: "2",
+  repasseSegundo: "10,00%",
+  diaSegundoRepasse: "20",
+  motivo: "Alteração solicitada para teste com dados fictícios",
+};
+const officialParty = {
+  nomeFantasia: "Escola Fictícia",
+  rua: "Rua Fictícia",
+  numero: "10",
+  bairro: "Centro",
+  cidade: "Fortaleza",
+  estado: "CE",
+  cep: "60000-000",
+  representanteNome: "Administrador de teste",
+  representanteCpf: "000.000.000-00",
+};
 const { humanAxes, requirements, governanceMissing } =
   await import("../server/governance.js");
 async function prepareGovernance(
@@ -51,6 +85,29 @@ async function prepareGovernance(
     admin,
   );
   assert.equal(r.status, 200, JSON.stringify(r.data));
+  if (subtype) {
+    const { addendumFields } = await import("../shared/request-policy.js");
+    const response = await request(
+      "/demands/" + did + "/baseline",
+      {
+        expected_version: one(
+          "SELECT data_version FROM demands WHERE id=?",
+          did,
+        ).data_version,
+        reference: "Contrato e histórico fictícios conferidos no teste",
+        attested: true,
+        data: Object.fromEntries(
+          addendumFields[subtype].map((key) => [
+            key,
+            snapshot[key] || (key === "cashbackValor" ? "100,00" : ""),
+          ]),
+        ),
+      },
+      admin,
+      "PUT",
+    );
+    assert.equal(response.status, 200, JSON.stringify(response.data));
+  }
   r = await request(
     "/demands/" + did + "/governance",
     {
@@ -266,15 +323,15 @@ test("Mudança após aprovação invalida aprovações e confirmação", async (
     0,
   );
 });
-test("Sincronização repetida não duplica ou sobrescreve demandas", async () => {
+test("Sincronização repetida não duplica chamados nem cria demandas sem conferência humana", async () => {
+  const before = all("SELECT id FROM demands").length;
   const a = await request("/sync", {}, admin);
-  assert.equal(a.data.imported, 4);
+  assert.equal(a.data.imported, 2);
   const b = await request("/sync", {}, admin);
   assert.equal(b.data.imported, 0);
-  assert.equal(
-    all("SELECT * FROM demands WHERE glpi_id LIKE 'DEMO-%'").length,
-    4,
-  );
+  assert.equal(b.data.unchanged, 2);
+  assert.equal(all("SELECT * FROM glpi_tickets").length, 2);
+  assert.equal(all("SELECT id FROM demands").length, before);
 });
 test("Consulta não aprova, não baixa e não vê dados bancários", async () => {
   const c = (
@@ -310,6 +367,7 @@ test("Reservas concorrentes não recebem o mesmo número de aditivo", async () =
         {
           school_id: "s4",
           type: "Aditivo",
+          subtype: "Conta bancária",
           owner: "u2",
           priority: "Normal",
           due: "2026-12-01",
@@ -343,6 +401,7 @@ test("Reservas concorrentes não recebem o mesmo número de aditivo", async () =
         {
           school_id: "s4",
           type: "Aditivo",
+          subtype: "Conta bancária",
           owner: "u2",
           priority: "Normal",
           due: "2026-12-01",
@@ -512,7 +571,15 @@ test("K-invest, parcelamento e migração exigem os documentos próprios", () =>
   );
   assert.deepEqual(
     requirements({ id: "none", type: "Migração de modalidade" }).evidence,
-    ["contrato_social", "matriz_assinada", "distrato", "novo_contrato"],
+    [
+      "contrato_social",
+      "identificacao",
+      "cartao_cnpj",
+      "comprovante_bancario",
+      "matriz_assinada",
+      "distrato",
+      "novo_contrato",
+    ],
   );
   assert.ok(
     requirements({ id: "none", type: "CNPJ solidário" }).evidence.includes(
@@ -810,13 +877,21 @@ test("Minuta externa pode ser conferida sem geração anterior, mas exige modelo
     1,
   );
 });
-test("Catálogo mantém cinco modelos de aditivo identificados como demonstração", () => {
+test("Catálogo separa cinco aditivos demonstrativos dos cinco oficiais pendentes de homologação", () => {
   const templates = all(
-    "SELECT * FROM template_catalog WHERE document_type=?",
+    "SELECT c.*,v.status,s.profile FROM template_catalog c JOIN template_versions v ON v.id=c.version_id LEFT JOIN template_sources s ON s.version_id=c.version_id WHERE document_type=?",
     "Aditivo",
   );
-  assert.equal(templates.length, 5);
-  assert.ok(templates.every((t) => t.demonstration === 1));
+  const demo = templates.filter((t) => t.demonstration === 1);
+  const official = templates.filter((t) => t.profile);
+  assert.equal(demo.length, 5);
+  assert.ok(demo.every((t) => !t.profile));
+  assert.equal(official.length, 5);
+  assert.ok(official.every((t) => t.demonstration === 0 && t.status === "rascunho"));
+  assert.deepEqual(
+    official.map((t) => t.subtype).sort(),
+    ["Cashback", "Conta bancária", "Percentual/data de repasse", "Taxa de remuneração", "Vigência"],
+  );
 });
 test("PDF assinado exige declaração, preserva MIME e alimenta histórico do aditivo na conclusão", async () => {
   const d = one(
@@ -976,6 +1051,7 @@ test("Próxima emissão após conclusão exige reconferência externa do último
   const payload = {
     school_id: "s4",
     type: "Aditivo",
+    subtype: "Vigência",
     owner: "u2",
     priority: "Normal",
     due: "2030-01-01",
@@ -1131,6 +1207,373 @@ test("Garantia Completa não pode ser confirmada com percentual de garantia infe
     }).includes("Garantia Completa exige garantia de 100,00%"),
   );
 });
+test("Campos duplicados contraditórios nunca recebem conferência conforme", () => {
+  const template = demoTemplate();
+  const zip = new PizZip(generate(template, { remuneracao: "3,30%" }));
+  const xml = zip.file("word/document.xml")!.asText();
+  zip.file(
+    "word/document.xml",
+    xml.replace(
+      "</w:body>",
+      "<w:p><w:r><w:t>remuneracao: 99,99%</w:t></w:r></w:p></w:body>",
+    ),
+  );
+  const result = review(
+    zip.generate({ type: "nodebuffer" }),
+    { remuneracao: "3,30%" },
+    template,
+  );
+  assert.equal(result.status, "divergente");
+  assert.ok(
+    result.results.some(
+      (r: any) =>
+        r.field === "remuneracao" && r.guidance.includes("duplicados"),
+    ),
+  );
+});
+test("Solicitante não edita escolas nem representantes e só recebe registros vinculados", async () => {
+  const cookie = (
+    await request("/login", {
+      email: "solicitante@demo.kedu.local",
+      password: "Kedu-demo-2026!",
+    })
+  ).cookie;
+  const school = await request(
+    "/schools",
+    {
+      name: "Escola isolada",
+      legal_name: "Escola isolada Ltda",
+      cnpj: "98.765.432/0001-00",
+      address: "Ficticio",
+      contact: "audit@example.com",
+    },
+    admin,
+  );
+  assert.equal(school.status, 200);
+  assert.equal(
+    (
+      await request(
+        "/schools/" + school.data.id,
+        {
+          name: "Alterada",
+          legal_name: "Alterada Ltda",
+          cnpj: "98.765.432/0001-00",
+          address: "Ficticio",
+          contact: "audit@example.com",
+        },
+        cookie,
+        "PUT",
+      )
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await request(
+        "/schools/" + school.data.id + "/representatives",
+        { name: "Representante Teste", email: "test@example.com" },
+        cookie,
+      )
+    ).status,
+    403,
+  );
+  assert.equal(
+    (await request("/schools/" + school.data.id, undefined, cookie)).status,
+    403,
+  );
+  assert.equal(
+    (
+      await request(
+        "/demands",
+        {
+          school_id: school.data.id,
+          type: "Contrato de garantia",
+          owner: "u1",
+          priority: "Normal",
+          due: "2030-01-01",
+        },
+        cookie,
+      )
+    ).status,
+    403,
+  );
+  const boot = (await request("/bootstrap", undefined, cookie)).data;
+  assert.ok(!boot.schools.some((s: any) => s.id === school.data.id));
+  assert.ok(
+    boot.contracts.every((c: any) =>
+      boot.demands.some((d: any) => d.contract_id === c.id),
+    ),
+  );
+  assert.ok(boot.users.every((u: any) => u.role === "Solicitante"));
+});
+test("Salvamento obsoleto ou sem versão não sobrescreve alterações", async () => {
+  const created = await request(
+    "/demands",
+    {
+      school_id: "s0",
+      type: "Contrato de garantia",
+      owner: "u0",
+      priority: "Normal",
+      due: "2030-01-01",
+    },
+    admin,
+  );
+  assert.equal(created.status, 200);
+  const path = "/demands/" + created.data.id + "/data";
+  const version = one(
+    "SELECT data_version FROM demands WHERE id=?",
+    created.data.id,
+  ).data_version;
+  assert.equal(
+    (
+      await request(
+        path,
+        { banco: "Banco atualizado", expected_version: version },
+        admin,
+        "PUT",
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await request(
+        path,
+        { banco: "Banco obsoleto", expected_version: version },
+        admin,
+        "PUT",
+      )
+    ).status,
+    409,
+  );
+  assert.equal(
+    (
+      await request(
+        path,
+        { banco: "Banco sem versão", expected_version: null },
+        admin,
+        "PUT",
+      )
+    ).status,
+    409,
+  );
+  assert.equal(
+    JSON.parse(one("SELECT data FROM demands WHERE id=?", created.data.id).data)
+      .banco,
+    "Banco atualizado",
+  );
+});
+test("Aditivo de vigência exige datas exatas, retrato confirmado e não exige taxas sem relação com a alteração", async () => {
+  run(
+    "INSERT INTO contracts(id,school_id,status) VALUES('matrix-vigencia','s4','Assinado')",
+  );
+  assert.equal(
+    (
+      await request(
+        "/contracts/matrix-vigencia/signed-history",
+        {
+          sequence: 0,
+          source: "Clicksign",
+          reference: "Contrato matriz fictício sem aditivos",
+          signatureDate: "2026-01-01",
+          attested: true,
+        },
+        admin,
+      )
+    ).status,
+    200,
+  );
+  const payload = {
+    school_id: "s4",
+    type: "Aditivo",
+    owner: "u0",
+    priority: "Normal",
+    due: "2030-01-01",
+    matrix: "matrix-vigencia",
+  };
+  assert.equal((await request("/demands", payload, admin)).status, 400);
+  const created = await request(
+    "/demands",
+    { ...payload, subtype: "Vigência" },
+    admin,
+  );
+  assert.equal(created.status, 200);
+  const did = created.data.id;
+  await prepareGovernance(did, "Vigência");
+  const path = "/demands/" + did;
+  const terms = {
+    inicio: "2026-11-01",
+    fim: "2027-10-01",
+    dataAssinaturaMatriz: "2026-01-01",
+    dataFormalizacao: "2026-10-19",
+    localidade: "Fortaleza, CE",
+    endereco: "Endereço fictício conferido",
+    motivo:
+      "Início transferido para novembro após encerramento da parceria anterior",
+    checklist: true,
+    ...officialParty,
+    duracaoMeses: "11",
+  };
+  assert.equal(
+    (
+      await request(
+        path + "/data",
+        { ...terms, inicio: "2026-11" },
+        admin,
+        "PUT",
+      )
+    ).status,
+    400,
+  );
+  assert.equal(
+    (await request(path + "/data", terms, admin, "PUT")).status,
+    200,
+  );
+  let detail = (await request(path, undefined, admin)).data;
+  assert.ok(!detail.requiredFields.includes("remuneracao"));
+  assert.ok(!detail.visibleFields.includes("banco"));
+  assert.deepEqual(detail.missing, []);
+  assert.equal((await request(path + "/confirm", {}, admin)).status, 200);
+  assert.equal(
+    (
+      await request(
+        path + "/generate",
+        { template_version: "tv-aditivo-1" },
+        admin,
+      )
+    ).status,
+    200,
+  );
+  let document = one(
+    "SELECT * FROM documents WHERE demand_id=? ORDER BY version DESC LIMIT 1",
+    did,
+  );
+  assert.equal(JSON.parse(document.snapshot).anteriorInicio, snapshot.inicio);
+  assert.equal(JSON.parse(document.snapshot).inicio, "2026-11-01");
+  assert.equal(
+    (await request(path + "/review", {}, admin)).data.status,
+    "conforme",
+  );
+  await humanReview(did);
+  assert.equal(
+    (await request(path + "/stage", { stage: "Em aprovação" }, admin)).status,
+    200,
+  );
+  assert.equal(
+    (await request(path + "/approve", { kind: "Risco" }, admin)).status,
+    200,
+  );
+  detail = (await request(path, undefined, admin)).data;
+  const confirm = {
+    expected_version: detail.data_version,
+    reference: "Nova conferência do contrato matriz e histórico assinado",
+    attested: true,
+    data: { inicio: "2026-10-01", fim: "2027-10-01", duracaoMeses: "12" },
+  };
+  const consulta = (
+    await request("/login", {
+      email: "consulta@demo.kedu.local",
+      password: "Kedu-demo-2026!",
+    })
+  ).cookie;
+  assert.equal(
+    (await request(path + "/baseline", confirm, consulta, "PUT")).status,
+    403,
+  );
+  assert.equal(
+    (await request(path + "/baseline", confirm, admin, "PUT")).status,
+    200,
+  );
+  assert.equal(
+    (await request(path + "/baseline", confirm, admin, "PUT")).status,
+    409,
+  );
+  assert.equal(
+    one(
+      "SELECT COUNT(*) n FROM approvals WHERE document_id=? AND valid=1",
+      document.id,
+    ).n,
+    0,
+  );
+  assert.equal(
+    one("SELECT confirmed FROM demands WHERE id=?", did).confirmed,
+    0,
+  );
+  assert.throws(() =>
+    run(
+      "UPDATE demand_baselines SET reference='alterada' WHERE demand_id=?",
+      did,
+    ),
+  );
+  assert.equal(JSON.parse(document.snapshot).anteriorInicio, snapshot.inicio);
+});
+
+test("Dados bancários anteriores são restritos e cashback em reais é persistido em centavos", async () => {
+  const d = one(
+    "SELECT d.* FROM demands d JOIN contracts c ON c.id=d.contract_id WHERE d.type='Aditivo' AND c.sequence=4 LIMIT 1",
+  );
+  const consulta = (
+    await request("/login", {
+      email: "consulta@demo.kedu.local",
+      password: "Kedu-demo-2026!",
+    })
+  ).cookie;
+  const detail = (await request("/demands/" + d.id, undefined, consulta)).data;
+  assert.equal(detail.baseline.data.conta, undefined);
+  assert.equal(detail.data.titularConta, undefined);
+  const created = await request(
+    "/demands",
+    {
+      school_id: "s0",
+      type: "Contrato de garantia",
+      owner: "u0",
+      priority: "Normal",
+      due: "2030-01-01",
+    },
+    admin,
+  );
+  assert.equal(
+    (
+      await request(
+        "/demands/" + created.data.id + "/data",
+        { cashbackValor: "1.234,56" },
+        admin,
+        "PUT",
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    one(
+      "SELECT amount_cents FROM cashback_values WHERE demand_id=?",
+      created.data.id,
+    ).amount_cents,
+    123456,
+  );
+  assert.equal(
+    (
+      await request(
+        "/demands/" + created.data.id + "/data",
+        { cashbackValor: "3,30%" },
+        admin,
+        "PUT",
+      )
+    ).status,
+    400,
+  );
+  const policy = requirements({
+    id: "policy-extra",
+    type: "Distrato",
+    data: JSON.stringify({
+      contaTerceiro: true,
+      modalidade: "Garantia Prevista",
+    }),
+  });
+  assert.ok(policy.approvals.includes("Financeiro"));
+  assert.ok(policy.evidence.includes("procuracao_bancaria"));
+  assert.ok(policy.evidence.includes("assuncao_divida"));
+});
+
 after(() => {
   server.close();
   db.close();

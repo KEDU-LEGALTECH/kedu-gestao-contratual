@@ -1,5 +1,8 @@
 import PizZip from "pizzip";
 import Docxtemplater from "docxtemplater";
+import { addendumFields, previousKey } from "../shared/request-policy.js";
+import {officialInputs} from '../shared/official-fields.js';
+import {structuredProfile,generateStructured,reviewStructured} from './structured-docx.js';
 export const fixed =
   "MODELO DE DEMONSTRAÇÃO — SEM APROVAÇÃO JURÍDICA. Este documento contém somente dados fictícios para validação do fluxo operacional. Não constitui instrumento contratual.";
 export const fields = [
@@ -24,6 +27,14 @@ export const fields = [
   "dataFormalizacao",
   "localidade",
   "cnpjSolidario",
+  "titularConta",
+  "documentoTitular",
+  "pix",
+  "motivo",
+  "referenciaAnterior",
+  "cashbackValor",
+  ...Array.from(new Set(Object.values(addendumFields).flat())).map(previousKey),
+  ...Object.keys(officialInputs),
 ];
 const esc = (s: string) =>
   s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -115,6 +126,7 @@ export function paragraphs(bytes: Buffer) {
 }
 export function generate(template: Buffer, data: Record<string, string>) {
   paragraphs(template);
+  if(structuredProfile(template)) return generateStructured(template,data);
   return new Docxtemplater(new PizZip(template), {
     paragraphLoop: true,
     linebreaks: true,
@@ -131,10 +143,22 @@ export function review(
   template: Buffer,
 ) {
   try {
+    paragraphs(bytes); paragraphs(template);
+    if(structuredProfile(template)) return reviewStructured(bytes,expected,template);
     const p = paragraphs(bytes),
       baseline = paragraphs(generate(template, expected));
     const results: any[] = [];
     fields.forEach((f) => {
+      const occurrences = p.filter((x) => x.startsWith(f + ": "));
+      if (occurrences.length > 1)
+        results.push({
+          field: f,
+          expected: "Uma única ocorrência do campo",
+          found: occurrences.join("\n"),
+          location: "Quadro de dados",
+          severity: "crítica",
+          guidance: "Remova campos duplicados e confira novamente.",
+        });
       const i = p.findIndex((x) => x.startsWith(f + ": ")),
         found = i < 0 ? "Ausente" : p[i].slice(f.length + 2),
         want = expected[f] || "Não aplicável";

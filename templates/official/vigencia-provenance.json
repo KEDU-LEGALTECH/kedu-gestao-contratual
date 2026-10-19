@@ -1,0 +1,38 @@
+{
+  "profile": "kedu-vigencia-v1",
+  "sourceUrl": "https://canva.link/v9tvnzxi10iv7e3",
+  "sourceSha256": "9122e01aa3222ddb0e3537f3810d1da61bdbde1ffb9ed12a0aa0ad12882cba67",
+  "slots": [
+    "avisoHomologacao",
+    "ordinalAditivo",
+    "razaoSocial",
+    "nomeFantasia",
+    "cnpj",
+    "rua",
+    "numero",
+    "bairro",
+    "cidade",
+    "estado",
+    "cep",
+    "representanteNome",
+    "representanteCpf",
+    "dataAssinaturaMatrizExtenso",
+    "inicioExtenso",
+    "fimExtenso",
+    "duracaoMeses",
+    "duracaoExtenso",
+    "dataFormalizacaoExtenso"
+  ],
+  "formatAdaptation": "Tabelas e texto fluido substituem caixas posicionadas; cláusulas preservadas, incluindo grafia da fonte.",
+  "templateSha256": "35b5b1d8b738bacc3ec08430e0ab5ff3f83b65bc245b537050031a46ceaab773",
+  "fixedSourceParagraphs": {
+    "title": "{ordinalAditivo} CONTRATO DE GESTÃO E COBRANÇA DE RECEBÍVEIS COM GARANTIA DE PAGAMENTO E OUTORGA DE DIREITOS",
+    "contractor": "{razaoSocial}, sociedade, cujo nome fantasia é {nomeFantasia}, inscrita no CNPJ/ME sob o nº {cnpj}, com sede na Rua {rua}, n° {numero}, Bairro: {bairro}, na cidade de {cidade}, Estado de {estado}, CEP: {cep}, neste ato representado (a) na por seu representante legal {representanteNome}, cujo cpf é {representanteCpf}, neste ato denominado como [Instituição de Ensino].",
+    "contracted": "KEDU SERVIÇOS E SOLUÇÕES EDUCACIONAIS E FINANCEIRAS LTDA, pessoa jurídica de direito privado, inscrita no CNPJ/ME sob o n° 45.543.580/0001-00, com sede na Rua Calixto Machado, no 21, SALA Q-64, Pires Façanha, 61775-060, Eusébio/CE, neste ato representada por seu representante legal, neste ato denominado como [kedu].",
+    "change": "As partes pactuam a alteração na Síntese do Contrato referente ao Contrato de Gestão e Cobrança de Recebíveis com Garantia de Pagamento e Outorga de Direitos, celebrado em {dataAssinaturaMatrizExtenso}, doravante denominado \"Contrato Matriz\", específicamente no campo Vigência Contratual da Síntese do Contrato, em conformidade com as cláusulas 7.1, do Contrato Matriz. A partir da assinatura do presente instrumento, a vigência passa a versar na seguinte redação:",
+    "term": "Vigência iniciada no dia {inicioExtenso} com previsão de término da vigência em {fimExtenso}, com duração de {duracaoMeses} ({duracaoExtenso}) meses.",
+    "unchanged": "As demais cláusulas do Contrato Matriz permanecem inalteradas em todos os seus termos. Em caso de conflito entre as disposições do presente aditivo e as do Contrato Matriz, prevalecerá o presente instrumento no que couber.",
+    "electronic": "E, por estarem justas e contratadas, as partes, por meio de seus representantes legais, declaram que o presente instrumento será assinado por meio eletrônico.",
+    "recognition": "Todas reconhecem, de forma irrevogável e irretratável, (i) a autenticidade, validade e a plena eficácia da assinatura por meio eletrônico, para todos os fins de direito; (ii) ainda que alguma das Partes venha a assinar eletronicamente este instrumento em local diverso, o local de celebração é, para todos os fins, a Cidade de Fortaleza, Estado do Ceará, conforme abaixo indicado; e (iii) será considerada a data de assinatura deste instrumento, para todos os fins e efeitos, a data indicada abaixo, não obstante a data em que a última assinatura eletrônica foi realizada."
+  }
+}

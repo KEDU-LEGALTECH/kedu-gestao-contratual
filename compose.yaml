@@ -11,6 +11,7 @@ services:
       PORT: "3001"
       DATABASE_PATH: /app/data/kedu.sqlite
       GLPI_MODE: demo
+      DEMO_SEED: "true"
       DEMO_PASSWORD: ${DEMO_PASSWORD:-Kedu-demo-2026!}
       TZ: America/Sao_Paulo
     volumes:

@@ -31,6 +31,8 @@ import "./style.css";
 import { Reports } from "./Reports";
 import { GovernancePanel, SignedHistoryPanel } from "./GovernancePanel";
 import { requiredDataFields, validateData } from "../shared/data-validation";
+import { bankFields } from "../shared/request-policy";
+import { AddendumComparison } from "./AddendumComparison";
 const stages = [
   "Recebido",
   "Aguardando informações",
@@ -63,7 +65,8 @@ const labels: Record<string, string> = {
   remuneracao: "Taxa de remuneração",
   garantia: "Percentual de garantia",
   repasse: "Percentual de repasse",
-  cashback: "Cashback",
+  cashback: "Cashback percentual (cadastro legado)",
+  cashbackValor: "Valor do cashback (R$)",
   valor: "Valor de referência",
   banco: "Banco",
   agencia: "Agência",
@@ -79,6 +82,10 @@ const labels: Record<string, string> = {
   dataFormalizacao: "Data de formalização",
   localidade: "Localidade de formalização",
   cnpjSolidario: "CNPJ solidário (quando aplicável)",
+  titularConta: "Titular da conta",
+  documentoTitular: "CPF/CNPJ do titular",
+  pix: "Chave PIX (quando aplicável)",
+  motivo: "Motivo e descrição da alteração",
 };
 const date = (s: string) =>
   s
@@ -118,6 +125,8 @@ const nav = [
 ] as const;
 export function App() {
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [newType, setNewType] = useState("Contrato de garantia");
+  const [newSchool, setNewSchool] = useState("");
   const [missingFields, setMissingFields] = useState<string[]>([]);
   const focusField = (key: string) => {
     const input = document.getElementById("data-" + key);
@@ -591,10 +600,22 @@ export function App() {
                 </div>
                 <Badge stage={detail.stage} />
               </div>
+              <AddendumComparison
+                detail={detail}
+                labels={labels}
+                can={can}
+                busy={busy}
+                action={action}
+                api={api}
+              />
               <div className="detail-grid">
                 <section className="panel">
                   <div className="panel-heading">
-                    <h2>Dados e condições comerciais</h2>
+                    <h2>
+                      {detail.type === "Aditivo"
+                        ? "Dados da escola e alteração proposta"
+                        : "Dados e condições comerciais"}
+                    </h2>
                     <span
                       className={"badge " + (detail.confirmed ? "ok" : "warn")}
                     >
@@ -607,7 +628,8 @@ export function App() {
                     onChange={(event) => {
                       const form = event.currentTarget;
                       const values = Object.fromEntries(new FormData(form));
-                      const target = event.target as unknown as HTMLInputElement;
+                      const target =
+                        event.target as unknown as HTMLInputElement;
                       setFieldErrors((previous) => {
                         const next = { ...previous };
                         if (previous[target.name]) {
@@ -617,7 +639,11 @@ export function App() {
                         }
                         return next;
                       });
-                      setMissingFields(requiredDataFields.filter(key => !String(values[key] ?? "").trim()));
+                      setMissingFields(
+                        (detail.requiredFields || requiredDataFields).filter(
+                          (key: string) => !String(values[key] ?? "").trim(),
+                        ),
+                      );
                     }}
                     onSubmit={(e) =>
                       submit(
@@ -625,14 +651,30 @@ export function App() {
                         (b) => {
                           const issues = validateData(b);
                           setFieldErrors(issues);
-                          setMissingFields(requiredDataFields.filter(key => !String(b[key] ?? "").trim()));
+                          setMissingFields(
+                            (
+                              detail.requiredFields || requiredDataFields
+                            ).filter(
+                              (key: string) => !String(b[key] ?? "").trim(),
+                            ),
+                          );
                           if (Object.keys(issues).length) {
-                            requestAnimationFrame(() => focusField(Object.keys(issues)[0]));
-                            throw Error("Corrija os campos destacados antes de salvar.");
+                            requestAnimationFrame(() =>
+                              focusField(Object.keys(issues)[0]),
+                            );
+                            throw Error(
+                              "Corrija os campos destacados antes de salvar.",
+                            );
                           }
                           const output = {
                             ...b,
+                            expected_version: detail.data_version,
                             checklist: b.checklist === "on",
+                            ...(can("bank") &&
+                            (!detail.visibleFields ||
+                              detail.visibleFields.includes("banco"))
+                              ? { contaTerceiro: b.contaTerceiro === "on" }
+                              : {}),
                           };
                           return api(
                             "/demands/" + detail.id + "/data",
@@ -648,18 +690,41 @@ export function App() {
                       {Object.entries(labels)
                         .filter(
                           ([key]) =>
-                            can("bank") ||
-                            !["banco", "agencia", "conta"].includes(key),
+                            !detail.visibleFields ||
+                            detail.visibleFields.includes(key),
+                        )
+                        .filter(
+                          ([key]) => can("bank") || !bankFields.includes(key),
                         )
                         .map(([key, label]) => (
-                          <label key={key} className={fieldErrors[key] ? "data-field invalid-field" : missingFields.includes(key) ? "data-field missing-field" : "data-field"}>
+                          <label
+                            key={key}
+                            className={
+                              fieldErrors[key]
+                                ? "data-field invalid-field"
+                                : missingFields.includes(key)
+                                  ? "data-field missing-field"
+                                  : "data-field"
+                            }
+                          >
                             {label}
-                            {requiredDataFields.includes(key) && <span className="required-marker">Obrigatório para avançar</span>}
+                            {(
+                              detail.requiredFields || requiredDataFields
+                            ).includes(key) && (
+                              <span className="required-marker">
+                                Obrigatório para avançar
+                              </span>
+                            )}
                             {key === "modalidade" ? (
                               <select
                                 id={"data-" + key}
                                 aria-invalid={!!fieldErrors[key]}
-                                aria-describedby={fieldErrors[key] || missingFields.includes(key) ? "issue-" + key : undefined}
+                                aria-describedby={
+                                  fieldErrors[key] ||
+                                  missingFields.includes(key)
+                                    ? "issue-" + key
+                                    : undefined
+                                }
                                 name={key}
                                 key={detail.id + detail.data_version + key}
                                 defaultValue={detail.data[key] || ""}
@@ -674,12 +739,22 @@ export function App() {
                               <input
                                 id={"data-" + key}
                                 aria-invalid={!!fieldErrors[key]}
-                                aria-describedby={fieldErrors[key] || missingFields.includes(key) ? "issue-" + key : undefined}
+                                aria-describedby={
+                                  fieldErrors[key] ||
+                                  missingFields.includes(key)
+                                    ? "issue-" + key
+                                    : undefined
+                                }
                                 name={key}
                                 placeholder={
-                                  ["remuneracao", "garantia", "repasse", "cashback"].includes(key)
+                                  [
+                                    "remuneracao",
+                                    "garantia",
+                                    "repasse",
+                                    "cashback",
+                                  ].includes(key)
                                     ? "Ex.: 3,30%"
-                                    : key === "valor"
+                                    : ["valor", "cashbackValor"].includes(key)
                                       ? "Ex.: 10.000,00"
                                       : undefined
                                 }
@@ -702,18 +777,45 @@ export function App() {
                                 }
                               />
                             )}
-                            {(fieldErrors[key] || missingFields.includes(key)) && (
-                              <span id={"issue-" + key} className="field-message">
+                            {(fieldErrors[key] ||
+                              missingFields.includes(key)) && (
+                              <span
+                                id={"issue-" + key}
+                                className="field-message"
+                              >
                                 <TriangleAlert size={15} aria-hidden="true" />
-                                {fieldErrors[key] || "Preencha este campo antes de confirmar os dados."}
+                                {fieldErrors[key] ||
+                                  "Preencha este campo antes de confirmar os dados."}
                               </span>
                             )}
-                            {["remuneracao", "garantia", "repasse", "cashback"].includes(key) && (
-                              <small>Use duas casas decimais e %, por exemplo: 3,30%.</small>
+                            {[
+                              "remuneracao",
+                              "garantia",
+                              "repasse",
+                              "cashback",
+                            ].includes(key) && (
+                              <small>
+                                Use duas casas decimais e %, por exemplo: 3,30%.
+                              </small>
                             )}
                           </label>
                         ))}
                     </div>
+                    {can("bank") &&
+                      (!detail.visibleFields ||
+                        detail.visibleFields.includes("banco")) && (
+                        <label className="checkbox">
+                          <input
+                            type="checkbox"
+                            name="contaTerceiro"
+                            defaultChecked={detail.data.contaTerceiro === true}
+                            key={"third-party" + detail.data_version}
+                            disabled={!can("write")}
+                          />
+                          Conta de terceiro — exige procuração pública
+                          específica e conferência de titularidade.
+                        </label>
+                      )}
                     <label className="checkbox">
                       <input
                         name="checklist"
@@ -730,13 +832,38 @@ export function App() {
                         Dados bancários restritos ao seu perfil.
                       </p>
                     )}
-                    {(Object.keys(fieldErrors).length > 0 || missingFields.length > 0) && (
+                    {(Object.keys(fieldErrors).length > 0 ||
+                      missingFields.length > 0) && (
                       <div className="field-summary" role="status">
                         <strong>Revise os campos indicados</strong>
-                        <p>Campos vazios podem ser salvos como rascunho, mas impedem a confirmação.</p>
-                        <ul>{[...new Set([...Object.keys(fieldErrors), ...missingFields])].filter(key => can("bank") || !["banco", "agencia", "conta"].includes(key)).map(key => (
-                          <li key={key}><button type="button" onClick={() => focusField(key)}>{labels[key] || key}</button>: {fieldErrors[key] || "não preenchido"}</li>
-                        ))}</ul>
+                        <p>
+                          Campos vazios podem ser salvos como rascunho, mas
+                          impedem a confirmação.
+                        </p>
+                        <ul>
+                          {[
+                            ...new Set([
+                              ...Object.keys(fieldErrors),
+                              ...missingFields,
+                            ]),
+                          ]
+                            .filter(
+                              (key) =>
+                                can("bank") ||
+                                !["banco", "agencia", "conta"].includes(key),
+                            )
+                            .map((key) => (
+                              <li key={key}>
+                                <button
+                                  type="button"
+                                  onClick={() => focusField(key)}
+                                >
+                                  {labels[key] || key}
+                                </button>
+                                : {fieldErrors[key] || "não preenchido"}
+                              </li>
+                            ))}
+                        </ul>
                       </div>
                     )}
                     {can("write") && (
@@ -744,8 +871,16 @@ export function App() {
                         {busy ? "Salvando…" : "Salvar dados"}
                       </button>
                     )}
-                    {error && <p role="alert" className="inline-warning">{error}</p>}
-                    {success && <p role="status" className="positive">{success}</p>}
+                    {error && (
+                      <p role="alert" className="inline-warning">
+                        {error}
+                      </p>
+                    )}
+                    {success && (
+                      <p role="status" className="positive">
+                        {success}
+                      </p>
+                    )}
                   </form>
                   {can("confirm") && (
                     <button
@@ -791,7 +926,7 @@ export function App() {
                       >
                         <label>
                           Encaminhar para
-                          <select name="stage">
+                          <select name="stage" key={detail.id + detail.stage}>
                             {transitions(detail.stage).map((s) => (
                               <option key={s}>{s}</option>
                             ))}
@@ -1161,7 +1296,7 @@ export function App() {
                       <Plus size={17} /> Nova demanda
                     </button>
                   )}
-                  {page === "Escolas" && can("write") && (
+                  {page === "Escolas" && can("schools") && (
                     <button
                       className="primary"
                       onClick={() => setModal("escola")}
@@ -1560,7 +1695,7 @@ export function App() {
                               Ver demandas <ChevronRight size={14} />
                             </button>
                           </div>
-                          {can("write") && (
+                          {can("schools") && (
                             <button
                               className="text-button"
                               onClick={() => setModal("editar:" + s.id)}
@@ -1776,9 +1911,9 @@ export function App() {
                         </button>
                       )}
                       <div className="inline-warning">
-                        Modo real bloqueado até confirmar a versão e API da
-                        instalação. URL e tokens são configurados apenas no
-                        servidor (.env).
+                        Modo real ainda não implementado. A autenticação, as
+                        permissões e o mapeamento dos dados precisam ser validados.
+                        URL e tokens são configurados apenas no servidor (.env).
                       </div>
                     </section>
                     <section className="panel">
@@ -1952,7 +2087,13 @@ export function App() {
               >
                 <label>
                   Escola
-                  <select name="school_id" required>
+                  <select
+                    name="school_id"
+                    required
+                    value={newSchool}
+                    onChange={(e) => setNewSchool(e.target.value)}
+                  >
+                    <option value="">Selecione a escola</option>
                     {data.schools.map((s: any) => (
                       <option key={s.id} value={s.id}>
                         {s.name} — {s.cnpj}
@@ -1963,7 +2104,11 @@ export function App() {
                 <div className="form-grid">
                   <label>
                     Tipo de documento
-                    <select name="type">
+                    <select
+                      name="type"
+                      value={newType}
+                      onChange={(e) => setNewType(e.target.value)}
+                    >
                       {[
                         "Contrato de garantia",
                         "Aditivo",
@@ -2006,14 +2151,49 @@ export function App() {
                     <input name="due" type="date" required />
                   </label>
                 </div>
+                {newType === "Aditivo" && (
+                  <label>
+                    Tipo de aditivo
+                    <select name="subtype" required defaultValue="">
+                      <option value="">Selecione a alteração</option>
+                      {[
+                        "Conta bancária",
+                        "Vigência",
+                        "Percentual/data de repasse",
+                        "Cashback",
+                        "Taxa de remuneração",
+                      ].map((value) => (
+                        <option key={value}>{value}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 <label>
                   Contrato matriz (obrigatório para aditivo e operação jurídica
                   sobre contrato existente)
-                  <select name="matrix">
+                  <select
+                    name="matrix"
+                    key={newSchool + newType}
+                    defaultValue=""
+                    required={[
+                      "Aditivo",
+                      "Distrato",
+                      "Migração de modalidade",
+                      "CNPJ solidário",
+                      "Antecipação K-invest",
+                      "Parcelamento",
+                      "Descredenciamento",
+                      "Renovação com pendências",
+                      "Alteração societária",
+                    ].includes(newType)}
+                  >
                     <option value="">Selecione</option>
                     {data.contracts
                       .filter(
-                        (c: any) => c.status === "Assinado" && !c.parent_id,
+                        (c: any) =>
+                          c.status === "Assinado" &&
+                          !c.parent_id &&
+                          c.school_id === newSchool,
                       )
                       .map((c: any) => (
                         <option key={c.id} value={c.id}>

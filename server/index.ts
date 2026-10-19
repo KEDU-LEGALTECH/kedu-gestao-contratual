@@ -32,15 +32,31 @@ import {
   stages,
   saveTerms,
 } from "./workflow.js";
-import {
-  DemoGlpiAdapter,
-  UnconfiguredGlpiAdapter,
-  importPages,
-  GlpiTicket,
-} from "./integrations.js";
+import { syncGlpi, glpiStatus, listTickets, startSchedule } from "./glpi-sync.js";
 import { basisPoints, cents } from "./decimal.js";
 import { validateData } from "../shared/data-validation.js";
 import { allowedOrigin } from "./origins.js";
+import {
+  bankFields,
+  requiredFor,
+  visibleFor,
+} from "../shared/request-policy.js";
+import { baseline, generationData } from "./baseline.js";
+import {
+  registerOfficialCatalog,
+  officialValues,
+  officialMissing,
+  officialPending,
+  homologated,
+  matches,
+  sourceOf,
+  listOfficial,
+  recordHomologation,
+  sha256,
+} from "./official-templates.js";
+import { structuredProfile, inspectStructured } from "./structured-docx.js";
+import { officialInputs } from "../shared/official-fields.js";
+import { officialVisible } from "../shared/request-policy.js";
 import {
   registerGovernance,
   seedCatalog,
@@ -55,8 +71,13 @@ import {
   matrixCases,
   nextReport,
   legalReport,
+  subtypes,
 } from "./governance.js";
 seedCatalog();
+const officialCatalog = registerOfficialCatalog();
+for (const message of officialCatalog.skipped)
+  console.warn("Modelo oficial não registrado: " + message);
+startSchedule();
 const app = express();
 app.disable("x-powered-by");
 app.use(helmet({ contentSecurityPolicy: false }));
@@ -83,6 +104,11 @@ app.post(
   rateLimit({ windowMs: 900000, limit: 20 }),
   (req, res) => {
     const u = one("SELECT * FROM users WHERE email=?", String(req.body.email));
+    if (
+      process.env.NODE_ENV === "production" &&
+      u?.email.endsWith("@demo.kedu.local")
+    )
+      return res.status(401).json({ error: "E-mail ou senha inválidos." });
     if (!u || !verify(String(req.body.password), u.password))
       return res.status(401).json({ error: "E-mail ou senha inválidos." });
     const token = randomBytes(32).toString("hex");
@@ -142,7 +168,14 @@ function demand(req: any) {
 }
 function safeData(user: any, data: any) {
   if (!permissions[user.role].includes("bank"))
-    for (const f of ["banco", "agencia", "conta"]) delete data[f];
+    for (const f of [
+      ...bankFields,
+      ...bankFields.map(
+        (key) => "anterior" + key[0].toUpperCase() + key.slice(1),
+      ),
+      "contaTerceiro",
+    ])
+      delete data[f];
   return data;
 }
 app.get("/api/bootstrap", (req: any, res) => {
@@ -161,11 +194,24 @@ app.get("/api/bootstrap", (req: any, res) => {
   );
   res.json({
     demands,
-    schools: all("SELECT * FROM schools"),
+    schools:
+      req.user.role === "Solicitante"
+        ? all(
+            "SELECT DISTINCT s.* FROM schools s JOIN demands d ON d.school_id=s.id WHERE d.owner=?",
+            req.user.id,
+          )
+        : all("SELECT * FROM schools"),
     contracts: all(
-      "SELECT c.*,s.name AS school FROM contracts c JOIN schools s ON s.id=c.school_id",
+      "SELECT c.*,s.name AS school FROM contracts c JOIN schools s ON s.id=c.school_id" +
+        (req.user.role === "Solicitante"
+          ? " WHERE EXISTS(SELECT 1 FROM demands d WHERE d.contract_id=c.id AND d.owner=?)"
+          : ""),
+      ...(req.user.role === "Solicitante" ? [req.user.id] : []),
     ),
-    users: all("SELECT id,name,role,email FROM users"),
+    users:
+      req.user.role === "Solicitante"
+        ? all("SELECT id,name,role,email FROM users WHERE id=?", req.user.id)
+        : all("SELECT id,name,role,email FROM users"),
     templates: all(
       "SELECT t.*,c.document_type,c.subtype,c.demonstration,v.id AS version_id,v.version,CASE WHEN EXISTS(SELECT 1 FROM inactive_template_versions iv WHERE iv.version_id=v.id) THEN 'inativo' ELSE v.status END AS status FROM templates t JOIN template_versions v ON v.template_id=t.id LEFT JOIN template_catalog c ON c.version_id=v.id",
     ),
@@ -200,7 +246,7 @@ const schoolSchema = z.object({
   contact: z.string().max(200),
 });
 app.post("/api/schools", (req: any, res) => {
-  permit(req.user, "write");
+  permit(req.user, "schools");
   const data = schoolSchema.parse(req.body);
   const sid = id();
   run(
@@ -216,7 +262,7 @@ app.post("/api/schools", (req: any, res) => {
   res.json({ id: sid });
 });
 app.put("/api/schools/:id", (req: any, res) => {
-  permit(req.user, "write");
+  permit(req.user, "schools");
   const data = schoolSchema.parse(req.body);
   const active = one(
     "SELECT id FROM demands WHERE school_id=? AND stage NOT IN (?,?)",
@@ -240,17 +286,28 @@ app.put("/api/schools/:id", (req: any, res) => {
   audit(null, req.user.id, "Escola atualizada");
   res.json({ ok: true });
 });
-app.get("/api/schools/:id", (req: any, res) =>
+app.get("/api/schools/:id", (req: any, res) => {
+  if (
+    req.user.role === "Solicitante" &&
+    !one(
+      "SELECT id FROM demands WHERE school_id=? AND owner=?",
+      req.params.id,
+      req.user.id,
+    )
+  )
+    throw Object.assign(Error("Escola restrita às suas demandas."), {
+      status: 403,
+    });
   res.json({
     school: one("SELECT * FROM schools WHERE id=?", req.params.id),
     representatives: all(
       "SELECT * FROM representatives WHERE school_id=?",
       req.params.id,
     ),
-  }),
-);
+  });
+});
 app.post("/api/schools/:id/representatives", (req: any, res) => {
-  permit(req.user, "write");
+  permit(req.user, "schools");
   const data = z
     .object({ name: z.string().min(3), email: z.email() })
     .parse(req.body);
@@ -276,11 +333,46 @@ const demandSchema = z.object({
   due: z.iso.date(),
   matrix: z.string().optional(),
 });
-app.post("/api/demands", (req: any, res) => {
-  permit(req.user, "write");
-  const b = demandSchema.parse(req.body),
+type Imported = {
+  data: Record<string, string>;
+  origins: Record<string, string>;
+  ticket: string;
+};
+/** Shared by manual creation and creation from an imported GLPI ticket. */
+function createDemand(user: any, body: unknown, imported?: Imported) {
+  const b = demandSchema.parse(body),
     s = one("SELECT * FROM schools WHERE id=?", b.school_id);
+  if (b.type === "Aditivo" && !subtypes.includes(b.subtype || ""))
+    throw Error(
+      "Selecione o tipo específico de aditivo antes de criar a demanda.",
+    );
   if (!s) throw Error("Escola inválida.");
+  if (
+    user.role === "Solicitante" &&
+    !one(
+      "SELECT id FROM demands WHERE school_id=? AND owner=?",
+      s.id,
+      user.id,
+    )
+  )
+    throw Object.assign(
+      Error(
+        "Solicite à operação a vinculação da escola antes de criar uma demanda.",
+      ),
+      { status: 403 },
+    );
+  if (
+    user.role === "Solicitante" &&
+    b.matrix &&
+    !one(
+      "SELECT id FROM demands WHERE contract_id=? AND owner=?",
+      b.matrix,
+      user.id,
+    )
+  )
+    throw Object.assign(Error("Contrato matriz restrito às suas demandas."), {
+      status: 403,
+    });
   if (
     matrixCases.includes(b.type) &&
     !one(
@@ -295,7 +387,7 @@ app.post("/api/demands", (req: any, res) => {
   if (
     !one(
       "SELECT id FROM users WHERE id=?",
-      req.user.role === "Solicitante" ? req.user.id : b.owner,
+      user.role === "Solicitante" ? user.id : b.owner,
     )
   )
     throw Error("Responsável inválido.");
@@ -328,18 +420,26 @@ app.post("/api/demands", (req: any, res) => {
       b.type,
       "Recebido",
       b.priority,
-      req.user.role === "Solicitante" ? req.user.id : b.owner,
+      user.role === "Solicitante" ? user.id : b.owner,
       b.due,
       JSON.stringify({
+        ...(imported?.data || {}),
         cnpj: s.cnpj,
         razaoSocial: s.legal_name,
+        endereco: s.address,
         matriz: b.matrix || cid,
         aditivo: seq ? String(seq) : "Não aplicável",
         checklist: false,
       }),
       now(),
     );
-    audit(did, req.user.id, "Demanda criada manualmente");
+    audit(
+      did,
+      user.id,
+      imported
+        ? `Demanda criada a partir do chamado GLPI #${imported.ticket} importado (somente leitura); dados conferidos por pessoa`
+        : "Demanda criada manualmente",
+    );
     if (b.glpi_id)
       run("UPDATE demands SET glpi_id=? WHERE id=?", b.glpi_id, did);
     saveDetails(did, {
@@ -347,13 +447,24 @@ app.post("/api/demands", (req: any, res) => {
       reportDate: nextReport(),
       signers: [],
       legalFlags: [],
+      ...(imported ? { origins: imported.origins } : {}),
     });
+    if (imported)
+      run(
+        "UPDATE glpi_tickets SET demand_id=?,state='vinculado' WHERE external_id=? AND demand_id IS NULL",
+        did,
+        imported.ticket,
+      );
     db.exec("COMMIT");
-    res.json({ id: did });
+    return did;
   } catch (e) {
     db.exec("ROLLBACK");
     throw e;
   }
+}
+app.post("/api/demands", (req: any, res) => {
+  permit(req.user, "write");
+  res.json({ id: createDemand(req.user, req.body) });
 });
 app.get("/api/demands/:id", (req: any, res) => {
   const d = demand(req);
@@ -369,7 +480,12 @@ app.get("/api/demands/:id", (req: any, res) => {
     results: JSON.parse(r.results).map((v: any) =>
       permissions[req.user.role].includes("bank")
         ? v
-        : ["banco", "agencia", "conta"].includes(v.field)
+        : [
+              ...bankFields,
+              ...bankFields.map(
+                (key) => "anterior" + key[0].toUpperCase() + key.slice(1),
+              ),
+            ].includes(v.field)
           ? { ...v, expected: "Restrito", found: "Restrito" }
           : v,
     ),
@@ -377,6 +493,25 @@ app.get("/api/demands/:id", (req: any, res) => {
   res.json({
     ...d,
     data: safeData(req.user, JSON.parse(d.data)),
+    subtype: details(d).subtype || "",
+    requiredFields: requiredFor(d.type, details(d).subtype, JSON.parse(d.data).modalidade),
+    visibleFields: visibleFor(d.type, details(d).subtype, JSON.parse(d.data).modalidade),
+    officialFields: officialVisible(d.type, details(d).subtype, JSON.parse(d.data).modalidade),
+    official: {
+      missing: officialMissing(d, details(d).subtype),
+      problems: officialPending(d, details(d).subtype),
+      templates: listOfficial()
+        .filter((t: any) => !t.inactive && matches(d, details(d), { id: t.version_id }))
+        .map((t: any) => ({ ...t, homologated: !!t.homologated_at })),
+      previews: all(
+        "SELECT p.id,p.template_version,p.data_version,p.created,u.name AS author FROM template_previews p JOIN users u ON u.id=p.author WHERE p.demand_id=? ORDER BY p.created DESC",
+        d.id,
+      ),
+    },
+    baseline: (() => {
+      const b = baseline(d.id);
+      return b ? { ...b, data: safeData(req.user, b.data) } : null;
+    })(),
     missing: required(d),
     requirements: requirements(d),
     documents: docs,
@@ -397,33 +532,60 @@ app.put("/api/demands/:id/data", (req: any, res) => {
   const d = demand(req);
   if (["Concluído", "Cancelado", "Em assinatura"].includes(d.stage))
     throw Error("Esta etapa não permite alteração de dados.");
+  const { expected_version, ...payload } = req.body;
+  if (
+    !Number.isInteger(expected_version) ||
+    expected_version !== d.data_version
+  )
+    return res
+      .status(409)
+      .json({
+        error:
+          "Os dados foram alterados ou a versão não foi informada. Reabra a demanda e revise antes de salvar.",
+      });
   const incoming = z
     .record(z.string(), z.union([z.string().max(500), z.boolean()]))
-    .parse(req.body);
+    .parse(payload);
   const existing = JSON.parse(d.data);
   const fieldErrors = validateData({ ...existing, ...incoming });
   if (Object.keys(fieldErrors).length)
-    return res.status(400).json({ error: "Corrija os campos destacados antes de salvar.", fields: fieldErrors });
+    return res
+      .status(400)
+      .json({
+        error: "Corrija os campos destacados antes de salvar.",
+        fields: fieldErrors,
+      });
   for (const [key, value] of Object.entries(incoming)) {
-    if (![...fields, "checklist"].includes(key))
+    if (
+      ![...fields, "checklist", "contaTerceiro", "demandaDistrato", "demandaNovoContrato"].includes(key) ||
+      key.startsWith("anterior") ||
+      key === "referenciaAnterior"
+    )
       throw Error("Campo não autorizado.");
-    if (key !== "checklist" && typeof value !== "string")
+    if (
+      !["checklist", "contaTerceiro"].includes(key) &&
+      typeof value !== "string"
+    )
       throw Error("O campo deve conter texto: " + key);
-    if (key === "checklist" && typeof value !== "boolean")
+    if (
+      ["checklist", "contaTerceiro"].includes(key) &&
+      typeof value !== "boolean"
+    )
       throw Error("Confirmação documental inválida.");
     if (["matriz", "aditivo"].includes(key) && value !== existing[key])
       throw Error(
         "Matriz e sequência são reservadas pelo sistema e não podem ser alteradas.",
       );
-    if (["banco", "agencia", "conta"].includes(key)) permit(req.user, "bank");
+    if ([...bankFields, "contaTerceiro"].includes(key))
+      permit(req.user, "bank");
     if (
-      ["remuneracao", "garantia", "repasse", "cashback"].includes(key) &&
+      ["remuneracao", "garantia", "repasse", "repasseSegundo", "cashback"].includes(key) &&
       value &&
       !percent.test(String(value))
     )
       throw Error("Percentual inválido. Use 7,70% (de 0 a 100).");
     if (
-      ["remuneracao", "garantia", "repasse", "cashback"].includes(key) &&
+      ["remuneracao", "garantia", "repasse", "repasseSegundo", "cashback"].includes(key) &&
       value
     )
       basisPoints(String(value));
@@ -444,19 +606,32 @@ app.put("/api/demands/:id/data", (req: any, res) => {
   }
   if (existing.inicio && existing.fim && existing.inicio > existing.fim)
     throw Error("Fim da vigência deve ser posterior ao início.");
-  saveTerms(d.id, existing);
-  invalidate(d.id);
-  run(
-    "UPDATE demands SET data=?,data_version=data_version+1,confirmed=0,stage=? WHERE id=?",
-    JSON.stringify(existing),
-    "Em elaboração",
-    d.id,
-  );
-  audit(
-    d.id,
-    req.user.id,
-    "Dados alterados; confirmação e aprovações invalidadas",
-  );
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const updated = run(
+      "UPDATE demands SET data=?,data_version=data_version+1,confirmed=0,stage=? WHERE id=? AND data_version=?",
+      JSON.stringify(existing),
+      "Em elaboração",
+      d.id,
+      expected_version,
+    );
+    if (!updated.changes)
+      throw Object.assign(
+        Error("Conflito de edição: reabra a demanda e revise os dados."),
+        { status: 409 },
+      );
+    saveTerms(d.id, existing);
+    invalidate(d.id);
+    audit(
+      d.id,
+      req.user.id,
+      "Dados alterados; confirmação e aprovações invalidadas",
+    );
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
   res.json({ ok: true });
 });
 app.post("/api/demands/:id/confirm", (req: any, res) => {
@@ -482,12 +657,14 @@ app.post("/api/demands/:id/generate", (req: any, res) => {
   if (!["Em elaboração", "Em conferência"].includes(d.stage))
     throw Error("Geração disponível em elaboração ou conferência.");
   const t = one(
-    "SELECT * FROM template_versions WHERE id=? AND status=? AND id NOT IN (SELECT version_id FROM inactive_template_versions)",
+    "SELECT * FROM template_versions WHERE id=? AND id NOT IN (SELECT version_id FROM inactive_template_versions)",
     req.body.template_version || "tv1",
-    "aprovado",
   );
-  if (!t) throw Error("Selecione uma versão aprovada.");
-  const bytes = generate(Buffer.from(t.bytes), JSON.parse(d.data));
+  if (t && sourceOf(t.id) && !homologated(t))
+    throw Error(
+      "Modelo oficial pendente de homologação jurídica: gere uma prévia para conferência. A prévia não pode seguir para assinatura.",
+    );
+  if (!t || t.status !== "aprovado") throw Error("Selecione uma versão aprovada.");
   const catalog = one(
     "SELECT * FROM template_catalog WHERE version_id=?",
     t.id,
@@ -496,14 +673,29 @@ app.post("/api/demands/:id/generate", (req: any, res) => {
     throw Error(
       "Modelos demonstrativos não podem gerar documentos em produção. Cadastre e aprove o modelo oficial.",
     );
-  if (
-    !catalog ||
-    catalog.document_type !== d.type ||
-    (d.type === "Aditivo" && catalog.subtype !== details(d).subtype)
-  )
+  if (!catalog || !matches(d, details(d), t))
     throw Error(
-      "O modelo não corresponde ao tipo/subtipo desta demanda. Cadastre e aprove a versão correta.",
+      "O modelo não corresponde ao tipo/subtipo/modalidade desta demanda. Cadastre e aprove a versão correta.",
     );
+  const base = generationData(d, details(d).subtype);
+  let snapshot: Record<string, string> = base;
+  if (sourceOf(t.id)) {
+    if (!homologated(t))
+      throw Error(
+        "Modelo oficial pendente de homologação jurídica: gere uma prévia para conferência. A prévia não pode seguir para assinatura.",
+      );
+    const problems = officialPending(d, details(d).subtype);
+    if (problems.length) throw Error("Corrija antes de gerar: " + problems.join("; ") + ".");
+    const official = officialValues(d, base, t, "document");
+    if (official.gaps.length)
+      throw Error(
+        "Dados obrigatórios do modelo ausentes: " +
+          official.gaps.map((k) => officialInputs[k] || k).join(", ") +
+          ".",
+      );
+    snapshot = official.values;
+  }
+  const bytes = generate(Buffer.from(t.bytes), snapshot);
   const docid = id();
   const version = (latest(d.id)?.version || 0) + 1;
   invalidate(d.id);
@@ -514,7 +706,7 @@ app.post("/api/demands/:id/generate", (req: any, res) => {
     version,
     t.id,
     d.data_version,
-    d.data,
+    JSON.stringify(snapshot),
     bytes,
     null,
     req.user.id,
@@ -528,6 +720,15 @@ app.post("/api/demands/:id/generate", (req: any, res) => {
   );
   res.json({ id: docid });
 });
+function uploadSnapshot(d: any, template: any) {
+  const base =
+    d.type === "Aditivo" && baseline(d.id)?.subtype === details(d).subtype
+      ? generationData(d, details(d).subtype)
+      : JSON.parse(d.data);
+  return JSON.stringify(
+    sourceOf(template.id) ? officialValues(d, base, template, "document").values : base,
+  );
+}
 function checkedFile(req: any) {
   if (!req.file || !req.file.originalname.toLowerCase().endsWith(".docx"))
     throw Error("Envie um arquivo DOCX de até 5 MB.");
@@ -558,12 +759,14 @@ app.post("/api/demands/:id/upload", upload.single("file"), (req: any, res) => {
     selected,
     "aprovado",
   );
-  if (
-    !template ||
-    template.document_type !== d.type ||
-    (d.type === "Aditivo" && template.subtype !== details(d).subtype)
-  )
+  if (!template || !matches(d, details(d), template))
     throw Error("Selecione um modelo aprovado correspondente ao documento.");
+  if (sourceOf(template.id) && !homologated(template))
+    throw Error("Modelo oficial pendente de homologação jurídica.");
+  if (paragraphs(bytes).some((p) => /NÃO UTILIZAR PARA ASSINATURA/.test(p)))
+    throw Error(
+      "O arquivo é uma prévia ou minuta de homologação e não pode ser usado como minuta para assinatura.",
+    );
   invalidate(d.id);
   run(
     "INSERT INTO documents VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -572,7 +775,7 @@ app.post("/api/demands/:id/upload", upload.single("file"), (req: any, res) => {
     (previous?.version || 0) + 1,
     template.id,
     d.data_version,
-    d.data,
+    uploadSnapshot(d, template),
     bytes,
     null,
     req.user.id,
@@ -711,6 +914,14 @@ app.post(
     const bytes = req.file.buffer;
     if (required(d).length || humanMissing(doc).length)
       throw Error("Requisitos/revisão humana pendentes.");
+    const lastReview = one(
+      "SELECT status FROM reviews WHERE document_id=? ORDER BY created DESC,rowid DESC LIMIT 1",
+      doc.id,
+    );
+    if (lastReview?.status !== "conforme")
+      throw Error(
+        "Conferência divergente ou inconclusiva da versão atual impede o registro da assinatura.",
+      );
     for (const kind of requirements(d).approvals)
       if (
         !one(
@@ -764,8 +975,10 @@ app.post("/api/templates", upload.single("file"), (req: any, res) => {
   permit(req.user, "settings");
   const bytes = checkedFile(req);
   const text = paragraphs(bytes).join("\n");
-  for (const m of text.matchAll(/\{([^}]+)\}/g))
-    if (!fields.includes(m[1])) throw Error("Variável não autorizada: " + m[1]);
+  const structured = structuredProfile(bytes) ? inspectStructured(bytes) : null;
+  if (!structured)
+    for (const m of text.matchAll(/\{([^}]+)\}/g))
+      if (!fields.includes(m[1])) throw Error("Variável não autorizada: " + m[1]);
   const tid = req.body.template_id || id();
   const documentType = z
     .enum(documentTypes as [string, ...string[]])
@@ -809,13 +1022,101 @@ app.post("/api/templates", upload.single("file"), (req: any, res) => {
     versionId,
     documentType,
     subtype,
-    req.body.demonstration === "false" ? 0 : 1,
+    structured || req.body.demonstration === "false" ? 0 : 1,
   );
-  audit(null, req.user.id, "Modelo DOCX cadastrado como rascunho");
+  if (structured) {
+    const modality = z
+      .enum(["", "Garantia Completa", "Garantia Conjunta", "Garantia Prevista"])
+      .parse(req.body.modality || "");
+    run(
+      "INSERT INTO template_sources VALUES(?,?,?,?,?,?,?)",
+      versionId,
+      structured.profile,
+      z.string().max(300).parse(req.body.source_url || "Envio manual"),
+      "",
+      sha256(bytes),
+      modality,
+      JSON.stringify(structured.slots),
+    );
+  }
+  audit(
+    null,
+    req.user.id,
+    structured
+      ? "Modelo estruturado cadastrado como rascunho; exige prévia e homologação jurídica"
+      : "Modelo DOCX cadastrado como rascunho",
+  );
   res.json({ ok: true });
+});
+app.get("/api/templates/official", (_req: any, res) => res.json(listOfficial()));
+app.post("/api/templates/:id/homologate", (req: any, res) => {
+  permit(req.user, "legal");
+  const b = z
+    .object({ reference: z.string().trim().min(10).max(300), attested: z.literal(true) })
+    .parse(req.body);
+  recordHomologation(req.params.id, req.user.id, b.reference);
+  res.json({ ok: true });
+});
+app.post("/api/demands/:id/preview", (req: any, res) => {
+  permit(req.user, "write");
+  permit(req.user, "bank");
+  const d = demand(req);
+  const t = one(
+    "SELECT * FROM template_versions WHERE id=? AND id NOT IN (SELECT version_id FROM inactive_template_versions)",
+    String(req.body.template_version || ""),
+  );
+  if (!t || !sourceOf(t.id)) throw Error("Selecione um modelo oficial estruturado.");
+  if (!matches(d, details(d), t))
+    throw Error("O modelo não corresponde ao tipo/subtipo/modalidade desta demanda.");
+  let base: Record<string, any>;
+  try {
+    base = generationData(d, details(d).subtype);
+  } catch {
+    base = JSON.parse(d.data);
+  }
+  const { values, gaps } = officialValues(d, base, t, "preview");
+  const bytes = generate(Buffer.from(t.bytes), values);
+  const previewId = id();
+  run(
+    "INSERT INTO template_previews VALUES(?,?,?,?,?,?,?,?)",
+    previewId,
+    d.id,
+    t.id,
+    d.data_version,
+    JSON.stringify(values),
+    bytes,
+    req.user.id,
+    now(),
+  );
+  audit(
+    d.id,
+    req.user.id,
+    `Prévia gerada com modelo oficial v${t.version} (${homologated(t) ? "homologado" : "pendente de homologação"}); não liberada para assinatura`,
+  );
+  res.json({
+    id: previewId,
+    gaps: gaps.map((k) => officialInputs[k] || k),
+    problems: officialPending(d, details(d).subtype),
+  });
+});
+app.get("/api/previews/:id/download", (req: any, res) => {
+  permit(req.user, "files");
+  permit(req.user, "bank");
+  const p = one("SELECT * FROM template_previews WHERE id=?", req.params.id);
+  if (!p) throw Error("Prévia não encontrada.");
+  access(req.user, one("SELECT * FROM demands WHERE id=?", p.demand_id));
+  audit(p.demand_id, req.user.id, "Download de prévia (não utilizável para assinatura)");
+  res
+    .type("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    .attachment(`PREVIA-NAO-ASSINAR-${p.demand_id}.docx`)
+    .send(Buffer.from(p.bytes));
 });
 app.post("/api/templates/:id/approve", (req: any, res) => {
   permit(req.user, "legal");
+  if (sourceOf(req.params.id))
+    throw Error(
+      "Modelos oficiais estruturados são liberados somente pela homologação jurídica, após prévia.",
+    );
   run(
     "UPDATE template_versions SET status=?,approved_by=? WHERE id=? AND status=?",
     "aprovado",
@@ -937,72 +1238,53 @@ app.put("/api/users/:id/role", (req: any, res) => {
   audit(null, req.user.id, "Perfil de usuário atualizado; sessões revogadas");
   res.json({ ok: true });
 });
-let syncing = false;
+app.get("/api/glpi/status", (req: any, res) => {
+  permit(req.user, "sync");
+  res.json(glpiStatus());
+});
 app.post("/api/sync", async (req: any, res) => {
   permit(req.user, "sync");
-  if (syncing) throw Error("Já existe uma sincronização em andamento.");
-  syncing = true;
-  let imported = 0;
-  const tickets: GlpiTicket[] = [];
-  try {
-    const adapter =
-      process.env.GLPI_MODE === "real"
-        ? new UnconfiguredGlpiAdapter()
-        : new DemoGlpiAdapter();
-    await importPages(adapter, (page) => tickets.push(...page));
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      for (const ticket of tickets) {
-        if (one("SELECT id FROM demands WHERE glpi_id=?", ticket.externalId))
-          continue;
-        const school = one("SELECT * FROM schools WHERE id=?", ticket.schoolId);
-        run(
-          "INSERT INTO demands(id,glpi_id,school_id,type,stage,priority,owner,due,data,created) VALUES(?,?,?,?,?,?,?,?,?,?)",
-          "KD-" + id().slice(0, 8),
-          ticket.externalId,
-          school.id,
-          ticket.type,
-          "Recebido",
-          ticket.priority,
-          "u2",
-          new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10),
-          JSON.stringify({
-            cnpj: school.cnpj,
-            razaoSocial: school.legal_name,
-            checklist: false,
-          }),
-          now(),
-        );
-        imported++;
-      }
-      run(
-        "INSERT INTO sync_logs VALUES(?,?,?,?,?)",
-        id(),
-        "Concluído",
-        imported,
-        "Demonstração: 2 páginas. Registros existentes preservados.",
-        now(),
-      );
-      db.exec("COMMIT");
-    } catch (e) {
-      db.exec("ROLLBACK");
-      throw e;
-    }
-    audit(null, req.user.id, "Importação GLPI demonstrativa");
-    res.json({ imported });
-  } catch (e) {
-    run(
-      "INSERT INTO sync_logs VALUES(?,?,?,?,?)",
-      id(),
-      "Falha",
-      0,
-      "Falha na importação. Verifique o modo e a configuração no servidor.",
-      now(),
-    );
-    throw e;
-  } finally {
-    syncing = false;
-  }
+  const summary = await syncGlpi(req.user.id);
+  res.json({ imported: summary.created, ...summary });
+});
+app.get("/api/glpi/tickets", (req: any, res) => {
+  permit(req.user, "confirm");
+  res.json(listTickets());
+});
+app.post("/api/glpi/tickets/:id/demand", (req: any, res) => {
+  permit(req.user, "write");
+  permit(req.user, "confirm");
+  const ticket = one("SELECT * FROM glpi_tickets WHERE external_id=?", req.params.id);
+  if (!ticket) throw Error("Chamado importado não encontrado.");
+  if (ticket.demand_id) throw Error("Este chamado já está vinculado à demanda " + ticket.demand_id + ".");
+  const b = z.object({ attested: z.literal(true) }).passthrough().parse(req.body);
+  const analysis = listTickets().find((t: any) => t.external_id === ticket.external_id)!.analysis;
+  // Only the narrative is carried over; identification comes from the school registry and
+  // every date, value and sequence must be confirmed by a person in the demand.
+  const motivo = [analysis.fields.motivo?.value, analysis.fields.observacoes?.value].filter(Boolean).join(" — ");
+  const data: Record<string, string> = motivo ? { motivo: motivo.slice(0, 500) } : {};
+  const origins: Record<string, string> = motivo ? { motivo: analysis.fields.motivo?.origin || "GLPI #" + ticket.external_id } : {};
+  origins.cnpj = origins.razaoSocial = "Cadastro da escola (confrontado com o CNPJ do chamado)";
+  const did = createDemand(
+    req.user,
+    { ...b, glpi_id: ticket.external_id },
+    { data, origins, ticket: ticket.external_id },
+  );
+  audit(did, req.user.id, "Pendências identificadas na importação: " + analysis.pendencies.join(" | ").slice(0, 900));
+  res.json({ id: did });
+});
+app.post("/api/glpi/tickets/:id/acknowledge", (req: any, res) => {
+  permit(req.user, "confirm");
+  const ticket = one("SELECT * FROM glpi_tickets WHERE external_id=?", req.params.id);
+  if (!ticket || !ticket.state.startsWith("alterado")) throw Error("Não há alteração externa pendente.");
+  z.object({ note: z.string().trim().min(5).max(300) }).parse(req.body);
+  run(
+    "UPDATE glpi_tickets SET state=? WHERE external_id=?",
+    ticket.demand_id ? "vinculado" : "novo",
+    ticket.external_id,
+  );
+  audit(ticket.demand_id, req.user.id, `Alteração externa do chamado GLPI #${ticket.external_id} revisada: ${String(req.body.note).trim()}`);
+  res.json({ ok: true });
 });
 export function csvCell(v: unknown) {
   let s = String(v ?? "");
@@ -1106,7 +1388,12 @@ app.use((err: any, _req: any, res: any, _next: any) =>
   }),
 );
 if (process.env.NODE_ENV !== "test")
-  app.listen(Number(process.env.PORT || 3001), process.env.HOST || "127.0.0.1", () =>
-    console.log(`Kedu API: http://${process.env.HOST || "127.0.0.1"}:${process.env.PORT || 3001}`),
+  app.listen(
+    Number(process.env.PORT || 3001),
+    process.env.HOST || "127.0.0.1",
+    () =>
+      console.log(
+        `Kedu API: http://${process.env.HOST || "127.0.0.1"}:${process.env.PORT || 3001}`,
+      ),
   );
 export default app;

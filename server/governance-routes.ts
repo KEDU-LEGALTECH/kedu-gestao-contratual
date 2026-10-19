@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { all, one, run, id, now, audit, localDate } from "./db.js";
+import { all, one, run, id, now, audit, localDate, db } from "./db.js";
 import { permit, access, invalidate, latest } from "./workflow.js";
 import {
   details,
@@ -18,6 +18,8 @@ import {
   reviewDeadline,
 } from "./governance.js";
 import { paragraphs, demoTemplate, fixed } from "./documents.js";
+import { addendumFields } from "../shared/request-policy.js";
+import { validateData } from "../shared/data-validation.js";
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 8 * 1024 * 1024, files: 1 },
@@ -61,6 +63,64 @@ export function fileInfo(file: any) {
   );
 }
 export function registerGovernance(app: Express) {
+  app.put("/api/demands/:id/baseline", (req: any, res) => {
+    permit(req.user, "confirm");
+    const d = get(req);
+    mutable(d);
+    if (d.type !== "Aditivo")
+      throw Error("Retrato anterior disponível apenas para aditivos.");
+    const b = z
+      .object({
+        expected_version: z.number().int(),
+        reference: z.string().trim().min(10).max(500),
+        attested: z.literal(true),
+        data: z.record(z.string(), z.string().trim().max(500)),
+      })
+      .parse(req.body);
+    if (b.expected_version !== d.data_version)
+      throw Object.assign(
+        Error("A demanda foi alterada. Reabra antes de confirmar o retrato."),
+        { status: 409 },
+      );
+    const keys = addendumFields[details(d).subtype];
+    if (!keys) throw Error("Defina primeiro o tipo de aditivo.");
+    if (keys.includes("banco")) permit(req.user, "bank");
+    if (Object.keys(b.data).some((key) => !keys.includes(key)))
+      throw Error("Campo não autorizado no retrato anterior.");
+    for (const key of keys.filter((key) => key !== "pix"))
+      if (!b.data[key]) throw Error("Preencha o dado atual: " + key);
+    const errors = validateData(b.data);
+    if (Object.keys(errors).length)
+      return res
+        .status(400)
+        .json({
+          error: "Corrija os dados atuais do contrato.",
+          fields: errors,
+        });
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      run(
+        "INSERT INTO demand_baselines VALUES(?,?,?,?,?,?,?)",
+        id(),
+        d.id,
+        details(d).subtype,
+        JSON.stringify(b.data),
+        b.reference,
+        req.user.id,
+        now(),
+      );
+      changed(
+        d,
+        req.user,
+        "Retrato dos dados atuais confirmado por conferência documental",
+      );
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+    res.json({ ok: true });
+  });
   app.get("/api/governance/catalog", (_req, res) =>
     res.json({
       subtypes,
@@ -390,6 +450,31 @@ export function registerGovernance(app: Express) {
     );
     res.json({ ok: true });
   });
+  /** Attaching the signed file and closing the GLPI ticket stay external while access is read-only. */
+  app.post("/api/demands/:id/glpi-closure", (req: any, res) => {
+    permit(req.user, "write");
+    const d = get(req);
+    if (d.stage !== "Concluído")
+      throw Error("Registre o encerramento no GLPI somente após a conclusão local com documento assinado.");
+    const b = z
+      .object({
+        attested: z.literal(true),
+        note: z.string().trim().min(5).max(500),
+      })
+      .parse(req.body);
+    const g = details(d);
+    if (g.glpiClosure) throw Error("Encerramento no GLPI já registrado.");
+    saveDetails(d.id, {
+      ...g,
+      glpiClosure: { by: req.user.id, name: req.user.name, at: now(), note: b.note },
+    });
+    audit(
+      d.id,
+      req.user.id,
+      "Anexação do assinado e encerramento do chamado no GLPI declarados manualmente (sem escrita via API): " + b.note,
+    );
+    res.json({ ok: true });
+  });
   app.get("/api/demands/:id/legal-report", (req: any, res) => {
     permit(req.user, "files");
     permit(req.user, "bank");
@@ -427,6 +512,8 @@ export function registerGovernance(app: Express) {
   });
 }
 export function seedCatalog() {
+  if (process.env.NODE_ENV === "production" || process.env.DEMO_SEED !== "true")
+    return;
   run(
     "INSERT OR IGNORE INTO template_catalog VALUES(?,?,?,?)",
     "tv1",

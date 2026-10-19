@@ -1,4 +1,7 @@
 import { all, one, run, localDate, id, now } from "./db.js";
+import { requiredFor } from "../shared/request-policy.js";
+import { officialProblems } from "../shared/official-fields.js";
+import { responsibilityFor } from "../shared/responsibility.js";
 export const subtypes = [
   "Conta bancária",
   "Vigência",
@@ -38,6 +41,11 @@ export const matrixCases = [
 ];
 export const evidenceLabels: Record<string, string> = {
   contrato_social: "Contrato social e alterações societárias",
+  identificacao: "Identificação do responsável legal",
+  cartao_cnpj: "Cartão CNPJ e conferência cadastral na Receita Federal",
+  comprovante_bancario: "Comprovante bancário conferido",
+  procuracao_bancaria: "Procuração pública específica para conta de terceiro",
+  assuncao_divida: "Anexo de assunção da dívida pela matriz/presidência",
   matriz_assinada: "Contrato matriz assinado",
   historico_aditivos: "Histórico do último aditivo assinado",
   confissao_divida: "Confissão de Dívida",
@@ -90,18 +98,36 @@ export function requirements(d: any) {
     ...(g.legalFlags || []),
     ...(g.systemLegalFlags || []),
   ] as string[];
-  const legal =
-    d.type !== "Aditivo" ||
-    !subtypes.includes(g.subtype) ||
+  const data = JSON.parse(d.data || "{}");
+  // Validators come from the manual's responsibility matrix; legal exceptions add the legal control point.
+  const responsibility = responsibilityFor(d.type, g.subtype, data.modalidade || "");
+  const approvals = [...responsibility.valida];
+  const exception =
+    (d.type === "Aditivo" && !subtypes.includes(g.subtype)) ||
     flags.length > 0 ||
     custom.includes(g.subtype) ||
+    custom.includes(d.type) ||
     flags.some((x) => custom.includes(x));
-  const approvals = legal
-    ? ["Risco", "Jurídica"]
-    : g.subtype === "Conta bancária"
-      ? ["Risco", "Financeiro"]
-      : ["Risco"];
-  const evidence = ["contrato_social"];
+  if (exception) {
+    if (!approvals.includes("Risco") && ["Aditivo", "Contrato de garantia"].includes(d.type))
+      approvals.unshift("Risco");
+    if (!approvals.includes("Jurídica")) approvals.push("Jurídica");
+  }
+  const legal = approvals.includes("Jurídica");
+  const evidence = [
+    "contrato_social",
+    "identificacao",
+    "cartao_cnpj",
+    "comprovante_bancario",
+  ];
+  if (
+    data.contaTerceiro === true ||
+    (data.documentoTitular &&
+      data.cnpj &&
+      data.documentoTitular.replace(/\D/g, "") !== data.cnpj.replace(/\D/g, ""))
+  )
+    evidence.push("procuracao_bancaria");
+  if (data.modalidade === "Garantia Prevista") evidence.push("assuncao_divida");
   if (matrixCases.includes(d.type)) evidence.push("matriz_assinada");
   if (d.type === "Aditivo")
     evidence.push("matriz_assinada", "historico_aditivos");
@@ -121,6 +147,7 @@ export function requirements(d: any) {
     approvals,
     evidence: Array.from(new Set(evidence)),
     legal,
+    responsibility,
     subtype: g.subtype || "",
     reviewDeadline: g.reportDate ? reviewDeadline(g.reportDate) : null,
   };
@@ -136,7 +163,6 @@ export function governanceMissing(d: any) {
     missing.push("Tipo específico de aditivo");
   if (
     d.type === "Contrato de garantia" ||
-    d.type === "Aditivo" ||
     d.type === "Migração de modalidade"
   ) {
     if (!modalities.includes(data.modalidade))
@@ -180,6 +206,14 @@ export function governanceMissing(d: any) {
   )
     missing.push("CNPJ solidário no formato válido");
   if (d.type === "Aditivo") {
+    if (
+      one(
+        "SELECT subtype FROM demand_baselines WHERE demand_id=? ORDER BY rowid DESC LIMIT 1",
+        d.id,
+      )?.subtype !== g.subtype
+    )
+      missing.push("Conferir e confirmar os dados atuais do contrato matriz");
+    if (!data.motivo?.trim()) missing.push("Motivo da alteração");
     if (!data.dataAssinaturaMatriz)
       missing.push("Data de assinatura do contrato matriz");
     const c = one("SELECT * FROM contracts WHERE id=?", d.contract_id);
@@ -207,6 +241,37 @@ export function governanceMissing(d: any) {
         );
     }
   }
+  missing.push(...officialProblems(d.type, g.subtype || "", data));
+  if (d.type === "Migração de modalidade") {
+    // Manual §4.3: migration is never a simple addendum; it needs a distrato and a new contract.
+    for (const [key, type, label] of [
+      ["demandaDistrato", "Distrato", "Demanda de distrato do contrato vigente vinculada"],
+      ["demandaNovoContrato", "Contrato de garantia", "Demanda do novo contrato na modalidade de destino vinculada"],
+    ]) {
+      const linked = one(
+        "SELECT * FROM demands WHERE id=? AND school_id=? AND type=?",
+        data[key] || "",
+        d.school_id,
+        type,
+      );
+      if (!linked) missing.push(label);
+      else if (d.stage === "Em assinatura" && linked.stage !== "Concluído")
+        missing.push(label.replace(" vinculada", "") + " concluída antes de encerrar a migração");
+    }
+  }
+  const normalize = (name: string) =>
+    String(name || "")
+      .normalize("NFD")
+      .replace(/\p{Diacritic}/gu, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  if (
+    data.representanteNome?.trim() &&
+    (g.signers || []).length &&
+    !(g.signers || []).some((s: any) => normalize(s.name) === normalize(data.representanteNome))
+  )
+    missing.push("Representante legal do documento deve constar entre os signatários com poderes conferidos");
   for (const kind of r.evidence)
     if (
       !one(
@@ -272,21 +337,7 @@ export function legalReport(d: any, doc: any) {
     ...humanMissing(doc).map((a) => "Revisão humana: " + a),
   ];
   const data = JSON.parse(d.data);
-  for (const key of [
-    "cnpj",
-    "razaoSocial",
-    "remuneracao",
-    "garantia",
-    "repasse",
-    "valor",
-    "banco",
-    "agencia",
-    "conta",
-    "inicio",
-    "fim",
-    "dataRepasse",
-    "modalidade",
-  ])
+  for (const key of requiredFor(d.type, requirements(d).subtype, data.modalidade || ""))
     if (typeof data[key] !== "string" || !data[key].trim())
       missing.push("Campo obrigatório: " + key);
   if (!data.checklist) missing.push("Confirmar recebimento da documentação");

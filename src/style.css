@@ -1754,3 +1754,20 @@ input[type="checkbox"] {
   text-decoration: underline;
   text-align: left;
 }
+/* Comparison stays readable on narrow screens without hiding contract values. */
+.comparison-panel { margin-bottom: 24px; }
+.comparison-panel .table-scroll { overflow-x: auto; }
+.comparison-panel table { min-width: 520px; width: 100%; }
+.comparison-panel th, .comparison-panel td { text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.baseline-editor { margin-top: 20px; border-top: 1px solid var(--border, #dbe4ea); padding-top: 16px; }
+.baseline-editor summary { cursor: pointer; color: var(--primary, #003748); font-weight: 600; }
+.baseline-editor summary:focus-visible { outline: 3px solid #00b8e4; outline-offset: 5px; }
+@media (max-width: 600px) {
+  .comparison-panel table { min-width: 0; }
+  .comparison-panel thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .comparison-panel tbody { display: block; }
+  .comparison-panel tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); border-bottom: 1px solid #dbe4ea; padding: 12px 0; }
+  .comparison-panel tbody td { display: block; padding: 8px; border: 0; min-width: 0; }
+  .comparison-panel tbody td:first-child { grid-column: 1 / -1; font-weight: 600; }
+  .comparison-panel td[data-label]::before { content: attr(data-label); display: block; font-size: 11px; color: #526d7b; margin-bottom: 6px; }
+}

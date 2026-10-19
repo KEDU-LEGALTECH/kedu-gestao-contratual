@@ -15,6 +15,9 @@ db.exec(readFileSync("migrations/001.sql", "utf8"));
 db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
 db.exec(readFileSync("migrations/002.sql", "utf8"));
 db.exec(readFileSync("migrations/003.sql", "utf8"));
+db.exec(readFileSync("migrations/004.sql", "utf8"));
+db.exec(readFileSync("migrations/005.sql", "utf8"));
+db.exec(readFileSync("migrations/006.sql", "utf8"));
 export const id = () => randomUUID();
 export const now = () => new Date().toISOString();
 export const localDate = (value: string | Date = new Date()) =>
@@ -38,6 +41,6 @@ export function verify(password: string, stored: string) {
     Buffer.from(key, "hex"),
   );
 }
-export function audit(demand: string | null, user: string, action: string) {
+export function audit(demand: string | null, user: string | null, action: string) {
   run("INSERT INTO audit VALUES(?,?,?,?,?)", id(), demand, user, action, now());
 }

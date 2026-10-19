@@ -1,0 +1,156 @@
+import type { RawTicket } from "./glpi.js";
+
+/** GLPI stores ticket content as HTML (often entity-encoded). Converts it to plain lines. */
+export function htmlToText(html: string) {
+  const decode = (s: string) =>
+    s
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#0?39;|&apos;/g, "'")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+      .replace(/&amp;/g, "&");
+  let text = decode(decode(String(html || "")));
+  text = text
+    .replace(/<\s*(script|style)[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, " ")
+    .replace(/<\s*br\s*\/?>/gi, "\n")
+    .replace(/<\s*\/\s*(p|div|tr|li|h\d|table)\s*>/gi, "\n")
+    .replace(/<\s*\/\s*t[dh]\s*>/gi, " \t ")
+    .replace(/<[^>]+>/g, " ");
+  return text
+    .split("\n")
+    .map((l) => l.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean);
+}
+
+const LABELS: [string, RegExp][] = [
+  ["razaoSocial", /^(?:\d+\)\s*)?RAZ[ÃA]O SOCIAL\s*[:\-–]?\s*(.*)$/i],
+  ["cnpj", /^(?:\d+\)\s*)?CNPJ\s*[:\-–]?\s*(.*)$/i],
+  ["motivo", /^(?:\d+\)\s*)?MOTIVO(?: DO ADITIVO)?\s*[:\-–]?\s*(.*)$/i],
+  ["observacoes", /^(?:\d+\)\s*)?OBSERVA[ÇC][ÕO]ES(?: OU CONSIDERA[ÇC][ÕO]ES ADICIONAIS)?\s*[:\-–]?\s*(.*)$/i],
+  ["anexos", /^(?:\d+\)\s*)?ANEXOS\s*[:\-–]?\s*(.*)$/i],
+];
+/** Reads "LABEL: value" pairs of the GLPI form answer; a label alone takes the next line. */
+export function extractFields(lines: string[]) {
+  const out: Record<string, string> = {};
+  for (let i = 0; i < lines.length; i++) {
+    for (const [key, pattern] of LABELS) {
+      const m = pattern.exec(lines[i]);
+      if (!m || out[key]) continue;
+      let value = m[1].trim();
+      if (!value && lines[i + 1] && !LABELS.some(([, p]) => p.test(lines[i + 1]))) value = lines[i + 1].trim();
+      out[key] = value;
+    }
+  }
+  return out;
+}
+export function cnpjDigits(value: string) {
+  return String(value || "").replace(/\D/g, "");
+}
+export function validCnpj(value: string) {
+  const d = cnpjDigits(value);
+  if (d.length !== 14 || /^(\d)\1+$/.test(d)) return false;
+  const calc = (len: number) => {
+    const weights = len === 12 ? [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2] : [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+    const sum = weights.reduce((s, w, i) => s + w * Number(d[i]), 0);
+    const r = sum % 11;
+    return r < 2 ? 0 : 11 - r;
+  };
+  return calc(12) === Number(d[12]) && calc(13) === Number(d[13]);
+}
+export const formatCnpj = (d: string) =>
+  d.length === 14 ? `${d.slice(0, 2)}.${d.slice(2, 5)}.${d.slice(5, 8)}/${d.slice(8, 12)}-${d.slice(12)}` : d;
+
+const SUBTYPE_HINTS: [string, RegExp][] = [
+  ["Migração de modalidade", /migra[çc][ãa]o|mudan[çc]a de modalidade|garantia (completa|conjunta|prevista) para/i],
+  ["Vigência", /vig[êe]ncia|in[íi]cio de contrato|t[ée]rmino|prorroga/i],
+  ["Conta bancária", /conta banc|dados banc|ag[êe]ncia|\bpix\b/i],
+  ["Percentual/data de repasse", /repasse/i],
+  ["Cashback", /cash ?back/i],
+  ["Taxa de remuneração", /\btaxa\b|remunera[çc][ãa]o/i],
+];
+const MONTH = "(janeiro|fevereiro|mar[çc]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)";
+
+export type TicketAnalysis = {
+  fields: Record<string, { value: string; origin: string }>;
+  suggestion: { type: string; subtype: string; basis: string };
+  schoolId: string | null;
+  matrixId: string | null;
+  pendencies: string[];
+};
+/** Organises a ticket without inventing data: every value keeps its origin and gaps become pendencies. */
+export function analyzeTicket(
+  ticket: RawTicket,
+  context: { schools: { id: string; cnpj: string; legal_name: string }[]; matrices: { id: string; school_id: string }[] },
+): TicketAnalysis {
+  const origin = `GLPI #${ticket.externalId} — formulário do chamado`;
+  const lines = htmlToText(ticket.content);
+  const raw = extractFields(lines);
+  const fields: TicketAnalysis["fields"] = {};
+  const pendencies: string[] = [];
+  for (const [key, value] of Object.entries(raw)) if (value) fields[key] = { value, origin };
+  if (!raw.razaoSocial) pendencies.push("Razão social não identificada no formulário do chamado");
+  let schoolId: string | null = null;
+  if (!raw.cnpj) pendencies.push("CNPJ não identificado no formulário do chamado");
+  else {
+    const digits = cnpjDigits(raw.cnpj);
+    if (digits.length === 14) fields.cnpj = { value: formatCnpj(digits), origin: origin + " (normalizado de “" + raw.cnpj + "”)" };
+    if (digits.length !== 14) pendencies.push("CNPJ informado com quantidade de dígitos inválida: " + raw.cnpj);
+    else if (!validCnpj(digits)) pendencies.push("CNPJ com dígito verificador inválido; confira no cartão CNPJ");
+    const school = context.schools.find((s) => cnpjDigits(s.cnpj) === digits);
+    if (!school) pendencies.push("Escola com este CNPJ não está cadastrada na central");
+    else {
+      schoolId = school.id;
+      if (raw.razaoSocial && normalize(raw.razaoSocial) !== normalize(school.legal_name))
+        pendencies.push("Razão social do chamado difere do cadastro da escola; confirme na Receita Federal");
+    }
+  }
+  const narrative = [raw.motivo, raw.observacoes, ticket.title].filter(Boolean).join(" \n ");
+  const hint = SUBTYPE_HINTS.find(([, pattern]) => pattern.test(narrative));
+  const isAddendum = /aditivo/i.test(ticket.title + " " + (raw.motivo || ""));
+  let suggestion = { type: "", subtype: "", basis: "" };
+  if (hint?.[0] === "Migração de modalidade")
+    suggestion = { type: "Migração de modalidade", subtype: "", basis: "Texto do chamado cita migração de modalidade (exige distrato e novo contrato)" };
+  else if (isAddendum)
+    suggestion = { type: "Aditivo", subtype: hint?.[0] || "", basis: hint ? "Palavras do motivo/observações: sugestão a confirmar" : "Chamado de aditivo sem tipo identificável" };
+  if (!suggestion.type) pendencies.push("Tipo de demanda não identificado; classifique manualmente");
+  else if (suggestion.type === "Aditivo" && !suggestion.subtype) pendencies.push("Tipo específico de aditivo não identificado");
+  if (suggestion.subtype === "Vigência") {
+    const text = narrative;
+    const monthYear = new RegExp(MONTH + "\\s*(?:/|de)\\s*\\d{4}", "i").test(text);
+    const exactDay = new RegExp("\\b\\d{1,2}(?:º)?\\s*(?:/\\s*\\d{1,2}\\s*/|de\\s+" + MONTH + ")", "i").test(text);
+    if (!exactDay)
+      pendencies.push(
+        monthYear
+          ? "Dia exato da nova vigência não informado (o chamado cita apenas mês/ano); confirme com o solicitante"
+          : "Datas da nova vigência não informadas",
+      );
+    if (!/t[ée]rmino|fim da vig|data final|encerramento da vig|prorroga|dura[çc][ãa]o/i.test(text))
+      pendencies.push("Efeito sobre a data final e a duração da vigência não informado");
+  }
+  const matrices = schoolId ? context.matrices.filter((m) => m.school_id === schoolId) : [];
+  if (schoolId && !matrices.length) pendencies.push("Nenhum contrato matriz assinado cadastrado para a escola");
+  if (matrices.length > 1) pendencies.push("Mais de um contrato matriz assinado; selecione o contrato correto");
+  const matrixId = matrices.length === 1 ? matrices[0].id : null;
+  if (!ticket.documentsAvailable)
+    pendencies.push("Anexos do chamado não puderam ser lidos pela API (verifique permissões); conferir diretamente no GLPI");
+  else if (raw.anexos && !ticket.documents.length)
+    pendencies.push("O formulário cita anexos, mas nenhum documento foi retornado pela API");
+  if (ticket.documents.length)
+    pendencies.push("Anexos listados apenas como referência: baixe, confira e registre cada evidência verificada");
+  if (ticket.documents.some((d) => /aditivo/i.test(d.name)) || /aditivo/i.test(raw.observacoes || ""))
+    pendencies.push(
+      "Arquivo ou texto que menciona aditivo anterior não comprova a sequência assinada; confirme o último aditivo no Clicksign/Clint",
+    );
+  if (suggestion.type === "Aditivo")
+    pendencies.push("Número sequencial do aditivo depende da confirmação manual do último assinado no Clicksign/Clint");
+  return { fields, suggestion, schoolId, matrixId, pendencies };
+}
+function normalize(s: string) {
+  return String(s || "")
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/[^a-z0-9]/gi, "")
+    .toLowerCase();
+}
