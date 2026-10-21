@@ -25,6 +25,12 @@ export function htmlToText(html: string) {
 }
 
 const LABELS: [string, RegExp][] = [
+  ["nomeFantasia", /^(?:\d+\)\s*)?NOME FANTASIA\s*[:\-–]?\s*(.*)$/i],
+  ["endereco", /^ENDERE[ÇC]O\s*[:\-–]?\s*(.*)$/i],
+  ["tipoSolicitacao", /^TIPO DE SOLICITA[ÇC][ÃA]O\s*[:\-–]?\s*(.*)$/i],
+  ["tipoContrato", /^TIPO DE CONTRATO\s*[:\-–]?\s*(.*)$/i],
+  ["contratoEspecificado", /^ESPECIFIQUE O CONTRATO\s*[:\-–]?\s*(.*)$/i],
+  ["detalhamento", /^DETALHAMENTO DO ITEM DO CONTRATO\s*[:\-–]?\s*(.*)$/i],
   ["razaoSocial", /^(?:\d+\)\s*)?RAZ[ÃA]O SOCIAL\s*[:\-–]?\s*(.*)$/i],
   ["cnpj", /^(?:\d+\)\s*)?CNPJ\s*[:\-–]?\s*(.*)$/i],
   ["motivo", /^(?:\d+\)\s*)?MOTIVO(?: DO ADITIVO)?\s*[:\-–]?\s*(.*)$/i],
@@ -78,13 +84,14 @@ export type TicketAnalysis = {
   fields: Record<string, { value: string; origin: string }>;
   suggestion: { type: string; subtype: string; basis: string };
   schoolId: string | null;
+  organizationId: string | null;
   matrixId: string | null;
   pendencies: string[];
 };
 /** Organises a ticket without inventing data: every value keeps its origin and gaps become pendencies. */
 export function analyzeTicket(
   ticket: RawTicket,
-  context: { schools: { id: string; cnpj: string; legal_name: string }[]; matrices: { id: string; school_id: string }[] },
+  context: { schools: { id: string; cnpj: string; legal_name: string; organization_kind?: string }[]; matrices: { id: string; school_id: string }[] },
 ): TicketAnalysis {
   const origin = `GLPI #${ticket.externalId} — formulário do chamado`;
   const lines = htmlToText(ticket.content);
@@ -94,6 +101,7 @@ export function analyzeTicket(
   for (const [key, value] of Object.entries(raw)) if (value) fields[key] = { value, origin };
   if (!raw.razaoSocial) pendencies.push("Razão social não identificada no formulário do chamado");
   let schoolId: string | null = null;
+  let organizationId: string | null = null;
   if (!raw.cnpj) pendencies.push("CNPJ não identificado no formulário do chamado");
   else {
     const digits = cnpjDigits(raw.cnpj);
@@ -103,12 +111,19 @@ export function analyzeTicket(
     const school = context.schools.find((s) => cnpjDigits(s.cnpj) === digits);
     if (!school) pendencies.push("Escola com este CNPJ não está cadastrada na central");
     else {
-      schoolId = school.id;
+      organizationId = school.id;
+      if (!school.organization_kind || school.organization_kind === "Escola") schoolId = school.id;
+      else if (school.organization_kind === "Aguardando classificação") pendencies.push("Organização encontrada, mas aguarda classificação em Organizações → Aguardando classificação");
+      else pendencies.push("Organização classificada como " + school.organization_kind + "; selecione um tipo de demanda compatível");
       if (raw.razaoSocial && normalize(raw.razaoSocial) !== normalize(school.legal_name))
         pendencies.push("Razão social do chamado difere do cadastro da escola; confirme na Receita Federal");
     }
   }
-  const narrative = [raw.motivo, raw.observacoes, ticket.title].filter(Boolean).join(" \n ");
+  const narrative = [raw.motivo, raw.observacoes, raw.detalhamento, raw.contratoEspecificado, ticket.title].filter(Boolean).join(" \n ");
+  if (!fields.remuneracao) {
+    const changes = [...narrative.matchAll(/(?:taxa|remunera[çc][ãa]o)\s+de\s+(\d{1,3}(?:[.,]\d{1,2})?)\s*%\s+para\s+(\d{1,3}(?:[.,]\d{1,2})?)\s*%/gi)];
+    if (changes.length === 1 && Number(changes[0][2].replace(",", ".")) <= 100) fields.remuneracao = {value:Number(changes[0][2].replace(",", ".")).toFixed(2).replace(".", ",")+"%",origin:origin+" — nova taxa explicitamente solicitada em “"+changes[0][0]+"” (confirmar documentalmente)"};
+  }
   const hint = SUBTYPE_HINTS.find(([, pattern]) => pattern.test(narrative));
   const isAddendum = /aditivo/i.test(ticket.title + " " + (raw.motivo || ""));
   let suggestion = { type: "", subtype: "", basis: "" };
@@ -116,6 +131,10 @@ export function analyzeTicket(
     suggestion = { type: "Migração de modalidade", subtype: "", basis: "Texto do chamado cita migração de modalidade (exige distrato e novo contrato)" };
   else if (isAddendum)
     suggestion = { type: "Aditivo", subtype: hint?.[0] || "", basis: hint ? "Palavras do motivo/observações: sugestão a confirmar" : "Chamado de aditivo sem tipo identificável" };
+  else if (/kedu matr[íi]culas|contrato educacional/i.test([raw.contratoEspecificado, raw.tipoContrato].join(" ")))
+    suggestion = { type: "Contrato educacional", subtype: "", basis: "Formulário cita Kedu Matrículas/contrato educacional; confirmar após revisar os anexos" };
+  else if (/SOLICITA[ÇC][ÃA]O DE CONTRATO PARA ESCOLAS/i.test(ticket.title))
+    suggestion = { type: "Contrato de garantia", subtype: "", basis: "Formulário de contrato para escolas; confirmar o instrumento e a modalidade" };
   if (!suggestion.type) pendencies.push("Tipo de demanda não identificado; classifique manualmente");
   else if (suggestion.type === "Aditivo" && !suggestion.subtype) pendencies.push("Tipo específico de aditivo não identificado");
   if (suggestion.subtype === "Vigência") {
@@ -147,7 +166,7 @@ export function analyzeTicket(
     );
   if (suggestion.type === "Aditivo")
     pendencies.push("Número sequencial do aditivo depende da confirmação manual do último assinado no Clicksign/Clint");
-  return { fields, suggestion, schoolId, matrixId, pendencies };
+  return { fields, suggestion, schoolId, organizationId, matrixId, pendencies };
 }
 /** Compares the confirmed demand data with what the linked ticket states (validation approach). */
 export function crossCheck(analysis: TicketAnalysis, ticketId: string, data: Record<string, any>) {

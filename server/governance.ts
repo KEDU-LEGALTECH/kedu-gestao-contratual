@@ -101,7 +101,11 @@ export function requirements(d: any) {
   ] as string[];
   const data = JSON.parse(d.data || "{}");
   // Validators come from the manual's responsibility matrix; legal exceptions add the legal control point.
-  const responsibility = responsibilityFor(d.type, g.subtype, data.modalidade || "");
+  const responsibility = responsibilityFor(
+    d.type,
+    g.subtype,
+    data.modalidade || "",
+  );
   const approvals = [...responsibility.valida];
   const exception =
     (d.type === "Aditivo" && !subtypes.includes(g.subtype)) ||
@@ -110,7 +114,10 @@ export function requirements(d: any) {
     custom.includes(d.type) ||
     flags.some((x) => custom.includes(x));
   if (exception) {
-    if (!approvals.includes("Risco") && ["Aditivo", "Contrato de garantia"].includes(d.type))
+    if (
+      !approvals.includes("Risco") &&
+      ["Aditivo", "Contrato de garantia"].includes(d.type)
+    )
       approvals.unshift("Risco");
     if (!approvals.includes("Jurídica")) approvals.push("Jurídica");
   }
@@ -156,10 +163,17 @@ export function requirements(d: any) {
 /** Divergences between the demand and the GLPI ticket it was imported from. */
 export function ticketCrossCheck(d: any, data: any) {
   const ticket = d.glpi_id
-    ? one("SELECT payload FROM glpi_tickets WHERE external_id=? AND demand_id=?", d.glpi_id, d.id)
+    ? one(
+        "SELECT payload FROM glpi_tickets WHERE external_id=? AND demand_id=?",
+        d.glpi_id,
+        d.id,
+      )
     : null;
   if (!ticket) return [];
-  const analysis = analyzeTicket(JSON.parse(ticket.payload), { schools: [], matrices: [] });
+  const analysis = analyzeTicket(JSON.parse(ticket.payload), {
+    schools: [],
+    matrices: [],
+  });
   return crossCheck(analysis, d.glpi_id, data);
 }
 export function governanceMissing(d: any) {
@@ -167,7 +181,13 @@ export function governanceMissing(d: any) {
     r = requirements(d),
     data = JSON.parse(d.data),
     missing: string[] = [];
+  if (one("SELECT demand_id FROM glpi_intakes WHERE demand_id=? AND confirmed_at IS NULL", d.id))
+    missing.push("Conferir o recebimento GLPI: organização, tipo, responsável, prazo e matriz quando aplicável");
   if (!d.glpi_id) missing.push("Número do chamado GLPI");
+    for (const check of all("SELECT c.* FROM attachment_checks c WHERE c.demand_id=? AND c.rowid=(SELECT MAX(x.rowid) FROM attachment_checks x WHERE x.demand_id=c.demand_id AND x.document_id=c.document_id)",d.id)) {
+      const currentHash=one("SELECT hash FROM glpi_tickets WHERE external_id=?",d.glpi_id)?.hash;
+      if(check.status!=="conforme" || check.data_version!==d.data_version || check.ticket_hash!==currentHash)missing.push("Conferir valores do anexo "+check.name+": "+(check.data_version!==d.data_version || check.ticket_hash!==currentHash?"análise desatualizada":check.status==="divergente"?"correção manual pendente":"leitura/conferência inconclusiva"));
+    }
   if (!g.reportDate) missing.push("Sexta-feira de reporte");
   if (d.type === "Aditivo" && !subtypes.includes(g.subtype))
     missing.push("Tipo específico de aditivo");
@@ -194,15 +214,27 @@ export function governanceMissing(d: any) {
     missing.push("Garantia Completa exige garantia de 100,00%");
   if (matrixCases.includes(d.type)) {
     const matrix = one(
-      "SELECT * FROM contracts WHERE id=? AND school_id=?",
+      "SELECT * FROM contract_registry WHERE id=? AND school_id=?",
       data.matriz || "",
       d.school_id,
     );
     if (
       !matrix ||
-      matrix.parent_id ||
+      matrix.instrument_kind !== "Matriz" ||
       matrix.id === d.contract_id ||
-      matrix.status !== "Assinado"
+      !(
+        matrix.status === "Assinado" ||
+        (d.type === "Migração de modalidade" &&
+          matrix.status === "Distratado") ||
+        (d.stage === "Concluído" &&
+          (
+            {
+              Distrato: "Distratado",
+              Descredenciamento: "Descredenciado",
+              "Migração de modalidade": "Migrado",
+            } as Record<string, string>
+          )[d.type] === matrix.status)
+      )
     )
       missing.push(
         "Contrato matriz assinado da escola para a operação jurídica",
@@ -256,8 +288,16 @@ export function governanceMissing(d: any) {
   if (d.type === "Migração de modalidade") {
     // Manual §4.3: migration is never a simple addendum; it needs a distrato and a new contract.
     for (const [key, type, label] of [
-      ["demandaDistrato", "Distrato", "Demanda de distrato do contrato vigente vinculada"],
-      ["demandaNovoContrato", "Contrato de garantia", "Demanda do novo contrato na modalidade de destino vinculada"],
+      [
+        "demandaDistrato",
+        "Distrato",
+        "Demanda de distrato do contrato vigente vinculada",
+      ],
+      [
+        "demandaNovoContrato",
+        "Contrato de garantia",
+        "Demanda do novo contrato na modalidade de destino vinculada",
+      ],
     ]) {
       const linked = one(
         "SELECT * FROM demands WHERE id=? AND school_id=? AND type=?",
@@ -266,8 +306,18 @@ export function governanceMissing(d: any) {
         type,
       );
       if (!linked) missing.push(label);
+      else if (
+        type === "Distrato" &&
+        JSON.parse(linked.data).matriz !== data.matriz
+      )
+        missing.push(
+          "O distrato vinculado deve encerrar a mesma matriz da migração",
+        );
       else if (d.stage === "Em assinatura" && linked.stage !== "Concluído")
-        missing.push(label.replace(" vinculada", "") + " concluída antes de encerrar a migração");
+        missing.push(
+          label.replace(" vinculada", "") +
+            " concluída antes de encerrar a migração",
+        );
     }
   }
   const normalize = (name: string) =>
@@ -280,9 +330,13 @@ export function governanceMissing(d: any) {
   if (
     data.representanteNome?.trim() &&
     (g.signers || []).length &&
-    !(g.signers || []).some((s: any) => normalize(s.name) === normalize(data.representanteNome))
+    !(g.signers || []).some(
+      (s: any) => normalize(s.name) === normalize(data.representanteNome),
+    )
   )
-    missing.push("Representante legal do documento deve constar entre os signatários com poderes conferidos");
+    missing.push(
+      "Representante legal do documento deve constar entre os signatários com poderes conferidos",
+    );
   for (const kind of r.evidence)
     if (
       !one(
@@ -348,7 +402,11 @@ export function legalReport(d: any, doc: any) {
     ...humanMissing(doc).map((a) => "Revisão humana: " + a),
   ];
   const data = JSON.parse(d.data);
-  for (const key of requiredFor(d.type, requirements(d).subtype, data.modalidade || ""))
+  for (const key of requiredFor(
+    d.type,
+    requirements(d).subtype,
+    data.modalidade || "",
+  ))
     if (typeof data[key] !== "string" || !data[key].trim())
       missing.push("Campo obrigatório: " + key);
   if (!data.checklist) missing.push("Confirmar recebimento da documentação");

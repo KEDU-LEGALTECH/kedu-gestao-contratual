@@ -27,6 +27,9 @@ export function OfficialTemplates({ data, can, action, api, busy }: Props) {
         <span className="counter">{items.length}</span>
       </div>
       <p className="muted">
+        Baixe o DOCX editável para abrir no Word ou importar no Google Docs (Arquivo → Abrir → Fazer upload). Os arquivos contêm campos de preenchimento; depois de editar no Docs, baixe em Microsoft Word (.docx) e envie a nova versão para conferência.
+      </p>
+      <p className="muted">
         Os modelos do Canva prevalecem. Estas versões trocam caixas posicionadas por parágrafos e tabelas para que o
         sistema preencha e confira cada campo; o texto é copiado da fonte e verificado palavra por palavra. Antes de
         gerar minutas para assinatura, o Jurídico precisa conferir uma prévia e homologar a versão exata.
@@ -56,6 +59,7 @@ export function OfficialTemplates({ data, can, action, api, busy }: Props) {
           <span className={"badge " + (t.homologated_at ? "ok" : t.inactive ? "" : "warn")}>
             {t.inactive ? "Inativo" : t.homologated_at ? "Homologado" : "Pendente"}
           </span>
+          {can("files") && <a className="secondary" href={`/api/templates/${t.version_id}/editable`}>Baixar DOCX editável</a>}
           {can("legal") && !t.homologated_at && !t.inactive && (
             <button className="secondary" onClick={() => setTarget(target === t.version_id ? "" : t.version_id)}>
               Homologar

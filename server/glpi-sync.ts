@@ -1,6 +1,10 @@
 import { db, one, all, run, id, now, audit } from "./db.js";
 import { DemoTicketSource, RealGlpiSource, glpiConfig, configProblems, ticketHash, type TicketSource, type RawTicket } from "./glpi.js";
 import { analyzeTicket } from "./glpi-analysis.js";
+import { importGlpiSchools } from "./glpi-schools.js";
+import { organizations } from "./organizations.js";
+import { receiveGlpiDemands } from "./glpi-intake.js";
+import { scheduleContractProcessing } from "./contract-processing.js";
 
 export function ticketSource(): TicketSource {
   return process.env.GLPI_MODE === "real" ? new RealGlpiSource(glpiConfig()) : new DemoTicketSource();
@@ -19,8 +23,8 @@ export function glpiStatus() {
 }
 function context() {
   return {
-    schools: all("SELECT id,cnpj,legal_name FROM schools"),
-    matrices: all("SELECT id,school_id FROM contracts WHERE parent_id IS NULL AND status='Assinado'"),
+    schools: organizations(),
+    matrices: all("SELECT id,school_id FROM contract_registry WHERE instrument_kind='Matriz' AND status='Assinado'"),
   };
 }
 let running = false;
@@ -32,7 +36,7 @@ export async function syncGlpi(userId: string | null, source = ticketSource(), t
   running = true;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const summary = { read: 0, created: 0, changed: 0, unchanged: 0, linkedChanged: 0 };
+  const summary = { read: 0, created: 0, changed: 0, unchanged: 0, linkedChanged: 0, demandsCreated: 0, schools: { created: 0, matched: 0, skipped: 0, conflicts: 0 } };
   try {
     let tickets: RawTicket[];
     try {
@@ -77,12 +81,14 @@ export async function syncGlpi(userId: string | null, source = ticketSource(), t
           }
         }
       }
+      if (source.mode === "real") summary.schools = importGlpiSchools(userId, false);
+      if (source.mode === "real") summary.demandsCreated = receiveGlpiDemands(userId, false).created;
       run(
         "INSERT INTO sync_logs VALUES(?,?,?,?,?)",
         id(),
         "Concluído",
         summary.created,
-        `${source.mode === "real" ? "GLPI (somente leitura)" : "Demonstração"}: ${summary.read} lidos, ${summary.created} novos, ${summary.changed} alterados (${summary.linkedChanged} já vinculados), ${summary.unchanged} sem alteração. Dados locais preservados.`,
+        `${source.mode === "real" ? "GLPI (somente leitura)" : "Demonstração"}: ${summary.read} lidos, ${summary.created} novos, ${summary.changed} alterados (${summary.linkedChanged} já vinculados), ${summary.unchanged} sem alteração. Escolas: ${summary.schools.created} novas, ${summary.schools.conflicts} divergências de nome, ${summary.schools.skipped} chamados sem cadastro automático. Cadastros existentes preservados.`,
         now(),
       );
       db.exec("COMMIT");
@@ -91,6 +97,7 @@ export async function syncGlpi(userId: string | null, source = ticketSource(), t
       throw error;
     }
     audit(null, userId, `Sincronização GLPI ${source.mode}: ${summary.created} novos, ${summary.changed} alterados`);
+    if(source.mode==="real")scheduleContractProcessing();
     return summary;
   } finally {
     clearTimeout(timer);

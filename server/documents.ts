@@ -38,7 +38,7 @@ export const fields = [
 ];
 const esc = (s: string) =>
   s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-function preflight(bytes: Buffer) {
+export function preflight(bytes: Buffer) {
   let end = -1;
   for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65557); i--) {
     if (bytes.readUInt32LE(i) === 0x06054b50) {

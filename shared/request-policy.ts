@@ -30,12 +30,61 @@ export const bankFields = [
   "documentoTitular",
   "pix",
 ];
+const identification = [
+  "cnpj",
+  "razaoSocial",
+  "endereco",
+  "dataFormalizacao",
+  "localidade",
+  "motivo",
+  "representanteNome",
+];
+/** Minimum data for each operation; evidence and validators remain in governance. */
+export const operationFields: Record<string, string[]> = {
+  "Contrato educacional": ["valor", "inicio", "fim"],
+  "Contrato fornecedor": ["valor", "inicio", "fim"],
+  "Contrato marketing": ["valor", "inicio", "fim"],
+  "CNPJ solidário": ["matriz", "dataAssinaturaMatriz", "cnpjSolidario"],
+  "Antecipação K-invest": [
+    "matriz",
+    "dataAssinaturaMatriz",
+    "valor",
+    "dataRepasse",
+  ],
+  Parcelamento: [
+    "matriz",
+    "dataAssinaturaMatriz",
+    "valor",
+    "parcelas",
+    "diaRepasse",
+  ],
+  "Migração de modalidade": [
+    "matriz",
+    "dataAssinaturaMatriz",
+    "modalidade",
+    "demandaDistrato",
+    "demandaNovoContrato",
+  ],
+  Distrato: ["matriz", "dataAssinaturaMatriz"],
+  Descredenciamento: ["matriz", "dataAssinaturaMatriz"],
+  "Renovação com pendências": [
+    "matriz",
+    "dataAssinaturaMatriz",
+    "inicio",
+    "fim",
+  ],
+  "Alteração societária": ["matriz", "dataAssinaturaMatriz"],
+};
 export function requiredFor(type: string, subtype = "", modality = "") {
+  if (operationFields[type])
+    return [...identification, ...operationFields[type]];
   if (type !== "Aditivo")
     return Array.from(
       new Set([
         ...requiredDataFields,
-        ...(type === "Contrato de garantia" ? officialRequired(type, "", modality) : []),
+        ...(type === "Contrato de garantia"
+          ? officialRequired(type, "", modality)
+          : []),
       ]),
     );
   return Array.from(
@@ -53,6 +102,7 @@ export function requiredFor(type: string, subtype = "", modality = "") {
   );
 }
 export function visibleFor(type: string, subtype = "", modality = "") {
+  if (operationFields[type]) return requiredFor(type, subtype, modality);
   if (type !== "Aditivo") return null;
   return Array.from(
     new Set([
@@ -66,7 +116,9 @@ export function visibleFor(type: string, subtype = "", modality = "") {
 }
 /** Official-model inputs shown in the form for this demand. */
 export function officialVisible(type: string, subtype = "", modality = "") {
-  return officialRequired(type, subtype, modality).filter((key) => key in officialInputs);
+  return officialRequired(type, subtype, modality).filter(
+    (key) => key in officialInputs,
+  );
 }
 export function previousKey(key: string) {
   return "anterior" + key[0].toUpperCase() + key.slice(1);

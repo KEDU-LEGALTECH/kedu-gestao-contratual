@@ -28,15 +28,24 @@ import {
   Link2,
 } from "lucide-react";
 import "./style.css";
+import "./theme.css";
+import "./simple-demand.css";
+import { ThemeToggle } from "./ThemeToggle";
+import { AttachmentCheck } from "./AttachmentCheck";
+import { SimpleDemand } from "./SimpleDemand";
 import { Reports } from "./Reports";
 import { GovernancePanel, SignedHistoryPanel } from "./GovernancePanel";
 import { requiredDataFields, validateData } from "../shared/data-validation";
 import { bankFields } from "../shared/request-policy";
 import { AddendumComparison } from "./AddendumComparison";
+import { DemandDocuments, DemandPending } from "./DemandDocuments";
 import { OfficialPanel } from "./OfficialPanel";
 import { GlpiPage } from "./GlpiPage";
 import { OfficialTemplates } from "./OfficialTemplates";
 import { officialInputs } from "../shared/official-fields";
+import { organizationAllowed } from "../shared/organization-policy";
+import { Organizations } from "./Organizations";
+import { GlpiIntake } from "./GlpiIntake";
 const stages = [
   "Recebido",
   "Aguardando informações",
@@ -137,7 +146,7 @@ async function api(path: string, body?: any, method?: string) {
   return data;
 }
 const Badge = ({ stage }: { stage: string }) => (
-  <span className={"badge stage-" + stages.indexOf(stage)}>
+  <span className={"badge " + (stage==="Pronto para download"?"ok":["Aguardando análise","Aguardando correção"].includes(stage)?"warn":"stage-" + stages.indexOf(stage))}>
     <i />
     {stage}
   </span>
@@ -147,12 +156,14 @@ const nav = [
   ["Demandas", Files],
   ["Chamados GLPI", Inbox],
   ["Escolas", School],
+  ["Organizações", Files],
   ["Contratos e aditivos", FileCheck2],
   ["Modelos", BookOpen],
   ["Relatórios", ChartNoAxesCombined],
   ["Configurações", Settings],
 ] as const;
 export function App() {
+  const [advanced,setAdvanced]=useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [newType, setNewType] = useState("Contrato de garantia");
   const [newSchool, setNewSchool] = useState("");
@@ -183,6 +194,11 @@ export function App() {
   async function load() {
     setData(await api("/bootstrap"));
   }
+  useEffect(()=>{
+    if(!user || !data?.demands?.some((d:any)=>d.processing?.status==="Analisando"))return;
+    const timer=setInterval(()=>{api("/bootstrap").then(setData).catch(()=>{});},2500);
+    return()=>clearInterval(timer);
+  },[user?.id,!!data?.demands?.some((d:any)=>d.processing?.status==="Analisando")]);
   useEffect(() => {
     api("/me")
       .then((u) => {
@@ -250,6 +266,7 @@ export function App() {
     }
   }
   async function open(id: string) {
+    setAdvanced(false);
     setFieldErrors({});
     setMissingFields([]);
     setBusy(true);
@@ -275,6 +292,7 @@ export function App() {
   if (!user)
     return (
       <div className="login">
+        <ThemeToggle login />
         <div className="login-story">
           <div className="wordmark">
             kedu<span>›</span>
@@ -318,7 +336,6 @@ export function App() {
               name="email"
               type="email"
               required
-              defaultValue="admin@demo.kedu.local"
             />
           </label>
           <label>
@@ -327,7 +344,6 @@ export function App() {
               name="password"
               type="password"
               required
-              defaultValue="Kedu-demo-2026!"
             />
           </label>
           {error && (
@@ -365,6 +381,9 @@ export function App() {
         </div>
       </div>
     );
+  const displayStage=(d:any)=>d.processing?.status || d.stage;
+  const listStages=[...new Set<string>(["Analisando","Aguardando análise","Aguardando correção","Pronto para download",...data.demands.map(displayStage)])];
+  const flowStages=data.demands.some((d:any)=>d.processing)?listStages:stages.slice(0,7);
   const filtered = data.demands.filter(
     (d: any) =>
       (!query ||
@@ -372,13 +391,13 @@ export function App() {
           .join(" ")
           .toLowerCase()
           .includes(query.toLowerCase())) &&
-      (!stage || d.stage === stage) &&
+      (!stage || displayStage(d) === stage) &&
       (!owner || d.owner === owner) &&
       (!priority || d.priority === priority) &&
       (!type || d.type === type) &&
       (!deadline ||
         (deadline === "overdue"
-          ? d.due <
+          ? !!d.due && d.due <
               new Intl.DateTimeFormat("en-CA", {
                 timeZone: "America/Sao_Paulo",
               }).format(new Date()) &&
@@ -420,13 +439,14 @@ export function App() {
               </td>
               <td>
                 {d.type}
+                {d.documentCheck && !d.processing && <small className={d.documentCheck.stale ? "" : d.documentCheck.status === "divergente" ? "urgent" : d.documentCheck.status === "conforme" ? "positive" : ""}>{d.documentCheck.stale ? "Análise desatualizada" : d.documentCheck.status === "divergente" ? "Erro no anexo — corrigir" : d.documentCheck.status === "conforme" ? "Valores conferidos; revisão pendente" : "Anexo exige conferência manual"}</small>}
                 <small className={d.priority === "Urgente" ? "urgent" : ""}>
                   {d.priority === "Urgente" ? "● " : ""}
                   {d.priority}
                 </small>
               </td>
               <td>
-                <Badge stage={d.stage} />
+                <Badge stage={displayStage(d)} />
               </td>
               <td>
                 <span className="avatar tiny">
@@ -442,7 +462,7 @@ export function App() {
               </td>
               <td
                 className={
-                  d.due <
+                  d.due && d.due <
                     new Intl.DateTimeFormat("en-CA", {
                       timeZone: "America/Sao_Paulo",
                     }).format(new Date()) &&
@@ -453,7 +473,7 @@ export function App() {
               >
                 {date(d.due)}
                 <small>
-                  {d.due <
+                  {d.due && d.due <
                     new Intl.DateTimeFormat("en-CA", {
                       timeZone: "America/Sao_Paulo",
                     }).format(new Date()) &&
@@ -463,7 +483,7 @@ export function App() {
                 </small>
               </td>
               <td>
-                <ChevronRight size={17} />
+                <button className="open-demand" aria-label={`Abrir demanda ${d.id} e conferir documentos`} title="Abrir demanda e conferir documentos" onClick={e=>{e.stopPropagation();open(d.id);}}><ChevronRight size={17} /></button>
               </td>
             </tr>
           ))}
@@ -564,6 +584,7 @@ export function App() {
             Central de contratos <ChevronRight size={14} />{" "}
             <strong>{detail ? "Detalhe da demanda" : page}</strong>
           </div>
+          <ThemeToggle />
           <span className="environment">
             <i /> Ambiente de demonstração
           </span>
@@ -611,8 +632,10 @@ export function App() {
               Processando…
             </div>
           )}
+          {detail && advanced && <button className="back" onClick={()=>setAdvanced(false)}>← Voltar para o contrato e as correções</button>}
           {detail ? (
-            <>
+            !advanced ? <SimpleDemand key={detail.id} detail={detail} data={data} can={can} api={api} action={action} busy={busy} onBack={()=>{setDetail(null);setPage("Demandas");}} onAdvanced={()=>setAdvanced(true)} onModels={()=>{setDetail(null);setPage("Modelos");}} /> :
+            detail.glpiIntake && !detail.glpiIntake.confirmed_at ? <GlpiIntake detail={detail} data={data} can={can} api={api} action={action} busy={busy} back={() => { setDetail(null); setPage("Demandas"); }} registry={() => { setDetail(null); setPage("Organizações"); }} /> : <>
               <button className="back" onClick={() => setDetail(null)}>
                 <ArrowLeft size={16} /> Voltar para {page.toLowerCase()}
               </button>
@@ -623,7 +646,7 @@ export function App() {
                   </span>
                   <h1>
                     {
-                      data.schools.find((s: any) => s.id === detail.school_id)
+                      (data.organizations || data.schools).find((s: any) => s.id === detail.school_id)
                         ?.name
                     }
                   </h1>
@@ -634,6 +657,8 @@ export function App() {
                 </div>
                 <Badge stage={detail.stage} />
               </div>
+              <DemandDocuments key={detail.id} detail={detail} can={can} />
+              <AttachmentCheck key={"attachment-"+detail.id} detail={detail} can={can} api={api} action={action} busy={busy} />
               <AddendumComparison
                 detail={detail}
                 labels={labels}
@@ -673,9 +698,9 @@ export function App() {
                         }
                         return next;
                       });
-                      setMissingFields(
-                        (detail.requiredFields || requiredDataFields).filter(
-                          (key: string) => !String(values[key] ?? "").trim(),
+                      setMissingFields((previous) =>
+                        previous.filter(
+                          (key) => !String(values[key] ?? "").trim(),
                         ),
                       );
                     }}
@@ -685,13 +710,6 @@ export function App() {
                         (b) => {
                           const issues = validateData(b);
                           setFieldErrors(issues);
-                          setMissingFields(
-                            (
-                              detail.requiredFields || requiredDataFields
-                            ).filter(
-                              (key: string) => !String(b[key] ?? "").trim(),
-                            ),
-                          );
                           if (Object.keys(issues).length) {
                             requestAnimationFrame(() =>
                               focusField(Object.keys(issues)[0]),
@@ -720,6 +738,20 @@ export function App() {
                       )
                     }
                   >
+                    <details className="form-instructions">
+                      <summary>Como preencher os dados <span>Ver exemplos e orientações</span></summary>
+                      <ul>
+                        <li><strong>Campos com *:</strong> são necessários para confirmar. Você pode salvar um rascunho com campos vazios e completar depois.</li>
+                        <li><strong>Percentuais:</strong> use vírgula, duas casas decimais e o símbolo %. Por exemplo: 3,3 → <strong>3,30%</strong>; 100 → <strong>100,00%</strong>; zero → <strong>0,00%</strong>. O valor deve ficar entre 0,00% e 100,00%.</li>
+                        <li><strong>Valores em reais:</strong> informe os centavos com vírgula. Por exemplo: dez mil reais → <strong>10.000,00</strong>; zero → <strong>0,00</strong>. O campo “Valor do cashback (R$)” recebe dinheiro; campos de percentual recebem %.</li>
+                        <li><strong>CNPJ e razão social:</strong> confira no documento da organização. Digite o CNPJ com pontuação, no formato <strong>00.000.000/0000-00</strong>, e a razão social completa.</li>
+                        <li><strong>Banco, agência e conta:</strong> copie do comprovante bancário, preservando zeros à esquerda e o dígito da conta. Não substitua informações desconhecidas por zero.</li>
+                        <li><strong>Datas:</strong> selecione no calendário ou preencha dia, mês e ano. O fim da vigência não pode ser anterior ao início. Se o pedido informar apenas um mês, confirme o dia antes de preencher.</li>
+                        <li><strong>Contrato matriz e aditivo:</strong> os vínculos são preenchidos pelo sistema. Confira os documentos de origem; esses campos não são editáveis neste formulário.</li>
+                        <li><strong>Para continuar:</strong> clique em “Salvar dados” para registrar o preenchimento e depois em “Confirmar dados críticos”. Se houver erro, leia a orientação abaixo do campo, corrija e salve novamente.</li>
+                      </ul>
+                      <p>Os exemplos explicam o formato. Preencha os valores reais que foram conferidos nos documentos e na solicitação.</p>
+                    </details>
                     <div className="form-grid">
                       {formKeys(detail)
                         .map((key) => [key, labels[key]] as [string, string])
@@ -741,8 +773,8 @@ export function App() {
                             {(
                               detail.requiredFields || requiredDataFields
                             ).includes(key) && (
-                              <span className="required-marker">
-                                Obrigatório para avançar
+                              <span className="required-marker" title="Obrigatório para confirmar" aria-label="obrigatório">
+                                *
                               </span>
                             )}
                             {key === "modalidade" ? (
@@ -826,20 +858,9 @@ export function App() {
                                 id={"issue-" + key}
                                 className="field-message"
                               >
-                                <TriangleAlert size={15} aria-hidden="true" />
                                 {fieldErrors[key] ||
-                                  "Preencha este campo antes de confirmar os dados."}
+                                  "Preenchimento obrigatório."}
                               </span>
-                            )}
-                            {[
-                              "remuneracao",
-                              "garantia",
-                              "repasse",
-                              "cashback",
-                            ].includes(key) && (
-                              <small>
-                                Use duas casas decimais e %, por exemplo: 3,30%.
-                              </small>
                             )}
                           </label>
                         ))}
@@ -929,24 +950,22 @@ export function App() {
                     <button
                       className="primary"
                       disabled={busy || detail.confirmed}
-                      onClick={() =>
+                      onClick={() => {
+                        setMissingFields(
+                          (detail.requiredFields || requiredDataFields).filter(
+                            (key: string) => !String(detail.data[key] ?? "").trim(),
+                          ),
+                        );
                         action(
                           () => api("/demands/" + detail.id + "/confirm", {}),
                           "Dados críticos confirmados.",
-                        )
-                      }
+                        );
+                      }}
                     >
                       Confirmar dados críticos
                     </button>
                   )}
-                  {detail.missing.length > 0 && (
-                    <div className="inline-warning">
-                      Pendências:{" "}
-                      {detail.missing
-                        .map((s: string) => labels[s] || s)
-                        .join(", ")}
-                    </div>
-                  )}
+                  <DemandPending detail={detail} labels={labels} />
                 </section>
                 <div>
                   <section className="panel">
@@ -1376,17 +1395,17 @@ export function App() {
                         "red",
                       ],
                       [
-                        "Aguardando aprovação",
-                        data.metrics.approval,
+                        "Prontos para download",
+                        data.demands.filter((d:any)=>d.processing?.status==="Pronto para download").length,
                         ShieldCheck,
-                        "Prontas para decisão",
+                        "Preenchimento validado",
                         "purple",
                       ],
                       [
-                        "Em assinatura",
-                        data.metrics.signature,
+                        "Aguardando correção",
+                        data.demands.filter((d:any)=>d.processing?.status==="Aguardando correção").length,
                         FileCheck2,
-                        "Na reta final",
+                        "Confira os itens indicados",
                         "cyan",
                       ],
                     ].map(([title, value, Icon, caption, color]: any) => (
@@ -1399,10 +1418,10 @@ export function App() {
                             title === "Prazos vencidos" ? "overdue" : "",
                           );
                           setStage(
-                            title === "Aguardando aprovação"
-                              ? "Em aprovação"
-                              : title === "Em assinatura"
-                                ? "Em assinatura"
+                            title === "Prontos para download"
+                              ? "Pronto para download"
+                              : title === "Aguardando correção"
+                                ? "Aguardando correção"
                                 : "",
                           );
                         }}
@@ -1433,9 +1452,9 @@ export function App() {
                         </span>
                       </div>
                       <div className="flow-bars">
-                        {stages.slice(0, 7).map((s, i) => {
+                        {flowStages.map((s, i) => {
                           const n = data.demands.filter(
-                            (d: any) => d.stage === s,
+                            (d: any) => displayStage(d) === s,
                           ).length;
                           return (
                             <button
@@ -1455,10 +1474,10 @@ export function App() {
                                         (n /
                                           Math.max(
                                             1,
-                                            ...stages.map(
+                                            ...flowStages.map(
                                               (x) =>
                                                 data.demands.filter(
-                                                  (d: any) => d.stage === x,
+                                                  (d: any) => displayStage(d) === x,
                                                 ).length,
                                             ),
                                           )) *
@@ -1578,7 +1597,7 @@ export function App() {
                         onChange={(e) => setStage(e.target.value)}
                       >
                         <option value="">Todas as etapas</option>
-                        {stages.map((s) => (
+                        {listStages.map((s) => (
                           <option key={s}>{s}</option>
                         ))}
                       </select>
@@ -1654,19 +1673,19 @@ export function App() {
                   </section>
                   {kanban ? (
                     <div className="kanban">
-                      {stages.map((s) => (
+                      {listStages.map((s) => (
                         <section key={s}>
                           <h3>
                             {s}
                             <span>
                               {
-                                filtered.filter((d: any) => d.stage === s)
+                                filtered.filter((d: any) => displayStage(d) === s)
                                   .length
                               }
                             </span>
                           </h3>
                           {filtered
-                            .filter((d: any) => d.stage === s)
+                            .filter((d: any) => displayStage(d) === s)
                             .map((d: any) => (
                               <button
                                 className="kanban-card"
@@ -1696,8 +1715,15 @@ export function App() {
                   </p>
                 </>
               )}
+              {page === "Organizações" && <Organizations data={data} can={can} action={action} api={api} busy={busy} />}
               {page === "Escolas" && (
                 <>
+                  {can("schools") && (
+                    <div className="panel">
+                      <p>Esta lista contém apenas escolas confirmadas. Novos cadastros do GLPI aguardam conferência em Organizações.</p>
+                      <button className="secondary" onClick={() => setPage("Organizações")}>Classificar organizações importadas</button>
+                    </div>
+                  )}
                   <div className="search standalone">
                     <Search size={18} />
                     <input
@@ -1720,6 +1746,9 @@ export function App() {
                           </span>
                           <h2>{s.name}</h2>
                           <p>{s.legal_name}</p>
+                          {s.glpi_imported_at && (
+                            <p className="muted">Origem: GLPI #{s.glpi_ticket} • {s.glpi_reviewed_at ? "Cadastro revisado" : "Conferir cadastro e completar os dados"}</p>
+                          )}
                           <small>
                             {s.cnpj}
                             <br />
@@ -1757,6 +1786,7 @@ export function App() {
                         </section>
                       ))}
                   </div>
+                  {!data.schools.length && <p className="muted">Nenhuma escola confirmada. Confira os cadastros em Organizações → Aguardando classificação.</p>}
                 </>
               )}
               {page === "Contratos e aditivos" && (
@@ -1793,7 +1823,7 @@ export function App() {
                                     c.sequence +
                                     " • Matriz " +
                                     c.parent_id
-                                  : "Contrato matriz"}
+                                  : c.operation_type || "Contrato matriz"}
                               </td>
                               <td>
                                 {date(c.start)} — {date(c.end)}
@@ -2151,7 +2181,7 @@ export function App() {
                     onChange={(e) => setNewSchool(e.target.value)}
                   >
                     <option value="">Selecione a escola</option>
-                    {data.schools.map((s: any) => (
+                    {(data.organizations || data.schools).filter((s: any) => organizationAllowed(newType, s.organization_kind || "Escola")).map((s: any) => (
                       <option key={s.id} value={s.id}>
                         {s.name} — {s.cnpj}
                       </option>
@@ -2164,7 +2194,7 @@ export function App() {
                     <select
                       name="type"
                       value={newType}
-                      onChange={(e) => setNewType(e.target.value)}
+                      onChange={(e) => { setNewType(e.target.value); setNewSchool(""); }}
                     >
                       {[
                         "Contrato de garantia",
@@ -2248,8 +2278,8 @@ export function App() {
                     {data.contracts
                       .filter(
                         (c: any) =>
-                          c.status === "Assinado" &&
-                          !c.parent_id &&
+                          (c.status === "Assinado" || (newType === "Migração de modalidade" && c.status === "Distratado")) &&
+                          c.instrument_kind === "Matriz" &&
                           c.school_id === newSchool,
                       )
                       .map((c: any) => (
@@ -2297,7 +2327,7 @@ export function App() {
                           required={i < 3}
                           defaultValue={
                             modal.startsWith("editar:")
-                              ? data.schools.find(
+                              ? (data.organizations || data.schools).find(
                                   (s: any) => s.id === modal.split(":")[1],
                                 )?.[f]
                               : ""

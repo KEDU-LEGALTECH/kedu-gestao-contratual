@@ -1,0 +1,77 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+process.env.DATABASE_PATH = join(mkdtempSync(join(tmpdir(), "kedu-cleanup-")), "test.sqlite");
+process.env.NODE_ENV = "test";
+process.env.DEMO_SEED = "true";
+process.env.GLPI_MODE = "demo";
+const { seed } = await import("../server/seed.js");
+const { seedCatalog } = await import("../server/governance-routes.js");
+const { registerOfficialCatalog } = await import("../server/official-templates.js");
+const { one, all, run } = await import("../server/db.js");
+const { cleanupDemoData } = await import("../server/cleanup-demo.js");
+seedCatalog();
+registerOfficialCatalog();
+run("INSERT INTO schools VALUES('real-school','Escola real','Escola real Ltda','11.444.777/0001-61','Endereço real','Contato real')");
+run("INSERT INTO contracts(id,school_id,status) VALUES('real-contract','real-school','Assinado')");
+run("INSERT INTO demands(id,school_id,contract_id,type,stage,priority,owner,due,data,created) VALUES('REAL-1','real-school','real-contract','Contrato de garantia','Recebido','Normal','u2','2030-01-01','{}','2026-10-20')");
+run("INSERT INTO glpi_tickets VALUES('real-ticket','real','Título real','2','real-hash','{}','{}','vinculado','REAL-1','2026-10-20','2026-10-20',NULL)");
+run("INSERT INTO glpi_ticket_versions VALUES('real-version','real-ticket','real-hash','{}','2026-10-20')");
+run("INSERT INTO school_glpi_origins VALUES('real-school','real-ticket','2026-10-20',NULL,NULL)");
+run("INSERT INTO signed_history VALUES('real-history','real-contract',0,'Clint','Referência real','2026-01-01','u0','2026-10-20')");
+run("INSERT INTO signed_history VALUES('seed-history','c4',0,'Clint','Referência fictícia','2026-01-01','u0','2026-10-20')");
+run("INSERT INTO history_confirmations VALUES('seed-confirmation','c4',0,'Clint','Referência fictícia','2026-01-01','u0','2026-10-20')");
+run("INSERT INTO demand_baselines VALUES('seed-baseline','KD-0001','Vigência','{}','Referência fictícia','u0','2026-10-20')");
+run("INSERT INTO sessions VALUES('keep-admin-session','u0',?)", Date.now() + 60000);
+const realSchool = one("SELECT * FROM schools WHERE id='real-school'");
+const realDemand = one("SELECT * FROM demands WHERE id='REAL-1'");
+const realTicket = one("SELECT * FROM glpi_tickets WHERE external_id='real-ticket'");
+const officialIds = all("SELECT version_id FROM template_sources ORDER BY version_id");
+
+test("Limpeza exige demonstração desativada", () => {
+  assert.throws(() => cleanupDemoData(), /Desative DEMO_SEED/);
+  assert.equal(one("SELECT COUNT(*) n FROM schools").n, 9);
+  process.env.DEMO_SEED = "false";
+});
+test("Cadastro da carga alterado impede exclusão e mantém a integridade", () => {
+  run("UPDATE schools SET address='Endereço agora real' WHERE id='s0'");
+  assert.throws(() => cleanupDemoData(), /foi alterado/);
+  assert.equal(one("SELECT COUNT(*) n FROM schools").n, 9);
+  run("UPDATE schools SET address='Fortaleza, CE • Dados fictícios' WHERE id='s0'");
+});
+test("Dependência real em contrato fictício impede toda a limpeza", () => {
+  run("UPDATE demands SET data=? WHERE id='REAL-1'", JSON.stringify({ matriz: "c0" }));
+  assert.throws(() => cleanupDemoData(), /Demanda externa depende/);
+  assert.equal(one("SELECT COUNT(*) n FROM demands").n, 9);
+  assert.ok(one("SELECT name FROM sqlite_master WHERE name='no_delete_signed_history'"));
+  run("UPDATE demands SET data='{}' WHERE id='REAL-1'");
+});
+test("Remove carga fictícia e preserva dados reais, oficiais, acesso e gatilhos", () => {
+  const result = cleanupDemoData();
+  assert.equal(result.schoolsRemoved, 8);
+  assert.equal(result.demandsRemoved, 8);
+  assert.equal(result.contractsRemoved, 8);
+  assert.ok(result.templateVersionsRemoved >= 6);
+  assert.deepEqual(one("SELECT * FROM schools"), realSchool);
+  assert.deepEqual(one("SELECT * FROM demands"), realDemand);
+  assert.deepEqual(one("SELECT * FROM glpi_tickets"), realTicket);
+  assert.deepEqual(all("SELECT version_id FROM template_sources ORDER BY version_id"), officialIds);
+  assert.ok(one("SELECT * FROM sessions WHERE token='keep-admin-session'"));
+  assert.equal(one("SELECT name FROM users WHERE id='u0'").name, "Conta local — Administrador");
+  assert.equal(one("SELECT name FROM users WHERE id='u2'").name, "Conta local — Operação");
+  assert.equal(one("SELECT COUNT(*) n FROM template_catalog WHERE demonstration=1").n, 0);
+  assert.equal(one("SELECT COUNT(*) n FROM evidence_files").n, 0);
+  assert.equal(one("SELECT COUNT(*) n FROM documents").n, 0);
+  assert.throws(() => run("DELETE FROM signed_history WHERE id='real-history'"), /imutável/);
+  assert.throws(() => run("DELETE FROM glpi_ticket_versions WHERE id='real-version'"), /imutável/);
+  assert.deepEqual(all("PRAGMA foreign_key_check"), []);
+  assert.equal(cleanupDemoData().schoolsRemoved, 0);
+});
+test("Reiniciar com DEMO_SEED=true não recria exemplos no banco limpo", () => {
+  const child = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", 'await import("./server/seed.ts");const {seedCatalog}=await import("./server/governance-routes.ts");seedCatalog();const {one}=await import("./server/db.ts");console.log(JSON.stringify({schools:one("SELECT COUNT(*) n FROM schools").n,demands:one("SELECT COUNT(*) n FROM demands").n,demo:one("SELECT COUNT(*) n FROM template_catalog WHERE demonstration=1").n}));'], { encoding: "utf8", env: { ...process.env, DEMO_SEED: "true" } });
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout.trim()), { schools: 1, demands: 1, demo: 0 });
+});

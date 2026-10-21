@@ -3,6 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <script>
+      (() => {
+        let saved;
+        try { saved = localStorage.getItem("kedu-theme"); } catch {}
+        document.documentElement.dataset.theme = saved === "dark" || (saved !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+      })();
+    </script>
     <title>Kedu | Central de contratos</title>
   </head>
   <body>

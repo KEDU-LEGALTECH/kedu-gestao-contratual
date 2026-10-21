@@ -125,6 +125,7 @@ test("Aditivo de vigência ponta a ponta com o modelo oficial: prévia, homologa
     await request(
       path + "/governance",
       {
+        expected_version: one("SELECT data_version FROM demands WHERE id=?", did).data_version,
         subtype: "Vigência",
         reportDate: "2030-01-04",
         signingMode: "Administrador nomeado",

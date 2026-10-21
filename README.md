@@ -1,10 +1,14 @@
 # Kedu — Central de contratos
 
+O fluxo principal de Demandas é **GLPI → leitura automática → validação → correção, quando necessária → download no modelo correspondente**. A lista distingue Analisando, Aguardando análise, Aguardando correção e Pronto para download. Originais ficam disponíveis mesmo com pendências. O download final é bloqueado no servidor até a validação.
+
+A leitura aceita DOCX, DOC, PDF digital ou digitalizado, PNG/JPEG/WebP/TIFF/BMP/GIF, TXT/CSV, ODT, XLSX e PPTX. PDF usa PDF.js; imagens e páginas digitalizadas passam por Tesseract local em português, com idioma instalado pelo npm (sem serviço externo). OCR e leitores de Office alternativos exigem conferência humana do texto com o original. Limites: 20 MB, 30 páginas/quadros/planilhas/slides e 180 segundos por arquivo; documentos acima dos limites ou ilegíveis permanecem inconclusivos. Não há suporte universal a qualquer extensão, manuscrito ou arquivo protegido. Veja `entregas/Leitura_Multiformato_OCR_2026-10-21.md` para detalhes e resultados reais. A geração do contrato final continua em DOCX no modelo validado.
+
 Aplicação local em português, com React/TypeScript/Vite, Express/TypeScript e SQLite relacional (`node:sqlite`). Requer Node.js 24.21 ou superior. O diretório estava vazio na implementação inicial. O banco em disco preserva as demandas, arquivos, versões, conferências e decisões; não há dependência exclusiva de localStorage.
 
 ## Preparar e iniciar
 
-A carga fictícia requer `DEMO_SEED=true`, já definido no `.env.example` e no Compose local. Sem essa ativação, não são criados usuários, demandas ou modelos demonstrativos. Em instalações locais anteriores, acrescente essa variável ao `.env` se quiser continuar usando a carga demonstrativa.
+A carga fictícia requer `DEMO_SEED=true`, definido no `.env.example` para instalações de demonstração. O Compose respeita a variável do `.env` e usa `false` quando ela não está definida. Sem essa ativação, não são criados usuários, demandas ou modelos demonstrativos. Bancos que passaram pela limpeza administrativa recebem `settings.demoDisabled=true`, que impede a recriação dos exemplos mesmo se uma variável antiga continuar ativada.
 
 ```powershell
 npm ci
@@ -32,7 +36,7 @@ docker compose ps
 docker compose logs -f app
 ```
 
-A primeira construção precisa de internet para baixar a imagem Node e as dependências. Quando o serviço iniciar, abra **http://127.0.0.1:8080**. O frontend compilado e a API são servidos juntos; não execute `npm run dev` dentro do container. As contas e os dados fictícios são preparados automaticamente na inicialização. Login: `admin@demo.kedu.local`, senha inicial `Kedu-demo-2026!`.
+A primeira construção precisa de internet para baixar a imagem Node e as dependências. Quando o serviço iniciar, abra **http://127.0.0.1:8080**. O frontend compilado e a API são servidos juntos; não execute `npm run dev` dentro do container. Somente em um banco demonstrativo com `DEMO_SEED=true`, sem bloqueio por limpeza, as contas e os dados fictícios são preparados na inicialização. Nesse caso, o login inicial é `admin@demo.kedu.local`, senha `Kedu-demo-2026!`. Um banco vazio sem demonstração exige provisionamento administrativo; não recebe usuário padrão automaticamente.
 
 O banco e os arquivos enviados ficam no volume nomeado `kedu-data`, separado do banco `data/kedu.sqlite` usado fora do Docker. Reiniciar ou recriar o container preserva esse volume. O build não copia `.env`, banco local, relatórios internos ou credenciais para a imagem. A aplicação roda como usuário sem privilégios de root.
 
@@ -58,13 +62,19 @@ Esta configuração é exclusivamente para avaliação no próprio computador: a
 
 ## Banco e atualização de instalações anteriores
 
-Migrações: `migrations/001.sql` a `006.sql`. O servidor as aplica ao iniciar (004: retratos de aditivos e cashback em centavos; 005: origem, homologação e prévias dos modelos oficiais; 006: chamados GLPI importados e suas versões imutáveis). Faça backup consistente do banco antes de atualizar uma instalação com dados reais. Preserve `data/kedu.sqlite` e não versione banco, arquivos reais ou `.env`.
+Migrações: `migrations/001.sql` a `011.sql`. O servidor as aplica ao iniciar (004: retratos de aditivos e cashback em centavos; 005: origem, homologação e prévias dos modelos oficiais; 006: chamados GLPI e versões imutáveis; 007: classificação de instrumentos; 008: proveniência cadastral GLPI; 009: classificação das organizações; 010: recebimento das demandas; 011: arquivos imutáveis de matrizes externas). A 007 classifica registros antigos sem reescrever seu histórico. Faça backup consistente com `npm run db:backup` antes de atualizar uma instalação com dados reais. O comando reabre a cópia e verifica integridade e referências. Preserve banco, arquivos reais e `.env` fora do Git.
 
 A migração de governança reinicia a confirmação e invalida aprovações de demandas abertas da versão anterior uma única vez. Demandas concluídas/canceladas preservam seu histórico. Os novos requisitos precisam ser completados antes de avançar. Se uma demanda antiga estiver em assinatura com pendências, devolva-a com justificativa antes de corrigir os dados. Modelos demonstrativos antigos permanecem no histórico; quando necessário, o servidor cria nova versão e inativa a anterior para novas gerações. Não altera conteúdo de versão aprovada.
 
 Há entidades separadas para usuário/sessão, escola, representante, contrato/matriz/aditivo, demanda, modelo/versão, documento/versão, conferência, aprovação, auditoria, sincronização, condições comerciais inteiras, governança, evidências, histórico assinado, revisões humanas e registro manual de assinatura.
 
 ## Contas demonstrativas
+
+### Organizações provenientes do GLPI
+
+Cada sincronização real registra organizações identificáveis nos chamados já importados, exigindo CNPJ com dígitos verificadores válidos e razão social informada. A migração `008.sql` registra origem, chamado e fontes. A migração `009.sql` classifica importações existentes e novas como **Aguardando classificação**; não presume que toda empresa seja escola. A comparação usa CNPJ normalizado, sem criar duplicação por pontuação. Cadastros existentes não são sobrescritos: divergências de razão social ficam registradas e continuam sujeitas a conferência.
+
+Em **Organizações**, uma pessoa autorizada confere os documentos e confirma Escola, Fornecedor ou Outra organização, com justificativa, declaração e auditoria. Apenas a categoria Escola aparece em **Escolas**. Fornecedores e outras organizações podem ser usados nos tipos fornecedor/marketing, mas não em operações escolares. Pendentes não podem criar demandas. A classificação exige a versão atual e não é sobrescrita pela sincronização ou reinício. Reclassificações incompatíveis com demandas/contratos existentes são bloqueadas. O botão “Atualizar organizações dos chamados” aproveita os chamados já importados, sem nova consulta ao GLPI. Endereço e contato ausentes permanecem vazios. O cadastro é formado pelos chamados reais sincronizados, não por uma listagem global de todas as instituições existentes no GLPI; o limite de chamados continua valendo.
 
 Senha inicial: `Kedu-demo-2026!`. `DEMO_PASSWORD` altera a senha antes da primeira preparação; não redefine contas já existentes.
 
@@ -161,17 +171,25 @@ Evidências: DOCX ou PDF até 8 MB, com download autorizado como anexo. O arquiv
 
 ## GLPI e integrações externas
 
-Instalação informada: GLPI 10.0.26, API em `https://helpdesk.kedu.com.br/apirest.php`. O adaptador real (`server/glpi.ts`) segue a documentação oficial da API REST do GLPI 10 (`apirest.md`): `initSession` com `App-Token` e `Authorization: user_token`, `Session-Token` nas chamadas, `killSession` ao final, paginação por `range`/`Content-Range` e subitens `/:itemtype/:id/:sub_itemtype`. **Somente GET**; nenhum endpoint de plugin, webhook ou escrita.
+Instalação informada: GLPI 10.0.26; o endereço da API (`.../apirest.php`) fica somente em `GLPI_URL` no `.env` local. O adaptador real (`server/glpi.ts`) segue a documentação oficial da API REST do GLPI 10 (`apirest.md`): `initSession` com `App-Token` e `Authorization: user_token`, `Session-Token` nas chamadas, `killSession` ao final, paginação por `range`/`Content-Range` e subitens `/:itemtype/:id/:sub_itemtype`. **Somente GET**; nenhum endpoint de plugin, webhook ou escrita.
 
 Leitura: resolve os grupos autorizados por nome exato (`GLPI_GROUPS`, padrão “JURIDICO CONTRATOS;JURIDICO REVISÃO”) ou por id (`GLPI_GROUP_IDS`); lê `Group/<id>/Group_Ticket` filtrando o tipo de ator (`GLPI_ACTOR_TYPES`, padrão 2 = atribuído); e, por chamado, `Ticket/<id>`, `ITILFollowup` e `Document_Item` + `Document/<id>` (somente nome, tipo e hash; os arquivos não são baixados). Há tempo limite por requisição, tentativas limitadas apenas para falhas temporárias, limite de chamados e tokens ocultos nas mensagens.
 
-Importação (`server/glpi-sync.ts`): os chamados vão para uma fila de triagem (tela **Chamados GLPI**), idempotente por número e conteúdo. A análise (`server/glpi-analysis.ts`) extrai razão social, CNPJ (normalizado e com dígito verificado), motivo, observações e anexos, sempre com a origem; sugere tipo e subtipo; localiza a escola pelo CNPJ e o contrato matriz assinado; e lista pendências sem inventar dados. Uma pessoa confere escola, tipo e contrato antes de criar a demanda vinculada; só o motivo é copiado do chamado. Alterações posteriores no GLPI geram nova versão imutável, sinalização e auditoria, sem sobrescrever dados, documentos ou aprovações locais. Falhas ficam no histórico de sincronização. O agendamento é opcional (`GLPI_SYNC_INTERVAL_MINUTES` de 5 a 1440; padrão desativado).
+Importação (`server/glpi-sync.ts`): cada chamado real gera uma demanda em **Recebido**, sem duplicação pelo número GLPI. A tela **Demandas** concentra a conferência da solicitação original e dos anexos. Organização, tipo, responsável e prazo precisam ser confirmados por uma pessoa; dados ausentes não são inventados. Organizações ainda não classificadas podem ser classificadas no recebimento. Nenhum contrato ou número de aditivo é reservado antes dessa confirmação. Geração, upload e avanço operacional ficam bloqueados enquanto o recebimento estiver pendente. Alterações posteriores no GLPI geram nova versão e sinalização, preservando dados, documentos e aprovações locais. Chamados GLPI mantém a sincronização e o histórico técnico. O agendamento continua opcional e desativado por padrão.
 
-Exemplo real 2026101296: o sistema aponta que o dia exato da nova vigência e o efeito sobre a data final não foram informados, que os anexos precisam ser conferidos e registrados como evidências e que um arquivo chamado “primeiro aditivo” não comprova a sequência assinada.
+Exemplo de um chamado real de vigência: o sistema aponta que o dia exato da nova vigência e o efeito sobre a data final não foram informados, que os anexos precisam ser conferidos e registrados como evidências e que um arquivo chamado “primeiro aditivo” não comprova a sequência assinada.
 
-Para ativar: no `.env` local (nunca no Git), `GLPI_MODE=real`, `GLPI_URL`, `GLPI_APP_TOKEN` e `GLPI_USER_TOKEN`; reinicie e use “Sincronizar agora”. **Ainda não validado com as credenciais reais**: os testes usam um servidor GLPI simulado. Na primeira execução real, confirme que os grupos são encontrados, que `Group_Ticket` é legível pelo perfil do token, como o formulário aparece no conteúdo do chamado e se os anexos são retornados. Anexar o documento assinado e encerrar o chamado continuam sendo feitos no GLPI; a central registra essa declaração separadamente da conclusão local. `SignatureProvider` é interface futura; Clicksign/Clint não estão conectados.
+Para ativar: no `.env` local (nunca no Git), `GLPI_MODE=real`, `GLPI_URL`, `GLPI_APP_TOKEN` e `GLPI_USER_TOKEN`; reinicie e use “Sincronizar agora”. A conexão e o download foram validados com os grupos autorizados na instalação real; os testes automatizados usam um servidor GLPI simulado. Na primeira execução real, confirme que os grupos são encontrados, que `Group_Ticket` é legível pelo perfil do token, como o formulário aparece no conteúdo do chamado e se os anexos são retornados. Anexar o documento assinado e encerrar o chamado continuam sendo feitos no GLPI; a central registra essa declaração separadamente da conclusão local. `SignatureProvider` é interface futura; Clicksign/Clint não estão conectados.
 
 ## Segurança e limites operacionais
+
+### Modelos editáveis e análise de anexos
+
+Em Modelos, **Baixar DOCX editável** entrega a versão oficial do catálogo para Word/Google Docs, com homologação preservada como pendência quando aplicável. Na demanda, **Analisar valores do contrato recebido** compara os campos selecionados de um anexo DOCX com valores e referência conferidos pelo operador. Resultado divergente encaminha para correção manual; ausências, ambiguidades, imagens e PDFs são inconclusivos. O original, cada correção e os resultados são imutáveis (migração 012). As análises não substituem revisão contratual, conferência do modelo ou assinatura. Veja `entregas/Modelos_Editaveis_e_Analise_GLPI_2026-10-21.md` para o fluxo e limites.
+
+Na triagem de um chamado real, “Baixar anexo” consulta o arquivo original via GET `Document/:id?alt=media`. A Central exige sessão autenticada e permissões `files` e `bank`, verifica o anexo no chamado importado e reconfirma no GLPI o grupo atribuído e o vínculo do documento. Tokens ficam no backend. O download tem limite de 20 MB, tempo máximo e limite de requisições; é entregue como anexo com `no-store`. A sincronização continua trazendo somente metadados: o arquivo é baixado sob demanda e não se torna evidência verificada automaticamente.
+
+Na seleção GLPI, “recentes” significa maiores números de chamado (`tickets_id`), em ordem decrescente, e não a data da última alteração ou o ID do vínculo com o grupo. A ordenação é solicitada ao GLPI antes da paginação; vínculos duplicados e tipos de ator não autorizados não consomem o lote. Os candidatos de cada grupo são unidos e o limite global só é aplicado depois. A leitura é interrompida se a API devolver ordem inconsistente ou se forem examinados 10.000 vínculos por grupo sem completar o lote nem alcançar o fim. Não há retorno silencioso de um lote parcial nesses casos.
 
 A revisão de segurança adicionou rejeição de campos duplicados no DOCX e controle de versão no salvamento comercial. A API exige `expected_version` igual a `data_version`; versões antigas ou ausentes recebem HTTP 409, sem sobrescrever dados. A interface envia a versão aberta; em conflito, reabra a demanda e revise antes de reenviar.
 
@@ -190,7 +208,15 @@ npm test
 npm run build
 ```
 
-Testes usam banco temporário independente e HTTP local. São cinco arquivos: `essential` (fluxo, permissões, conferência, numeração, CSV e regras anteriores), `official-models` (extensos, catálogo, os oito modelos, aditivo de vigência de ponta a ponta com prévia, homologação, adulteração, aprovação, assinatura e conclusão), `glpi` (servidor GLPI simulado: somente GET, paginação, grupos, tipo de ator, tempo limite, tokens ocultos, idempotência, mudanças externas, validação cruzada), `rules` (matriz de responsabilidades, migração, signatários, encerramento no GLPI) e testes menores de validação, origens e produção. Build inclui TypeScript.
+Testes usam banco temporário independente e HTTP local. `essential` cobre fluxo, permissões, conferência, numeração e CSV; `official-models`, os oito modelos e o fluxo oficial; `glpi`, o adaptador somente leitura com servidor simulado; `rules`, responsabilidades e operações jurídicas; `regressions`, classificação de instrumentos, produção, encerramento, concorrência de governança, campos por operação e assinados de até 8 MB. Há também testes de validação, origens e produção. Build inclui TypeScript.
+
+### Correções de integridade de 20/10/2026
+
+Operações jurídicas ficam identificadas pelo tipo e pela matriz de origem, inclusive registros antigos; não podem ser selecionadas como matriz nem receber histórico de numeração. Novas conclusões dessas operações recebem status `Concluído`. Distrato, descredenciamento e migração atualizam a matriz de origem para `Distratado`, `Descredenciado` e `Migrado`, respectivamente, na mesma transação da conclusão. Migração exige distrato da mesma matriz e novo contrato concluídos. Registros históricos não têm seus estados reescritos automaticamente.
+
+A governança exige `expected_version`, obtido como `data_version` no GET de governança; uma versão antiga ou ausente retorna HTTP 409 sem sobrescrever signatários ou requisitos. Os dados de origem e flags do sistema são preservados. Modelos demonstrativos são bloqueados em produção na geração, upload, avanço, registro de assinatura e conclusão. Demandas concluídas/canceladas rejeitam nova conferência antes de gravar revisões ou alterar etapas.
+
+Os campos mínimos e os campos exibidos das operações específicas ficam em `shared/request-policy.ts` (`operationFields`), sem herdar taxas e contas de um contrato de garantia. Evidências e validadores continuam seguindo a governança. Minutas e modelos têm limite de 5 MB; evidências e documentos finais assinados, 8 MB.
 
 Interface adaptada à identidade analisada em kedu.com.br: Poppins, azul petróleo, azul vivo, fundos claros e componentes consistentes; tokens em `src/style.css`. Google Fonts exige rede, com Arial de fallback.
 
@@ -213,3 +239,4 @@ O campo **Valor do cashback (R$)** é monetário (`cashbackValor`); o antigo cas
 As conversões gráficas do Canva em `entregas/modelos_canva` servem apenas de referência visual; a automação usa as adaptações de `templates/official` (ver “Modelos oficiais do Canva”), ainda pendentes de homologação jurídica.
 
 Para conferir a adequação: `npm test` cobre aditivo de vigência sem exigências comerciais alheias, datas incompletas, retrato imutável, restrição bancária, edição concorrente e invalidação após nova conferência. `npm run build` inclui a checagem de tipos.
+

@@ -46,6 +46,7 @@ export function GovernancePanel({ detail, can, action, api, busy }: Props) {
     setCatalog(c);
     setDraft({
       ...g.details,
+      expected_version: g.data_version,
       subtype: g.details.subtype || "",
       reportDate: g.details.reportDate || c.reportDate,
       signingMode: g.details.signingMode || "Administrador nomeado",
@@ -707,7 +708,7 @@ export function SignedHistoryPanel({ contracts, can, action, api, busy }: any) {
             Contrato matriz
             <select name="matrix" required>
               {contracts
-                .filter((c: any) => c.status === "Assinado" && !c.parent_id)
+                .filter((c: any) => c.status === "Assinado" && c.instrument_kind === "Matriz")
                 .map((c: any) => (
                   <option key={c.id} value={c.id}>
                     {c.school} • {c.id}

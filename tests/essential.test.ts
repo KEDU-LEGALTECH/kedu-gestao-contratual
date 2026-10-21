@@ -10,6 +10,9 @@ process.env.DATABASE_PATH = join(
 );
 process.env.NODE_ENV = "test";
 process.env.DEMO_SEED = "true";
+// Never inherit the operational GLPI credentials/mode from the local .env.
+process.env.GLPI_MODE = "demo";
+process.env.GLPI_SYNC_INTERVAL_MINUTES = "0";
 const { default: app, csvCell } = await import("../server/index.js");
 const { all, one, run, db } = await import("../server/db.js");
 const { generate, review, demoTemplate, fixed } =
@@ -20,7 +23,7 @@ await new Promise<void>((resolve) => server.on("listening", resolve));
 const base = `http://127.0.0.1:${(server.address() as any).port}/api`;
 async function request(path: string, body?: any, cookie = "", method?: string) {
   if (
-    path.endsWith("/data") &&
+    (path.endsWith("/data") || path.endsWith("/governance")) &&
     method === "PUT" &&
     body &&
     !("expected_version" in body)

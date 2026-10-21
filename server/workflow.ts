@@ -2,6 +2,7 @@ import { basisPoints, cents } from "./decimal.js";
 import { one, all, run, id, now, db, audit } from "./db.js";
 import { governanceMissing, requirements, humanMissing } from "./governance.js";
 import { requiredFor } from "../shared/request-policy.js";
+import { assertProductionTemplate } from "./template-policy.js";
 export const stages = [
   "Recebido",
   "Aguardando informações",
@@ -115,7 +116,7 @@ export function allocateAddendum(
   if (ownTransaction) db.exec("BEGIN IMMEDIATE");
   try {
     const matrix = one(
-      "SELECT * FROM contracts WHERE id=? AND school_id=? AND status=?",
+      "SELECT * FROM contract_registry WHERE id=? AND school_id=? AND status=? AND instrument_kind='Matriz'",
       parent,
       school,
       "Assinado",
@@ -169,6 +170,16 @@ export function allocateAddendum(
   }
 }
 export function transition(user: any, d: any, stage: string, reason?: string) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    applyTransition(user, d, stage, reason);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+function applyTransition(user: any, d: any, stage: string, reason?: string) {
   permit(user, "write");
   access(user, d);
   if (["Concluído", "Cancelado"].includes(d.stage))
@@ -176,6 +187,8 @@ export function transition(user: any, d: any, stage: string, reason?: string) {
       "Demandas concluídas ou canceladas têm histórico encerrado. Crie uma nova demanda.",
     );
   if (!stages.includes(stage)) throw Error("Etapa inválida.");
+  if (!["Cancelado", "Devolvido", "Aguardando informações"].includes(stage) && one("SELECT demand_id FROM glpi_intakes WHERE demand_id=? AND confirmed_at IS NULL", d.id))
+    throw Error("Confira o recebimento GLPI antes de avançar a demanda.");
   if (["Cancelado", "Devolvido"].includes(stage)) {
     if (!reason?.trim()) throw Error("Informe uma justificativa.");
     invalidate(d.id);
@@ -192,6 +205,18 @@ export function transition(user: any, d: any, stage: string, reason?: string) {
     if (!edges[d.stage]?.includes(stage))
       throw Error("Transição não permitida.");
     const doc = latest(d.id);
+    if (
+      doc &&
+      ["Em conferência", "Em aprovação", "Em assinatura", "Concluído"].includes(
+        stage,
+      )
+    )
+      assertProductionTemplate(
+        one(
+          "SELECT demonstration FROM template_catalog WHERE version_id=?",
+          doc.template_version,
+        ),
+      );
     if (["Em conferência", "Em aprovação", "Em assinatura"].includes(stage)) {
       if (required(d).length || !d.confirmed)
         throw Error(
@@ -231,8 +256,11 @@ export function transition(user: any, d: any, stage: string, reason?: string) {
       if (!doc?.signed)
         throw Error("Anexe o documento assinado antes de concluir.");
       const terms = JSON.parse(d.data);
-      const contract = one("SELECT * FROM contracts WHERE id=?", d.contract_id);
-      if (contract?.parent_id)
+      const contract = one(
+        "SELECT * FROM contract_registry WHERE id=?",
+        d.contract_id,
+      );
+      if (contract?.instrument_kind === "Aditivo")
         run(
           "INSERT INTO signed_history VALUES(?,?,?,?,?,?,?,?)",
           id(),
@@ -246,11 +274,45 @@ export function transition(user: any, d: any, stage: string, reason?: string) {
         );
       run(
         "UPDATE contracts SET status=?,start=?,end=? WHERE id=?",
-        "Assinado",
+        contract?.instrument_kind === "Operação jurídica"
+          ? "Concluído"
+          : "Assinado",
         terms.inicio || null,
         terms.fim || null,
         d.contract_id,
       );
+      const sourceStatus: Record<string, string> = {
+        Distrato: "Distratado",
+        Descredenciamento: "Descredenciado",
+        "Migração de modalidade": "Migrado",
+      };
+      if (sourceStatus[d.type]) {
+        if (d.type === "Migração de modalidade" && required(d).length)
+          throw Error(
+            "Conclua os requisitos e as demandas vinculadas antes de encerrar a migração.",
+          );
+        const matrix = one(
+          "SELECT * FROM contract_registry WHERE id=? AND school_id=? AND instrument_kind='Matriz'",
+          terms.matriz || "",
+          d.school_id,
+        );
+        if (!matrix || matrix.id === d.contract_id)
+          throw Error("Matriz de origem inválida para concluir a operação.");
+        if (!(
+          matrix.status === "Assinado" ||
+          (d.type === "Migração de modalidade" &&
+            matrix.status === "Distratado")
+        ))
+          throw Error(
+            "A matriz de origem já foi encerrada por outra operação. Revise o vínculo antes de concluir.",
+          );
+        run(
+          "UPDATE contracts SET status=? WHERE id=?",
+          sourceStatus[d.type],
+          matrix.id,
+        );
+        audit(d.id, user.id, `Matriz ${matrix.id}: ${sourceStatus[d.type]}`);
+      }
     }
   }
   run(

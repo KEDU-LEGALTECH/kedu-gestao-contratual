@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { RefreshCw, TriangleAlert, Link2, FileText, Inbox } from "lucide-react";
+import { RefreshCw, TriangleAlert, Link2, FileText, Inbox, Download } from "lucide-react";
+import { organizationAllowed } from "../shared/organization-policy";
 type Props = {
   data: any;
   can: (p: string) => boolean;
@@ -74,8 +75,8 @@ export function GlpiPage({ data, can, action, api, busy, open }: Props) {
           </button>
         )}
         <p className="muted">
-          A importação não cria demandas nem altera dados locais: cada chamado é conferido e vinculado por uma
-          pessoa. Anexar o documento assinado e encerrar o chamado continuam no GLPI.
+          A importação registra organizações com CNPJ válido e razão social informada, aguardando classificação na seção Organizações.
+          Cada chamado real cria uma demanda em Recebido. Organização, tipo, responsável, prazo e matriz são conferidos dentro da demanda antes de avançar. Anexar o documento assinado e encerrar o chamado continuam no GLPI.
         </p>
         <h3>Histórico de sincronização</h3>
         {(data.sync || []).slice(0, 5).map((s: any) => (
@@ -120,7 +121,7 @@ export function GlpiPage({ data, can, action, api, busy, open }: Props) {
           {!ticket ? (
             <p className="empty-text">Selecione um chamado para conferir os dados e as pendências.</p>
           ) : (
-            <TicketDetail key={ticket.external_id + ticket.state} ticket={ticket} data={data} can={can} action={action} api={api} busy={busy} open={open} />
+            <TicketDetail key={ticket.external_id + ticket.state + (ticket.analysis.schoolId || "")} ticket={ticket} data={data} can={can} action={action} api={api} busy={busy} open={open} />
           )}
         </section>
       </div>
@@ -140,9 +141,31 @@ function TicketDetail({ ticket, data, can, action, api, busy, open }: Props & { 
     attested: false,
   });
   const [note, setNote] = useState("");
+  const [downloading, setDownloading] = useState("");
+  const [downloadError, setDownloadError] = useState("");
+  async function downloadAttachment(document: any) {
+    setDownloading(document.id);
+    setDownloadError("");
+    try {
+      const response = await fetch(`/api/glpi/tickets/${encodeURIComponent(ticket.external_id)}/documents/${encodeURIComponent(document.id)}/download`);
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw Error(body?.error || "Não foi possível baixar o anexo.");
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const link = window.document.createElement("a");
+      link.href = url;
+      link.download = document.name || "anexo";
+      window.document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (error: any) { setDownloadError(error.message); }
+    finally { setDownloading(""); }
+  }
   const set = (key: string, value: any) => setForm((f) => ({ ...f, [key]: value }));
   const matrices = data.contracts.filter(
-    (c: any) => c.school_id === form.school_id && !c.parent_id && c.status === "Assinado",
+    (c: any) => c.school_id === form.school_id && c.instrument_kind === "Matriz" && c.status === "Assinado",
   );
   return (
     <>
@@ -174,17 +197,23 @@ function TicketDetail({ ticket, data, can, action, api, busy, open }: Props & { 
       <h3>Anexos no GLPI</h3>
       {ticket.documents.length ? (
         ticket.documents.map((d: any) => (
-          <div className="document" key={d.id}>
+          <div className="document glpi-attachment" key={d.id}>
             <FileText size={20} aria-hidden="true" />
             <div>
               <strong>{d.name}</strong>
-              <small>{d.mime || "tipo não informado"} • não baixado; conferir no GLPI</small>
+              <small>{d.mime || "tipo não informado"} • arquivo original do GLPI</small>
             </div>
+            {ticket.mode === "real" && can("files") && can("bank") && (
+              <button className="secondary" disabled={!!downloading} onClick={() => downloadAttachment(d)}>
+                <Download size={16} /> {downloading === d.id ? "Baixando…" : "Baixar anexo"}
+              </button>
+            )}
           </div>
         ))
       ) : (
         <p className="muted">{ticket.documentsAvailable ? "Nenhum anexo retornado." : "Anexos indisponíveis para o token."}</p>
       )}
+      {downloadError && <p className="inline-warning" role="alert">{downloadError}</p>}
       <h3>Pendências</h3>
       <ul className="pending-list">
         {a.pendencies.map((p: string) => (
@@ -232,10 +261,10 @@ function TicketDetail({ ticket, data, can, action, api, busy, open }: Props & { 
           <h3>Criar demanda a partir do chamado</h3>
           <div className="form-grid">
             <label>
-              Escola
+              Escola / organização confirmada
               <select value={form.school_id} onChange={(e) => set("school_id", e.target.value)} required>
                 <option value="">Selecione (cadastre a escola se necessário)</option>
-                {data.schools.map((s: any) => (
+                {(data.organizations || data.schools).filter((s: any) => organizationAllowed(form.type, s.organization_kind || "Escola")).map((s: any) => (
                   <option key={s.id} value={s.id}>
                     {s.name} — {s.cnpj}
                   </option>
@@ -244,7 +273,7 @@ function TicketDetail({ ticket, data, can, action, api, busy, open }: Props & { 
             </label>
             <label>
               Tipo
-              <select value={form.type} onChange={(e) => set("type", e.target.value)} required>
+              <select value={form.type} onChange={(e) => setForm(f => ({ ...f, type: e.target.value, school_id: "", matrix: "" }))} required>
                 <option value="">Selecione</option>
                 {types.map((t) => (
                   <option key={t}>{t}</option>

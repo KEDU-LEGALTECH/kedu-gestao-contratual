@@ -31,6 +31,7 @@ function get(req: any) {
   return d;
 }
 function mutable(d: any) {
+  if (one("SELECT demand_id FROM glpi_intakes WHERE demand_id=? AND confirmed_at IS NULL", d.id)) throw Error("Confira o recebimento GLPI antes de alterar a governança.");
   if (["Concluído", "Cancelado", "Em assinatura"].includes(d.stage))
     throw Error("Esta etapa não permite alterar requisitos ou evidências.");
 }
@@ -91,12 +92,10 @@ export function registerGovernance(app: Express) {
       if (!b.data[key]) throw Error("Preencha o dado atual: " + key);
     const errors = validateData(b.data);
     if (Object.keys(errors).length)
-      return res
-        .status(400)
-        .json({
-          error: "Corrija os dados atuais do contrato.",
-          fields: errors,
-        });
+      return res.status(400).json({
+        error: "Corrija os dados atuais do contrato.",
+        fields: errors,
+      });
     db.exec("BEGIN IMMEDIATE");
     try {
       run(
@@ -165,6 +164,7 @@ export function registerGovernance(app: Express) {
       }));
     }
     res.json({
+      data_version: d.data_version,
       details: g,
       requirements: requirements(d),
       missing: governanceMissing(d),
@@ -187,6 +187,16 @@ export function registerGovernance(app: Express) {
     permit(req.user, "write");
     const d = get(req);
     mutable(d);
+    if (
+      !Number.isInteger(req.body.expected_version) ||
+      req.body.expected_version !== d.data_version
+    )
+      throw Object.assign(
+        Error(
+          "Conflito de edição: reabra a demanda e revise a governança antes de salvar.",
+        ),
+        { status: 409 },
+      );
     const b = z
       .object({
         subtype: z.enum([...subtypes, ""] as unknown as [string, ...string[]]),
@@ -217,11 +227,34 @@ export function registerGovernance(app: Express) {
       })
       .parse(req.body);
     reviewDeadline(b.reportDate);
-    saveDetails(d.id, {
-      ...b,
-      systemLegalFlags: details(d).systemLegalFlags || [],
-    });
-    changed(d, req.user, "Requisitos e signatários atualizados");
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const updated = run(
+        "UPDATE demands SET data_version=data_version+1,confirmed=0,stage='Em elaboração' WHERE id=? AND data_version=?",
+        d.id,
+        req.body.expected_version,
+      );
+      if (!updated.changes)
+        throw Object.assign(
+          Error("Conflito de edição: reabra a demanda e revise a governança."),
+          { status: 409 },
+        );
+      saveDetails(d.id, {
+        ...details(d),
+        ...b,
+        systemLegalFlags: details(d).systemLegalFlags || [],
+      });
+      invalidate(d.id);
+      audit(
+        d.id,
+        req.user.id,
+        "Requisitos e signatários atualizados; confirmação e aprovações invalidadas",
+      );
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
     res.json({ ok: true });
   });
   app.post("/api/demands/:id/glpi-reference", (req: any, res) => {
@@ -313,8 +346,15 @@ export function registerGovernance(app: Express) {
   });
   app.post("/api/contracts/:id/signed-history", (req: any, res) => {
     permit(req.user, "risk");
-    const matrix = one("SELECT * FROM contracts WHERE id=?", req.params.id);
-    if (!matrix || matrix.parent_id || matrix.status !== "Assinado")
+    const matrix = one(
+      "SELECT * FROM contract_registry WHERE id=?",
+      req.params.id,
+    );
+    if (
+      !matrix ||
+      matrix.instrument_kind !== "Matriz" ||
+      matrix.status !== "Assinado"
+    )
       throw Error("Selecione contrato matriz assinado.");
     const b = z
       .object({
@@ -455,7 +495,9 @@ export function registerGovernance(app: Express) {
     permit(req.user, "write");
     const d = get(req);
     if (d.stage !== "Concluído")
-      throw Error("Registre o encerramento no GLPI somente após a conclusão local com documento assinado.");
+      throw Error(
+        "Registre o encerramento no GLPI somente após a conclusão local com documento assinado.",
+      );
     const b = z
       .object({
         attested: z.literal(true),
@@ -466,12 +508,18 @@ export function registerGovernance(app: Express) {
     if (g.glpiClosure) throw Error("Encerramento no GLPI já registrado.");
     saveDetails(d.id, {
       ...g,
-      glpiClosure: { by: req.user.id, name: req.user.name, at: now(), note: b.note },
+      glpiClosure: {
+        by: req.user.id,
+        name: req.user.name,
+        at: now(),
+        note: b.note,
+      },
     });
     audit(
       d.id,
       req.user.id,
-      "Anexação do assinado e encerramento do chamado no GLPI declarados manualmente (sem escrita via API): " + b.note,
+      "Anexação do assinado e encerramento do chamado no GLPI declarados manualmente (sem escrita via API): " +
+        b.note,
     );
     res.json({ ok: true });
   });
@@ -514,6 +562,7 @@ export function registerGovernance(app: Express) {
 export function seedCatalog() {
   if (process.env.NODE_ENV === "production" || process.env.DEMO_SEED !== "true")
     return;
+  if (one("SELECT value FROM settings WHERE key='demoDisabled'")?.value === "true") return;
   run(
     "INSERT OR IGNORE INTO template_catalog VALUES(?,?,?,?)",
     "tv1",

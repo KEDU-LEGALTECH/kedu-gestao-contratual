@@ -12,6 +12,7 @@ export const roles = [
 ];
 export function seed() {
   if (process.env.NODE_ENV === "production" || process.env.DEMO_SEED !== "true") return;
+  if (one("SELECT value FROM settings WHERE key='demoDisabled'")?.value === "true") return;
   if (one("SELECT id FROM demands LIMIT 1")) return;
   roles.forEach((role, i) =>
     run(
@@ -260,7 +261,7 @@ if (process.env.NODE_ENV === "production" && process.env.DEMO_SEED === "true")
 if (process.env.NODE_ENV === "production" && one("SELECT id FROM users WHERE email LIKE '%@demo.kedu.local' LIMIT 1"))
   throw Error("Banco contém contas demonstrativas. Use um banco separado com usuários reais em produção.");
 seed();
-if (process.env.NODE_ENV !== "production" && process.env.DEMO_SEED === "true") {
+if (process.env.NODE_ENV !== "production" && process.env.DEMO_SEED === "true" && one("SELECT value FROM settings WHERE key='demoDisabled'")?.value !== "true") {
 for (const [i, role, email, name] of [
   [6, "Risco", "risco@demo.kedu.local", "Risco demonstrativo"],
   [7, "Financeiro", "financeiro@demo.kedu.local", "Financeiro demonstrativo"],

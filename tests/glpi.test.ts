@@ -9,7 +9,7 @@ process.env.NODE_ENV = "test";
 process.env.DEMO_SEED = "true";
 const { default: app } = await import("../server/index.js");
 const { one, all, run } = await import("../server/db.js");
-const { RealGlpiSource, glpiConfig, configProblems } = await import("../server/glpi.js");
+const { GlpiClient, RealGlpiSource, glpiConfig, configProblems } = await import("../server/glpi.js");
 const { analyzeTicket, htmlToText, validCnpj } = await import("../server/glpi-analysis.js");
 const { syncGlpi } = await import("../server/glpi-sync.js");
 
@@ -73,7 +73,12 @@ const glpi = createServer(async (req, res) => {
       ].filter((g) => g.name.includes(String(name))),
     );
   }
-  if (path === "Group/21/Group_Ticket") return page(groupTickets);
+  if (path === "Group/21/Group_Ticket") {
+    const items = [...groupTickets];
+    if (url.searchParams.get("sort") === "tickets_id" && url.searchParams.get("order") === "DESC")
+      items.sort((a, b) => b.tickets_id - a.tickets_id);
+    return page(items);
+  }
   if (path === "Group/22/Group_Ticket") return page([]);
   let m = /^Ticket\/(\d+)$/.exec(path);
   if (m)
@@ -113,9 +118,9 @@ const config = (over: Record<string, string> = {}) =>
     GLPI_RETRIES: "1",
     ...over,
   });
-async function request(path: string, body?: any, cookie = "") {
+async function request(path: string, body?: any, cookie = "", method?: string) {
   const res = await fetch(base + path, {
-    method: body ? "POST" : "GET",
+    method: method || (body ? "POST" : "GET"),
     headers: { "Content-Type": "application/json", cookie },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -125,9 +130,21 @@ const admin = (await request("/login", { email: "admin@demo.kedu.local", passwor
 
 test("Configuração exige HTTPS, tokens e grupos, sem expor segredos", () => {
   assert.deepEqual(configProblems(config()), []);
-  assert.ok(configProblems(glpiConfig({ GLPI_URL: "http://helpdesk.kedu.com.br/apirest.php" })).length >= 3);
+  assert.ok(configProblems(glpiConfig({ GLPI_URL: "http://glpi.exemplo.com.br/apirest.php" })).length >= 3);
   assert.deepEqual(glpiConfig({}).groups, ["JURIDICO CONTRATOS", "JURIDICO REVISÃO"]);
   assert.deepEqual(glpiConfig({}).actorTypes, [2]);
+});
+
+test("Recursos fora da lista de leitura são bloqueados antes de qualquer requisição", async () => {
+  let sent = 0;
+  const client = new GlpiClient(config(), async () => {
+    sent++;
+    throw Error("Não deveria acessar a rede");
+  });
+  for (const path of ["Ticket", "lostPassword", "changeActiveProfile", "../Ticket/1", "Ticket/1/../../lostPassword", "Ticket/1?force=1", "Document/1/download", "plugins/custom/write", "https://example.com"]) {
+    await assert.rejects(client.get(path), /Recurso bloqueado/);
+  }
+  assert.equal(sent, 0);
 });
 
 test("Adaptador real lê somente GET, pagina, filtra grupos e tipo de ator e encerra a sessão", async () => {
@@ -171,7 +188,7 @@ test("Chamado de vigência aponta pendências sem inventar datas, numeração ou
   assert.ok(htmlToText(content).includes("RAZÃO SOCIAL: Escola Exemplo Ltda."));
   const analysis = analyzeTicket(
     {
-      externalId: "2026101296",
+      externalId: "2026100001",
       title: "JURIDICO : SOLICITAÇÃO DE ADITIVO DE CONTRATO PARA ESCOLAS",
       status: "2",
       created: "",
@@ -186,7 +203,7 @@ test("Chamado de vigência aponta pendências sem inventar datas, numeração ou
     { schools: [{ id: "x", cnpj: "11.444.777/0001-61", legal_name: "Escola Exemplo Ltda." }], matrices: [{ id: "m1", school_id: "x" }] },
   );
   assert.equal(analysis.fields.cnpj.value, "11.444.777/0001-61");
-  assert.match(analysis.fields.cnpj.origin, /GLPI #2026101296/);
+  assert.match(analysis.fields.cnpj.origin, /GLPI #2026100001/);
   assert.deepEqual(analysis.suggestion.type + "/" + analysis.suggestion.subtype, "Aditivo/Vigência");
   assert.equal(analysis.schoolId, "x");
   assert.equal(analysis.matrixId, "m1");
@@ -223,17 +240,20 @@ test("Sincronização é idempotente, preserva dados locais e registra mudanças
   let tickets = (await request("/glpi/tickets", undefined, admin)).data;
   const ticket = tickets.find((t: any) => t.external_id === "777");
   assert.equal(ticket.analysis.schoolId, "s0");
-  assert.equal(ticket.state, "novo");
-  // A person confirms school, type, subtype and matrix; nothing is created automatically.
+  assert.equal(ticket.state, "vinculado");
+  assert.ok(ticket.demand_id);
+  assert.equal(one("SELECT stage FROM demands WHERE id=?", ticket.demand_id).stage, "Recebido");
+  // Receipt is automatic; a person confirms school, type, subtype and matrix in the demand.
   run("UPDATE contracts SET status='Assinado' WHERE id='c0'");
   run("INSERT OR IGNORE INTO signed_history VALUES('h-glpi','c0',0,'Clicksign','Matriz fictícia conferida','2026-01-01','u0','2026-01-01')");
   const created = await request(
-    "/glpi/tickets/777/demand",
-    { attested: true, school_id: "s0", type: "Aditivo", subtype: "Vigência", owner: "u2", priority: "Normal", due: "2030-01-01", matrix: "c0" },
+    "/demands/" + ticket.demand_id + "/intake",
+    { expected_version: 1, expected_hash: one("SELECT hash FROM glpi_tickets WHERE external_id='777'").hash, note: "Chamado e matriz fictícios conferidos pelo responsável", attested: true, school_id: "s0", type: "Aditivo", subtype: "Vigência", owner: "u2", priority: "Normal", due: "2030-01-01", matrix: "c0" },
     admin,
+    "PUT",
   );
   assert.equal(created.status, 200, JSON.stringify(created.data));
-  const demand = one("SELECT * FROM demands WHERE id=?", created.data.id);
+  const demand = one("SELECT * FROM demands WHERE id=?", ticket.demand_id);
   assert.equal(demand.glpi_id, "777");
   const data = JSON.parse(demand.data);
   assert.match(data.motivo, /Outubro\/2026 para Novembro\/2026/);

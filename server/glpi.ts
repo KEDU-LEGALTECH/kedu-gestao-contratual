@@ -105,6 +105,11 @@ export class GlpiClient {
     return out.slice(0, 300);
   }
   async get(path: string, params: Record<string, string> = {}, signal?: AbortSignal) {
+    // Restrict both the HTTP verb and the resource, even if a future caller passes a new path.
+    // Session creation/termination changes only this integration's API session.
+    const allowed = /^(?:initSession|killSession|getMyProfiles|getActiveProfile|getMyEntities|getActiveEntities|Group(?:\/\d+(?:\/Group_Ticket)?)?|Ticket\/\d+(?:\/(?:ITILFollowup|Document_Item|Group_Ticket))?|Document\/\d+)$/;
+    if (!allowed.test(path))
+      throw new GlpiError("Recurso bloqueado: a integração GLPI permite apenas as consultas de leitura previstas.");
     const url = new URL(this.config.url + "/" + path.replace(/^\/+/, ""));
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
     const headers: Record<string, string> = {
@@ -160,6 +165,47 @@ export class GlpiClient {
     if (!body?.session_token) throw new GlpiError("GLPI não retornou session_token.");
     this.session = String(body.session_token);
   }
+  /** Documented GLPI GET /Document/:id?alt=media; credentials stay on the server. */
+  async downloadDocument(id: string, signal: AbortSignal, maxBytes = 20 * 1024 * 1024) {
+    if (!/^\d+$/.test(id) || !this.session) throw new GlpiError("Documento ou sessão GLPI inválidos.");
+    let response: Response;
+    try {
+      response = await this.fetchImpl(this.config.url + "/Document/" + id + "?alt=media", {
+        method: "GET",
+        headers: { "App-Token": this.config.appToken, "Session-Token": this.session, Accept: "application/octet-stream" },
+        redirect: "error",
+        signal: AbortSignal.any([signal, AbortSignal.timeout(this.config.timeoutMs)]),
+      });
+    } catch (error: any) {
+      throw new GlpiError("Falha ao baixar documento do GLPI: " + this.sanitize(error?.message));
+    }
+    if (response.status !== 200 || /json|text\/html/i.test(response.headers.get("content-type") || "")) {
+      await response.body?.cancel();
+      throw new GlpiError("O GLPI não disponibilizou o arquivo para download (HTTP " + response.status + "). Confira a permissão de leitura dos documentos.");
+    }
+    if (Number(response.headers.get("content-length")) > maxBytes) {
+      await response.body?.cancel();
+      throw new GlpiError("Anexo excede o limite de download de 20 MB.");
+    }
+    if (!response.body) throw new GlpiError("O GLPI retornou um arquivo vazio.");
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.length;
+        if (size > maxBytes) {
+          await reader.cancel();
+          throw new GlpiError("Anexo excede o limite de download de 20 MB.");
+        }
+        chunks.push(value);
+      }
+    } finally { reader.releaseLock(); }
+    if (!size) throw new GlpiError("O GLPI retornou um arquivo vazio.");
+    return Buffer.concat(chunks);
+  }
   async close() {
     if (!this.session) return;
     try {
@@ -201,21 +247,48 @@ export class RealGlpiSource implements TicketSource {
       const groups = await this.groups(client, signal);
       const ids = new Map<string, Set<string>>();
       for (const group of groups) {
-        const links = await client.list(`Group/${group.id}/Group_Ticket`, {}, this.config.maxTickets * 4, signal);
-        for (const link of links) {
-          if (Number(link.groups_id) !== group.id || !this.config.actorTypes.includes(Number(link.type))) continue;
-          const id = String(link.tickets_id);
-          if (!/^\d+$/.test(id)) continue;
+        for (const id of await this.recentIds(client, group.id, signal)) {
           ids.set(id, (ids.get(id) || new Set()).add(group.name));
         }
       }
-      const selected = [...ids.keys()].sort((a, b) => Number(b) - Number(a)).slice(0, this.config.maxTickets);
+      const selected = [...ids.keys()].sort((a, b) => BigInt(a) > BigInt(b) ? -1 : BigInt(a) < BigInt(b) ? 1 : 0).slice(0, this.config.maxTickets);
       const tickets: RawTicket[] = [];
       for (const id of selected) tickets.push(await this.ticket(client, id, [...ids.get(id)!], signal));
       return tickets;
     } finally {
       await client.close();
     }
+  }
+  /** Ask GLPI to sort by ticket number BEFORE pagination, not by the association's ID.
+   * Newest means highest ticket ID, not the date of its last edit or group assignment.
+   * N unique tickets per group suffice to obtain the global top N across the groups. */
+  private async recentIds(client: GlpiClient, groupId: number, signal: AbortSignal) {
+    const selected = new Set<string>();
+    const scanLimit = 10000;
+    let previous: bigint | null = null;
+    for (let start = 0; start < scanLimit;) {
+      const end = Math.min(start + this.config.pageSize, scanLimit) - 1;
+      const requested = end - start + 1;
+      const { body, range } = await client.get(`Group/${groupId}/Group_Ticket`, {
+        sort: "tickets_id", order: "DESC", range: `${start}-${end}`,
+      }, signal);
+      if (!Array.isArray(body)) throw new GlpiError("Lista de vínculos GLPI inválida; seleção dos recentes interrompida.");
+      for (const link of body) {
+        const id = String(link.tickets_id);
+        if (!/^\d+$/.test(id)) throw new GlpiError("Vínculo GLPI sem número de chamado válido.");
+        const numericId = BigInt(id);
+        if (previous !== null && numericId > previous)
+          throw new GlpiError("GLPI não respeitou a ordenação dos chamados recentes; importação interrompida.");
+        previous = numericId;
+        if (Number(link.groups_id) === groupId && this.config.actorTypes.includes(Number(link.type))) selected.add(id);
+      }
+      if (selected.size >= this.config.maxTickets) return [...selected].slice(0, this.config.maxTickets);
+      const totalMatch = /\/(\d+)$/.exec(range);
+      start += body.length;
+      if (!body.length || (totalMatch ? start >= Number(totalMatch[1]) : body.length < requested))
+        return [...selected];
+    }
+    throw new GlpiError("Limite de vínculos atingido ao selecionar chamados recentes; revise os filtros antes de importar.");
   }
   private async groups(client: GlpiClient, signal: AbortSignal) {
     const out: { id: number; name: string }[] = [];

@@ -1,4 +1,4 @@
-# Local demonstration only. The app seeds its own demo database on startup.
+# Local deployment only. Demonstration data requires explicit DEMO_SEED=true.
 services:
   app:
     build: .
@@ -18,7 +18,7 @@ services:
       GLPI_GROUPS: ${GLPI_GROUPS:-JURIDICO CONTRATOS;JURIDICO REVISÃO}
       GLPI_GROUP_IDS: ${GLPI_GROUP_IDS:-}
       GLPI_SYNC_INTERVAL_MINUTES: ${GLPI_SYNC_INTERVAL_MINUTES:-0}
-      DEMO_SEED: "true"
+      DEMO_SEED: ${DEMO_SEED:-false}
       DEMO_PASSWORD: ${DEMO_PASSWORD:-Kedu-demo-2026!}
       TZ: America/Sao_Paulo
     volumes:
