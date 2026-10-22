@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { FileText, ExternalLink, TriangleAlert } from "lucide-react";
 import { documentConflicts } from "../shared/responsibility";
+import { TemplateViewer } from "./TemplateViewer";
 type Props = {
   data: any;
   can: (p: string) => boolean;
@@ -16,9 +17,12 @@ export function OfficialTemplates({ data, can, action, api, busy }: Props) {
     [attested, setAttested] = useState(false),
     [error, setError] = useState("");
   useEffect(() => {
+    let active=true;
+    setError("");
     api("/templates/official")
-      .then(setItems)
-      .catch((e) => setError(e.message));
+      .then((items)=>{if(active){setItems(items);setError("");}})
+      .catch((e) => {if(active)setError(e.message);});
+    return ()=>{active=false;};
   }, [data]);
   return (
     <section className="panel">
@@ -60,6 +64,7 @@ export function OfficialTemplates({ data, can, action, api, busy }: Props) {
             {t.inactive ? "Inativo" : t.homologated_at ? "Homologado" : "Pendente"}
           </span>
           {can("files") && <a className="secondary" href={`/api/templates/${t.version_id}/editable`}>Baixar DOCX editável</a>}
+          {can("files") && <TemplateViewer id={t.version_id} api={api}/>}
           {can("legal") && !t.homologated_at && !t.inactive && (
             <button className="secondary" onClick={() => setTarget(target === t.version_id ? "" : t.version_id)}>
               Homologar

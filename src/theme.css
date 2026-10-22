@@ -82,7 +82,6 @@
   .topbar > div { min-width: 0; flex-wrap: wrap; gap: 4px; }
   .theme-toggle span { display: none; }
   .theme-toggle { width: 40px; padding: 9px; }
-  .sidebar { overflow-y: auto; }
 }
 @media(max-width: 600px) {
   .topbar { padding: 0 15px; }

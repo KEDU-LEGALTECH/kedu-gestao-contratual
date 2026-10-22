@@ -63,6 +63,17 @@ test("Modelos Canva são baixados como DOCX editável sem homologar nem modifica
   assert.deepEqual(Buffer.from(await response.arrayBuffer()),Buffer.from(template.bytes));
   assert.equal(one("SELECT COUNT(*) n FROM template_homologations").n,before);
 });
+test("Visualização de modelo rascunho exige login e preserva aprovação e original",async()=>{
+ const t=one("SELECT v.id,v.bytes,v.status FROM template_versions v JOIN template_sources s ON s.version_id=v.id LIMIT 1");
+ const before=one("SELECT COUNT(*) n FROM template_homologations").n;
+ const unauth=await fetch(base+`/templates/${t.id}/view`);assert.equal(unauth.status,401);
+ const view=await request(`/templates/${t.id}/view`);assert.equal(view.status,200);
+ assert.ok(view.data.paragraphs.length>0);assert.equal(typeof view.data.paragraphs[0],"string");
+ const current=one("SELECT bytes,status FROM template_versions WHERE id=?",t.id);
+ assert.equal(current.status,t.status);assert.deepEqual(Buffer.from(current.bytes),Buffer.from(t.bytes));
+ assert.equal(one("SELECT COUNT(*) n FROM template_homologations").n,before);
+});
+
 test("Cadastro de matriz externa preserva arquivo, exige declaração e permite reservar apenas o próximo aditivo", async () => {
   const d = await create();
   const bytes = Buffer.from("%PDF-1.4\nmatriz externa teste\n%%EOF");

@@ -1,0 +1,39 @@
+# Preparação de implantação do backend atual. Não executado automaticamente.
+# Ainda usa SQLite persistente; Supabase só após concluir o adaptador e a migração.
+services:
+  app:
+    build: .
+    init: true
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      NODE_ENV: production
+      DEMO_SEED: "false"
+      HOST: 0.0.0.0
+      PORT: "3001"
+      TRUST_PROXY_HOPS: "1"
+      DATABASE_PATH: /app/data/kedu.sqlite
+    expose: ["3001"]
+    volumes:
+      - kedu-production-data:/app/data
+      - kedu-production-backups:/app/backups
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Informe DOMAIN no arquivo de ambiente da implantação}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - kedu-tls:/data
+      - kedu-proxy-config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+volumes:
+  kedu-production-data:
+  kedu-production-backups:
+  kedu-tls:
+  kedu-proxy-config:

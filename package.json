@@ -10,7 +10,12 @@
     "test": "tsx --test tests/*.test.ts",
     "db:prepare": "tsx server/seed.ts",
     "admin:prepare": "tsx server/provision-admin.ts",
-    "db:backup": "tsx server/backup.ts"
+    "db:backup": "tsx server/backup.ts",
+    "documents:reextract": "tsx server/reextract-fields.ts",
+    "migration:prepare": "tsx server/migration-inventory.ts",
+    "supabase:check": "tsx server/supabase-check.ts",
+    "legal:package": "tsx server/legal-review-package.ts",
+    "production:check": "tsx server/readiness.ts"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.13",
@@ -26,6 +31,7 @@
     "multer": "^2.4.0",
     "pdfjs-dist": "^6.4.299",
     "pizzip": "^3.3.0",
+    "postgres": "^3.4.9",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "sharp": "^0.35.5",

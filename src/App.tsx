@@ -3,7 +3,6 @@ import React, { useEffect, useState } from "react";
 import {
   LayoutDashboard,
   Files,
-  School,
   FileCheck2,
   BookOpen,
   ChartNoAxesCombined,
@@ -42,6 +41,7 @@ import { DemandDocuments, DemandPending } from "./DemandDocuments";
 import { OfficialPanel } from "./OfficialPanel";
 import { GlpiPage } from "./GlpiPage";
 import { OfficialTemplates } from "./OfficialTemplates";
+import { TemplateViewer } from "./TemplateViewer";
 import { officialInputs } from "../shared/official-fields";
 import { organizationAllowed } from "../shared/organization-policy";
 import { Organizations } from "./Organizations";
@@ -155,7 +155,6 @@ const nav = [
   ["Dashboard", LayoutDashboard],
   ["Demandas", Files],
   ["Chamados GLPI", Inbox],
-  ["Escolas", School],
   ["Organizações", Files],
   ["Contratos e aditivos", FileCheck2],
   ["Modelos", BookOpen],
@@ -1337,8 +1336,8 @@ export function App() {
                             "Sua operação contratual, de ponta a ponta.",
                           Demandas:
                             "Organize solicitações e acompanhe cada etapa.",
-                          Escolas:
-                            "Uma fonte de dados para cada escola parceira.",
+                          Organizações:
+                            "Escolas, fornecedores e outros cadastros em um só lugar.",
                           "Contratos e aditivos":
                             "Vínculos, vigência e histórico em um só lugar.",
                           Modelos:
@@ -1366,7 +1365,7 @@ export function App() {
                       <Plus size={17} /> Nova demanda
                     </button>
                   )}
-                  {page === "Escolas" && can("schools") && (
+                  {page === "Organizações" && can("schools") && (
                     <button
                       className="primary"
                       onClick={() => setModal("escola")}
@@ -1715,80 +1714,7 @@ export function App() {
                   </p>
                 </>
               )}
-              {page === "Organizações" && <Organizations data={data} can={can} action={action} api={api} busy={busy} />}
-              {page === "Escolas" && (
-                <>
-                  {can("schools") && (
-                    <div className="panel">
-                      <p>Esta lista contém apenas escolas confirmadas. Novos cadastros do GLPI aguardam conferência em Organizações.</p>
-                      <button className="secondary" onClick={() => setPage("Organizações")}>Classificar organizações importadas</button>
-                    </div>
-                  )}
-                  <div className="search standalone">
-                    <Search size={18} />
-                    <input
-                      placeholder="Buscar escola ou CNPJ"
-                      value={query}
-                      onChange={(e) => setQuery(e.target.value)}
-                    />
-                  </div>
-                  <div className="school-grid">
-                    {data.schools
-                      .filter((s: any) =>
-                        (s.name + s.cnpj)
-                          .toLowerCase()
-                          .includes(query.toLowerCase()),
-                      )
-                      .map((s: any) => (
-                        <section className="panel school-card" key={s.id}>
-                          <span className="school-icon">
-                            <School size={24} />
-                          </span>
-                          <h2>{s.name}</h2>
-                          <p>{s.legal_name}</p>
-                          {s.glpi_imported_at && (
-                            <p className="muted">Origem: GLPI #{s.glpi_ticket} • {s.glpi_reviewed_at ? "Cadastro revisado" : "Conferir cadastro e completar os dados"}</p>
-                          )}
-                          <small>
-                            {s.cnpj}
-                            <br />
-                            {s.address}
-                            <br />
-                            {s.contact}
-                          </small>
-                          <div className="school-footer">
-                            <span>
-                              {
-                                data.demands.filter(
-                                  (d: any) => d.school_id === s.id,
-                                ).length
-                              }{" "}
-                              demandas
-                            </span>
-                            <button
-                              className="text-button"
-                              onClick={() => {
-                                setQuery(s.name);
-                                setPage("Demandas");
-                              }}
-                            >
-                              Ver demandas <ChevronRight size={14} />
-                            </button>
-                          </div>
-                          {can("schools") && (
-                            <button
-                              className="text-button"
-                              onClick={() => setModal("editar:" + s.id)}
-                            >
-                              Editar cadastro e representantes
-                            </button>
-                          )}
-                        </section>
-                      ))}
-                  </div>
-                  {!data.schools.length && <p className="muted">Nenhuma escola confirmada. Confira os cadastros em Organizações → Aguardando classificação.</p>}
-                </>
-              )}
+              {page === "Organizações" && <Organizations data={data} can={can} action={action} api={api} busy={busy} onEdit={(o:any)=>setModal("editar:"+o.id)} onDemands={(o:any)=>{setQuery(o.name);setStage("");setOwner("");setPriority("");setType("");setDeadline("");setPage("Demandas");}} />}
               {page === "Contratos e aditivos" && (
                 <>
                   <SignedHistoryPanel
@@ -1938,6 +1864,7 @@ export function App() {
                             Inativar
                           </button>
                         )}
+                        {can("files") && <TemplateViewer id={t.version_id} api={api}/>}
                       </div>
                     ))}
                     <h3>Campos variáveis permitidos</h3>
@@ -2145,7 +2072,7 @@ export function App() {
                   : modal === "escola"
                     ? "Cadastrar escola"
                     : modal.startsWith("editar:")
-                      ? "Editar escola"
+                      ? "Editar organização"
                       : modal === "modelo"
                         ? "Cadastrar modelo DOCX"
                         : "Cadastrar usuário"}
@@ -2337,7 +2264,7 @@ export function App() {
                     ),
                   )}
                   <button className="primary" disabled={busy}>
-                    Salvar escola
+                    {modal.startsWith("editar:")?"Salvar cadastro":"Salvar escola"}
                   </button>
                 </form>
                 {modal.startsWith("editar:") && (

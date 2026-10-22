@@ -123,7 +123,20 @@ a svg {
   flex-direction: column;
   padding: 32px 18px 0;
   z-index: 20;
+  max-height: 100dvh;
+  overflow: hidden;
 }
+.sidebar > .brand,
+.sidebar > .workspace,
+.sidebar-bottom { flex-shrink: 0; }
+.sidebar > nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.sidebar > nav button { flex-shrink: 0; }
 .brand {
   padding: 0 15px;
   display: flex;
@@ -245,6 +258,14 @@ nav button.active:before {
   border: 0;
   color: #80909a;
   padding: 3px;
+  flex-shrink: 0;
+}
+.profile > div { min-width: 0; overflow-wrap: anywhere; }
+@media (max-height: 760px) {
+  .sidebar { padding-top: 18px; }
+  .sidebar .workspace { margin-top: 20px; margin-bottom: 16px; }
+  .sidebar .protected { margin-top: 12px; margin-bottom: 12px; padding: 10px 9px; }
+  .sidebar .profile { padding-top: 12px; padding-bottom: 12px; }
 }
 .avatar {
   width: 34px;
@@ -973,6 +994,7 @@ footer span {
 }
 .template-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 18px;
   padding: 18px 0;
@@ -1901,3 +1923,6 @@ input[type="checkbox"] {
     gap: var(--space-1);
   }
 }
+.template-row > .template-viewer { width: 100%; min-width: 0; flex: 0 0 100%; }
+.template-text-preview { margin-top: 16px; padding: 20px; border: 1px solid var(--border, #718895); border-radius: 10px; max-height: 65vh; overflow: auto; overflow-wrap: anywhere; }
+.template-text-preview p { white-space: pre-wrap; line-height: 1.7; margin-bottom: 14px; }

@@ -165,7 +165,8 @@ export function scheduleContractProcessing() {
  }
 }
 export function processingSummary(did:string) {
- const {ticket}=processingSource(did);if(!ticket)return null;
+ const {demand,ticket}=processingSource(did);if(!ticket)return null;
+ if(["Concluído","Cancelado","Em assinatura"].includes(demand.stage))return {status:demand.stage,revision:one("SELECT revision FROM contract_processing WHERE demand_id=?",did)?.revision||0,issues:0};
  const j=one("SELECT status,ticket_hash,revision,result FROM contract_processing WHERE demand_id=?",did);
  if(!j || j.ticket_hash!==ticket.hash)return {status:"Analisando",revision:j?.revision||0};
  const result=JSON.parse(j.result);

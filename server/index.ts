@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import { contractParagraphs } from "./attachment-analysis.js";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import cookieParser from "cookie-parser";
@@ -72,6 +73,7 @@ import { scheduleContractProcessing,processingSummary } from "./contract-process
 import { processingView,registerProcessingRoutes } from "./processing-routes.js";
 import { fieldLabels as officialInputs } from "../shared/official-fields.js";
 import { officialVisible } from "../shared/request-policy.js";
+import { startBackups } from "./backup-service.js";
 import {
   registerGovernance,
   seedCatalog,
@@ -95,10 +97,13 @@ for (const message of officialCatalog.skipped)
   console.warn("Modelo oficial não registrado: " + message);
 startSchedule();
 const app = express();
+if(process.env.TRUST_PROXY_HOPS==="1")app.set("trust proxy",1);
 app.disable("x-powered-by");
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
+startBackups();
+app.get("/healthz",(_req,res)=>{res.set("Cache-Control","no-store");try{db.prepare("SELECT 1").get();res.json({status:"ok"});}catch{res.status(503).json({status:"unavailable"});}});
 app.use("/api", (req, res, next) => {
   if (
     !["GET", "HEAD"].includes(req.method) &&
@@ -1164,6 +1169,13 @@ app.post("/api/templates", upload.single("file"), (req: any, res) => {
   );
   res.json({ ok: true });
 });
+app.get("/api/templates/:id/view", (req:any,res) => {
+  permit(req.user,"files");
+  const t=one("SELECT v.*,t.name FROM template_versions v JOIN templates t ON t.id=v.template_id WHERE v.id=?",req.params.id);
+  if(!t?.bytes)throw Error("Modelo não encontrado.");
+  res.setHeader("Cache-Control","no-store");
+  res.json({name:t.name,version:t.version,status:t.status,paragraphs:contractParagraphs(Buffer.from(t.bytes))});
+});
 app.get("/api/templates/:id/editable", (req:any,res) => {
   permit(req.user,"files");
   const t=one("SELECT v.*,s.source_url,t.name FROM template_versions v JOIN template_sources s ON s.version_id=v.id JOIN templates t ON t.id=v.template_id WHERE v.id=?",req.params.id);
@@ -1494,7 +1506,7 @@ function reportRows(req: any) {
   if (from > to) throw Error("O início do período deve ser anterior ao fim.");
   return all(
     "SELECT d.id,d.created,d.completed,d.due,d.owner,d.stage,d.type,COALESCE(s.name,json_extract(d.data,'$.razaoSocial'),'Organização a identificar') AS school,COALESCE(u.name,'Não atribuído') AS owner_name FROM demands d LEFT JOIN schools s ON s.id=d.school_id LEFT JOIN users u ON u.id=d.owner",
-  ).filter(
+  ).map(d=>({...d,workflow_stage:d.stage,stage:["Concluído","Cancelado","Em assinatura"].includes(d.stage)?d.stage:processingSummary(d.id)?.status||d.stage})).filter(
     (d) =>
       localDate(d.created) >= from &&
       localDate(d.created) <= to &&
@@ -1507,6 +1519,11 @@ app.get("/api/reports", (req: any, res) => {
     completed = rows.filter((d) => d.completed),
     divergences: any[] = [];
   for (const d of rows) {
+    const processing=processingSummary(d.id);
+    if(processing && !["Concluído","Cancelado","Em assinatura"].includes(d.workflow_stage)){
+      if(["Aguardando análise","Aguardando correção"].includes(processing.status))divergences.push({id:d.id,school:d.school,status:processing.status,count:processing.issues||0});
+      continue;
+    }
     const doc = latest(d.id);
     if (!doc) continue;
     const r = one(
@@ -1540,7 +1557,7 @@ app.get("/api/reports", (req: any, res) => {
       name: u.name,
       count: rows.filter((d) => d.owner === u.id).length,
     })),
-    byStage: stages.map((stage) => ({
+    byStage: [...new Set([...stages,...rows.map(d=>d.stage)])].map((stage) => ({
       stage,
       count: rows.filter((d) => d.stage === stage).length,
     })),

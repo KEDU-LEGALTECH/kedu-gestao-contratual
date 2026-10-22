@@ -5,6 +5,9 @@ data/*
 .env
 .env.*
 !.env.example
+*.env
+*.env.*
+!*.env.example
 
 # Local databases, credentials and generated internal review materials.
 *.sqlite

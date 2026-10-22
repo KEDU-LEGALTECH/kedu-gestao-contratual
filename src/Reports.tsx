@@ -101,9 +101,9 @@ export function Reports({
                 "Criação até conclusão",
               ],
               [
-                "Divergências",
+                "Demandas com pendências",
                 report.divergences.length,
-                "Última conferência de cada demanda",
+                "Leitura, dados, modelos e conferências",
               ],
             ].map(([l, v, c]) => (
               <div className="metric" key={l}>
@@ -135,7 +135,7 @@ export function Reports({
           </div>
           <section className="panel">
             <div className="panel-heading">
-              <h2>Divergências detectadas</h2>
+              <h2>Pendências e divergências</h2>
               <TriangleAlert size={18} />
             </div>
             {report.divergences.length ? (
@@ -151,7 +151,7 @@ export function Reports({
               ))
             ) : (
               <p className="empty-text">
-                Nenhuma divergência encontrada no período.
+                Nenhuma pendência ou divergência registrada no período.
               </p>
             )}
           </section>
@@ -162,8 +162,9 @@ export function Reports({
               início e fim inclusivos. Vencidas: etapas diferentes de Concluído
               e Cancelado com prazo anterior a hoje. Tempo médio: dias corridos
               entre criação e conclusão das demandas concluídas selecionadas.
-              Divergências: última conferência da última versão de cada demanda,
-              sem somar versões antigas.
+              As etapas acompanham a lista de Demandas. Pendências: resultado atual
+              da leitura e validação automática; nos fluxos administrativos,
+              última conferência da última versão, sem somar versões antigas.
             </p>
           </section>
         </>
