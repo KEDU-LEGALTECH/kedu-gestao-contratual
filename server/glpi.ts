@@ -15,11 +15,16 @@ export type GlpiConfig = {
   maxTickets: number;
   pageSize: number;
   retries: number;
+  includePending?: boolean;
+  maxPending?: number;
+  includeOpen?: boolean;
+  maxOpen?: number;
 };
 export type RawTicket = {
   externalId: string;
   title: string;
   status: string;
+  priority?: string;
   created: string;
   updated: string;
   category: string;
@@ -60,6 +65,10 @@ export function glpiConfig(env = process.env): GlpiConfig {
     maxTickets: bounded(env.GLPI_MAX_TICKETS, 200, 1, 2000),
     pageSize: bounded(env.GLPI_PAGE_SIZE, 50, 5, 200),
     retries: bounded(env.GLPI_RETRIES, 2, 0, 4),
+    includePending: env.GLPI_INCLUDE_PENDING === "true",
+    maxPending: bounded(env.GLPI_MAX_PENDING,200,1,2000),
+    includeOpen: env.GLPI_INCLUDE_OPEN === "true",
+    maxOpen: bounded(env.GLPI_MAX_OPEN,2000,1,10000),
   };
 }
 export function configProblems(config: GlpiConfig) {
@@ -107,7 +116,7 @@ export class GlpiClient {
   async get(path: string, params: Record<string, string> = {}, signal?: AbortSignal) {
     // Restrict both the HTTP verb and the resource, even if a future caller passes a new path.
     // Session creation/termination changes only this integration's API session.
-    const allowed = /^(?:initSession|killSession|getMyProfiles|getActiveProfile|getMyEntities|getActiveEntities|Group(?:\/\d+(?:\/Group_Ticket)?)?|Ticket\/\d+(?:\/(?:ITILFollowup|Document_Item|Group_Ticket))?|Document\/\d+)$/;
+    const allowed = /^(?:initSession|killSession|getMyProfiles|getActiveProfile|getMyEntities|getActiveEntities|listSearchOptions\/Ticket|search\/Ticket|Group(?:\/\d+(?:\/Group_Ticket)?)?|Ticket\/\d+(?:\/(?:ITILFollowup|Document_Item|Group_Ticket))?|Document\/\d+)$/;
     if (!allowed.test(path))
       throw new GlpiError("Recurso bloqueado: a integração GLPI permite apenas as consultas de leitura previstas.");
     const url = new URL(this.config.url + "/" + path.replace(/^\/+/, ""));
@@ -237,6 +246,7 @@ export class RealGlpiSource implements TicketSource {
   constructor(
     private config: GlpiConfig,
     private fetchImpl: typeof fetch = fetch,
+    private previousPending: string[] = [],
   ) {}
   async read(signal: AbortSignal) {
     const problems = configProblems(this.config);
@@ -252,12 +262,56 @@ export class RealGlpiSource implements TicketSource {
         }
       }
       const selected = [...ids.keys()].sort((a, b) => BigInt(a) > BigInt(b) ? -1 : BigInt(a) < BigInt(b) ? 1 : 0).slice(0, this.config.maxTickets);
+      // Separate quota: an older pending ticket must not be displaced by recent closed tickets.
+      if(this.config.includePending)for(const pending of await this.statusIds(client,groups,signal)){
+        ids.set(pending.id,new Set([...(ids.get(pending.id)||[]),...pending.groups]));
+        if(!selected.includes(pending.id))selected.push(pending.id);
+      }
+      if(this.config.includeOpen)for(const status of ["1","2","3"]){
+        for(const open of await this.statusIds(client,groups,signal,status)){
+          ids.set(open.id,new Set([...(ids.get(open.id)||[]),...open.groups]));
+          if(!selected.includes(open.id))selected.push(open.id);
+        }
+      }
+      // Refresh previously pending records too: leaving status 4 must remove
+      // an older ticket from the pending tab even when it is outside recent IDs.
+      if(this.config.includePending || this.config.includeOpen)for(const id of this.previousPending){
+        if(selected.includes(id)||!/^\d+$/.test(id))continue;
+        const links=await client.list(`Ticket/${id}/Group_Ticket`,{},1000,signal);
+        const allowed=groups.filter(g=>links.some(l=>Number(l.groups_id)===g.id && String(l.tickets_id)===id && this.config.actorTypes.includes(Number(l.type)))).map(g=>g.name);
+        if(allowed.length){ids.set(id,new Set(allowed));selected.push(id);}
+      }
       const tickets: RawTicket[] = [];
       for (const id of selected) tickets.push(await this.ticket(client, id, [...ids.get(id)!], signal));
       return tickets;
     } finally {
       await client.close();
     }
+  }
+  private async statusIds(client:GlpiClient,groups:{id:number;name:string}[],signal:AbortSignal,statusValue="4"){
+    const {body:options}=await client.get("listSearchOptions/Ticket",{},signal);
+    const field=(name:string)=>Object.entries(options||{}).find(([,v]:any)=>v?.table==="glpi_tickets" && v?.field===name)?.[0];
+    const status=field("status"),idField=field("id");
+    if(!status || !idField)throw new GlpiError("Não foi possível identificar os filtros de status do GLPI.");
+    const found:{id:string;groups:string[]}[]=[];const seen=new Set<string>();
+    for(let start=0;start<10000;){
+      const {body}=await client.get("search/Ticket",{"criteria[0][field]":status,"criteria[0][searchtype]":"equals","criteria[0][value]":statusValue,"forcedisplay[0]":idField,"forcedisplay[1]":status,sort:idField,order:"DESC",range:`${start}-${start+this.config.pageSize-1}`},signal);
+      // GLPI omits `data` entirely when a status has zero results.
+      if(body?.totalcount===0 && body?.count===0 && body.data===undefined && start===0)return found;
+      if(!Array.isArray(body?.data))throw new GlpiError("Resposta de pesquisa de status inválida.");
+      for(const row of body.data){
+        const id=String(row[idField]??"");
+        if(!/^\d+$/.test(id)||String(row[status])!==statusValue)throw new GlpiError("O GLPI não respeitou o filtro de status dos chamados.");
+        if(seen.has(id))throw new GlpiError("Paginação repetida na pesquisa de status.");seen.add(id);
+        const links=await client.list(`Ticket/${id}/Group_Ticket`,{},1000,signal);
+        const allowed=groups.filter(g=>links.some(l=>Number(l.groups_id)===g.id && String(l.tickets_id)===id && this.config.actorTypes.includes(Number(l.type)))).map(g=>g.name);
+        if(allowed.length)found.push({id,groups:allowed});
+        if(found.length>(statusValue==="4"?(this.config.maxPending||200):(this.config.maxOpen||2000)))throw new GlpiError(`Limite de chamados do status ${statusValue} atingido. Aumente ${statusValue==="4"?"GLPI_MAX_PENDING":"GLPI_MAX_OPEN"} antes de sincronizar para não omitir chamados.`);
+      }
+      start+=body.data.length;
+      if(!body.data.length || (Number.isFinite(Number(body.totalcount))?start>=Number(body.totalcount):body.data.length<this.config.pageSize))return found;
+    }
+    throw new GlpiError("Limite de pesquisa de status atingido; sincronização interrompida.");
   }
   /** Ask GLPI to sort by ticket number BEFORE pagination, not by the association's ID.
    * Newest means highest ticket ID, not the date of its last edit or group assignment.
@@ -336,6 +390,7 @@ export class RealGlpiSource implements TicketSource {
       externalId: String(t?.id ?? id),
       title: String(t?.name || ""),
       status: String(t?.status ?? ""),
+      priority: String(t?.priority ?? ""),
       created: String(t?.date || t?.date_creation || ""),
       updated: String(t?.date_mod || ""),
       category: String(t?.itilcategories_id || ""),
@@ -409,5 +464,5 @@ export class DemoTicketSource implements TicketSource {
 }
 export const ticketHash = (t: RawTicket) =>
   createHash("sha256")
-    .update(JSON.stringify([t.title, t.status, t.content, t.followups, t.documents, t.groups]))
+    .update(JSON.stringify([t.title, t.status, t.priority, t.content, t.followups, t.documents, t.groups]))
     .digest("hex");

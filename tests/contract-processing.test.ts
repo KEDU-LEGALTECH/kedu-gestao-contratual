@@ -33,6 +33,51 @@ function fixture(id:string,extension="docx") {
  return raw;
 }
 const mock=(values:Record<string,string>=data,name="Contrato.docx")=>async()=>({bytes:doc(values),name,mime:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"});
+test('falha transitória de download é recuperada e arquivo inválido continua disponível como original',async()=>{
+ fixture('retry');let attempts=0;
+ await processContract('retry','u',async()=>{attempts++;if(attempts===1)throw Error('temporário');return mock()();});
+ assert.equal(attempts,2);assert.ok(one('SELECT length(bytes) size FROM processing_files WHERE demand_id=?','retry').size);
+ fixture('denied');let denied=0;
+ await processContract('denied','u',async()=>{denied++;throw Object.assign(Error('sem acesso'),{status:403});});
+ assert.equal(denied,1);assert.ok(buildProcessingPlan('denied')!.issues.some(i=>i.field==='file:7'));
+ fixture('invalid');await processContract('invalid','u',async()=>({bytes:Buffer.from('arquivo corrompido'),name:'original.docx',mime:'application/octet-stream'}));
+ assert.equal(Buffer.from(one('SELECT bytes FROM processing_files WHERE demand_id=?','invalid').bytes).toString(),'arquivo corrompido');
+});
+test('revisão de uma planilha não torna campos de um DOCX independente inconclusivos',async()=>{
+ fixture('scope');await processContract('scope','u',mock());
+ run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)','scope-sheet','scope','8','hash-scope','simulacao.xlsx','application/octet-stream',Buffer.from('original'),JSON.stringify({version:2,text:'Remuneração: 11,00%',fields:{remuneracao:['11,00%']},needsReview:true,method:'XLSX'}),'',now());
+ const plan=buildProcessingPlan('scope')!;
+ assert.equal(plan.comparisons.find(r=>r.field==='razaoSocial')?.status,'matches');
+ assert.equal(plan.comparisons.find(r=>r.field==='remuneracao')?.status,'different');
+ assert.equal(plan.comparisons.find(r=>r.field==='remuneracao')?.readingPending,true);
+ assert.ok(plan.issues.some(i=>i.field==='review:scope-sheet'));
+});
+test('comprovante com dado confirmado em contrato digital dispensa revisão duplicada; divergência não',async()=>{
+ fixture('corroborated');await processContract('corroborated','u',mock());
+ const extracted={version:2,text:'Dados bancários',fields:{agencia:['0001']},needsReview:true,method:'OCR de imagem'};
+ run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)','bank-support','corroborated','8','hash-corroborated','Comprovante bancario.png','image/png',Buffer.from('original'),JSON.stringify(extracted),'',now());
+ assert.equal(buildProcessingPlan('corroborated')!.issues.some(i=>i.field==='review:bank-support'),false);
+ extracted.fields.agencia=['0002'];run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify(extracted),'bank-support');
+ assert.ok(buildProcessingPlan('corroborated')!.issues.some(i=>i.field==='review:bank-support'));
+ assert.ok(buildProcessingPlan('corroborated')!.issues.some(i=>i.field==='agencia'));
+});
+test('divergência digital comprovada aparece como correção mesmo com outra leitura pendente',async()=>{
+ fixture('known-difference');await processContract('known-difference','u',mock({...data,remuneracao:'9,00%'}));
+ run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)','unrelated','known-difference','8','hash-known-difference','apoio.xlsx','application/octet-stream',Buffer.from('original'),JSON.stringify({version:2,text:'Garantia: 95,00%',fields:{garantia:['95,00%']},needsReview:true,method:'XLSX'}),'',now());
+ const result=saveProcessingResult('known-difference')!;
+ assert.equal(result.status,'Aguardando correção');assert.ok(result.issues.some(i=>i.field==='review:unrelated'));
+ assert.ok(result.issues.length,'o download permanece bloqueado');
+});
+test('relatório de apoio não fornece condições comerciais nem substitui contrato ausente',async()=>{
+ fixture('report-only');await processContract('report-only','u',mock());
+ const file=one('SELECT * FROM processing_files WHERE demand_id=?','report-only');
+ run('UPDATE processing_files SET name=?,extracted=? WHERE id=?','RELATÓRIO DESCREDENCIAMENTO.xlsx',JSON.stringify({...JSON.parse(file.extracted),method:'XLSX',formulaCount:10,needsReview:true}),file.id);
+ const plan=saveProcessingResult('report-only')!;
+ assert.ok(plan.issues.some(i=>i.field==='contractMissing'));
+ assert.equal(plan.issues.some(i=>i.field==='review:'+file.id),false);
+ assert.equal(plan.origins.rua,undefined);
+ assert.equal(plan.status,'Aguardando correção');
+});
 const app=express();app.use(express.json());app.use((req:any,_res,next)=>{req.user={id:"u",role:req.headers["x-role"]||"Administrador"};next();});
 registerProcessingRoutes(app);app.use((err:any,_req:any,res:any,_next:any)=>res.status(err.status||400).json({error:err.message}));
 const server=app.listen(0,"127.0.0.1");await new Promise<void>(resolve=>server.on("listening",resolve));after(()=>server.close());
@@ -61,6 +106,39 @@ test("Divergência bloqueia download, correção explícita gera nova análise e
  assert.deepEqual(Buffer.from(one("SELECT bytes FROM processing_files WHERE demand_id='wrong'").bytes),source);
  const stale=new FormData();stale.set("revision",String(before.revision));stale.set("values","{}");assert.equal((await fetch(base+"/wrong/processing/correct",{method:"POST",body:stale})).status,409);
 });
+test("Confronta valor, remuneração e parcelas do pedido com o documento e não aceita correção divergente",async()=>{
+ const raw=fixture('request-parcelamento');raw.content='<p>RAZÃO SOCIAL: Escola teste</p><p>CNPJ: 11.444.777/0001-61</p><p>MOTIVO DO ADITIVO: PARCELAMENTO DE DÉBITOS</p><p>OBSERVAÇÕES OU CONSIDERAÇÕES ADICIONAIS: Valor parcelado: R$ 1.507,90</p><p>Remuneração Kedu: 4,58%</p><p>QTD parcelas: 3</p>';
+ run('UPDATE glpi_tickets SET payload=? WHERE external_id=?',JSON.stringify(raw),raw.externalId);
+ await processContract(raw.externalId,'u',mock({...data,valor:'1800,00',remuneracao:'5,00%',parcelas:'6'}) as any);
+ const before=completed(raw.externalId);assert.equal(before.type,'Parcelamento');
+ for(const [key,expected,found] of [['valor','1507,90','1800,00'],['remuneracao','4,58%','5,00%'],['parcelas','3','6']]){
+  assert.ok(before.issues.some((i:any)=>i.field===key&&i.expected===expected&&i.found===found));
+  assert.ok(before.comparisons.some((i:any)=>i.field===key&&i.status==='different'));
+ }
+ const original=Buffer.from(one('SELECT bytes FROM processing_files WHERE demand_id=?',raw.externalId).bytes);
+ run('UPDATE contract_processing SET overrides=? WHERE demand_id=?',JSON.stringify({valor:'1700,00'}),raw.externalId);
+ assert.ok(buildProcessingPlan(raw.externalId)!.issues.some(i=>i.field==='valor'&&i.expected==='1507,90'));
+ run('UPDATE contract_processing SET overrides=? WHERE demand_id=?',JSON.stringify({valor:'1507,90',remuneracao:'4,58%',parcelas:'3'}),raw.externalId);
+ assert.equal(buildProcessingPlan(raw.externalId)!.comparisons.find(i=>i.field==='valor')?.status,'corrected');
+ assert.deepEqual(Buffer.from(one('SELECT bytes FROM processing_files WHERE demand_id=?',raw.externalId).bytes),original);
+});
+
+test("Cada chamado usa sua própria referência e a mesma referência aparece na tela GLPI",async()=>{
+ const a=fixture('global-reference-a'),b=fixture('global-reference-b');
+ b.content=b.content.replace('11,84%','9,50%')+'<p>TITULAR DA CONTA: Titular solicitado</p>';
+ run('UPDATE glpi_tickets SET payload=? WHERE external_id=?',JSON.stringify(b),b.externalId);
+ await processContract(a.externalId,'u',mock(data) as any);
+ await processContract(b.externalId,'u',mock(data) as any);
+ const pa=buildProcessingPlan(a.externalId)!,pb=buildProcessingPlan(b.externalId)!;
+ assert.equal(pa.comparisons.find(r=>r.field==='remuneracao')?.status,'matches');
+ assert.equal(pb.comparisons.find(r=>r.field==='remuneracao')?.expected,'9,50%');
+ assert.equal(pb.comparisons.find(r=>r.field==='remuneracao')?.status,'different');
+ assert.equal(pb.comparisons.find(r=>r.field==='titularConta')?.status,'different');
+ const {listTickets}=await import('../server/glpi-sync.js');
+ const refs=listTickets().find(t=>t.external_id===b.externalId)!;
+ assert.deepEqual(refs.reference.remuneracao,['9,50%']);assert.match(refs.requestText,/9,50%/);
+});
+
 test("Imagem e modelo sem homologação não são liberados como corretos",async()=>{
  fixture("image","png");await processContract("image","u",mock(data,"Contrato.png") as any);assert.equal(completed("image").status,"Aguardando análise");
  assert.ok(completed("image").issues.some((i:any)=>i.field.startsWith("file:")));
@@ -87,6 +165,8 @@ test("Visualização do original com pendências preserva bytes e exige permiss�
 test("OCR permanece bloqueado até conferência humana; confirmação respeita revisão e acesso",async()=>{
  fixture("ocr","png");const bytes=readingImage().toBuffer("image/png");
  await processContract("ocr","u",(async()=>({bytes,name:"contrato.png",mime:"image/png"})) as any);
+ // A legacy single-pass reading still requires explicit confirmation.
+ run("UPDATE processing_files SET extracted=json_remove(extracted,'$.verifiedFields') WHERE demand_id='ocr'");
  const result=completed("ocr");assert.equal(result.status,"Aguardando análise");assert.equal(result.values.remuneracao,"11,84%");assert.equal(result.files[0].needsReview,true);
  const url=base+"/ocr/processing/files/"+result.files[0].id+"/confirm";
  const post=(revision:number,role="Administrador")=>fetch(url,{method:"POST",headers:{"Content-Type":"application/json","x-role":role},body:JSON.stringify({revision,confirmed:true})});
@@ -95,6 +175,17 @@ test("OCR permanece bloqueado até conferência humana; confirmação respeita r
  const response=await post(result.revision);assert.equal(response.status,200);const confirmed=await response.json();assert.equal(confirmed.files[0].needsReview,false);assert.equal(confirmed.status,"Aguardando correção","campos obrigatórios continuam sendo validados");
  assert.equal((await post(result.revision)).status,409);
  assert.deepEqual(Buffer.from(one("SELECT bytes FROM processing_files WHERE demand_id='ocr'").bytes),bytes);
+});
+test('leitura parcial preservada não pode ser confirmada como documento completo',async()=>{
+ fixture('partial');await processContract('partial','u',mock());
+ const file=one('SELECT * FROM processing_files WHERE demand_id=?','partial');
+ const extracted={...JSON.parse(file.extracted),incomplete:true,needsReview:true,warnings:['Página restante não lida.']};
+ run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify(extracted),file.id);
+ const plan=saveProcessingResult('partial')!;assert.ok(plan.issues.some(i=>i.field==='review:partial:'+file.id));
+ const response=await fetch(base+'/partial/processing/files/'+file.id+'/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:plan.revision,confirmed:true})});
+ assert.equal(response.status,400);assert.match((await response.json()).error,/incompleta/);
+ assert.equal((await fetch(base+'/partial/processing/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:plan.revision})})).status,409);
+ assert.equal(one('SELECT file_id FROM processing_file_reviews WHERE file_id=?',file.id),undefined);
 });
 test("Substituição manual de imagem por DOCX legível preenche os dados e libera a validação",async()=>{
  const before=completed("image"),original=one("SELECT id,bytes FROM processing_files WHERE demand_id='image' ORDER BY rowid LIMIT 1");

@@ -6,21 +6,23 @@ export const inputLabels:Record<string,string>={...fieldLabels,...officialInputs
 export const editableKeys=Object.keys(inputLabels).filter(k=>k!=="aditivo");
 export const norm=(s:string)=>s.normalize("NFD").replace(/\p{Diacritic}/gu,"").toLowerCase().replace(/\s+/g," ").trim();
 const aliases:Record<string,string[]>={
- cnpj:["CNPJ","CNPJ da contratante"],razaoSocial:["RAZÃO SOCIAL","Razão social da contratante"],nomeFantasia:["NOME FANTASIA"],
- garantia:["PERCENTUAL DE GARANTIA"],repasse:["PERCENTUAL DE REPASSE"],valor:["VALOR DE REFERÊNCIA","VALOR CONTRATUAL"],
+ cnpj:["CNPJ","CNPJ da contratante","NÚMERO DE INSCRIÇÃO"],razaoSocial:["RAZÃO SOCIAL","Razão social da contratante","NOME EMPRESARIAL"],nomeFantasia:["NOME FANTASIA"],
+ garantia:["PERCENTUAL DE GARANTIA"],repasse:["PERCENTUAL DE REPASSE"],valor:["VALOR DE REFERÊNCIA","VALOR CONTRATUAL","VALOR PARCELADO"],
+ parcelas:["QTD PARCELAS","QTD. PARCELAS","QUANTIDADE DE PARCELAS","NÚMERO DE PARCELAS","Nº. DE PARCELAS","Nº DE PARCELAS"],
  endereco:["ENDEREÇO","ENDEREÇO COMPLETO"],rua:["RUA","LOGRADOURO","RUA / LOGRADOURO"],estado:["ESTADO","UF"],
  inicio:["INÍCIO DA VIGÊNCIA","DATA DE INÍCIO","INÍCIO"],fim:["FIM DA VIGÊNCIA","DATA FINAL","TÉRMINO DA VIGÊNCIA"],
  dataFormalizacao:["DATA DE FORMALIZAÇÃO"],dataAssinaturaMatriz:["DATA DE ASSINATURA DA MATRIZ","DATA DE ASSINATURA DO CONTRATO MATRIZ"],
  representanteNome:["REPRESENTANTE LEGAL","NOME DO REPRESENTANTE"],representanteCpf:["CPF DO REPRESENTANTE"],
- titularConta:["TITULAR DA CONTA"],documentoTitular:["CPF/CNPJ DO TITULAR"],modalidade:["MODALIDADE","MODALIDADE DE GARANTIA"],
+ titularConta:["TITULAR DA CONTA","TITULARIDADE"],documentoTitular:["CPF/CNPJ DO TITULAR","CNPJ/CPF"],modalidade:["MODALIDADE","MODALIDADE DE GARANTIA"],
  agencia:["AGÊNCIA","AG."],conta:["CONTA CORRENTE","C/C","CC."],
- remuneracao:["TAXA","TAXA KEDU","Taxa de remuneração","REMUNERAÇÃO","REMUNERAÇÃO KEDU (%)"],
+ remuneracao:["TAXA","TAXA KEDU","Taxa de remuneração","REMUNERAÇÃO","REMUNERAÇÃO KEDU","REMUNERAÇÃO KEDU (%)"],
  alunos:["ALUNADO","QUANTIDADE DE ALUNOS"],
 };
 for(const k of editableKeys)aliases[k]=[...(aliases[k]||[]),inputLabels[k]];
 const index=Object.entries(aliases).flatMap(([key,names])=>names.map(name=>({key,name:norm(name)}))).sort((a,b)=>b.name.length-a.name.length);
 export function normalizeValue(key:string,value:string) {
  let s=value.trim().replace(/^[:\s]+/,"");
+ if(['banco','agencia','conta'].includes(key))s=s.replace(/[.,:;]+\s*$/,'').trim();
  if(!s || /^[_\s.\-–—]+$/.test(s) || /\{[^}]+\}|\[(?:DADO|NOME|PREENCHER)|PENDENTE|⟨/i.test(s))return "";
  if(["remuneracao","garantia","repasse","repasseSegundo","cashback"].includes(key)) {const m=/^(\d{1,3})(?:[.,](\d{1,2}))?\s*%$/.exec(s);if(m)s=Number(m[1])+","+(m[2]||"").padEnd(2,"0")+"%";}
  if(key==="modalidade"){const known=["Garantia Completa","Garantia Conjunta","Garantia Prevista"].find(x=>norm(x)===norm(s));if(known)s=known;}
@@ -40,17 +42,24 @@ export function fieldsFromLines(lines:string[]) {
  const values:Record<string,string[]>={};
  const add=(key:string,raw:string)=>{const value=normalizeValue(key,raw);if(value && !(values[key]||[]).includes(value.slice(0,500)))(values[key]||=[]).push(value.slice(0,500));};
  for(let i=0;i<lines.length;i++) {
-  const clean=lines[i].replace(/^\s*\d+[.)]\s*/,""),n=norm(clean);
+  const clean=lines[i].replace(/^\s*\d+[.)]\s*/,"").replace(/^\s*(?:[•*“”"']+|[eé])\s*(?=(?:BANCO|AG[ÊE]NCIA|CONTA|TITULARIDADE|CNPJ\/CPF|RAZ[ÃA]O SOCIAL|NOME FANTASIA)\b)/i,''),n=norm(clean);
+  // Identity printed in a document header: NAME (CNPJ), without form labels.
+  const identity=i<20?/^([\p{L}\p{N}][\p{L}\p{N}\s&.,'’/\-–]{2,180}?)\s*\(\s*(?:CNPJ\s*:?\s*)?(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}|\d{14})\s*\)\s*$/iu.exec(clean):null;
+  if(identity){add("razaoSocial",identity[1]);add("cnpj",identity[2]);continue;}
   // Bank screenshots commonly place both explicit labels on one line.
-  const bank=/\bAg\.?\s*:?\s*(\d{1,6}(?:\s*-\s*[\dXx])?)\s*[-–—•«]*\s*(?:Cc\.?|C\/C|Conta corrente)\s*:?\s*(\d{1,15}(?:\s*-\s*[\dXx])?)/i.exec(clean);
+  const bank=/\bAg(?:[êe]ncia)?\.?\s*:?\s*(\d{1,6}(?:\s*-\s*[\dXx])?)\s*[-–—•«/]*\s*(?:Cc\.?|C\/C|Conta(?: corrente)?)\s*:?\s*(\d{1,15}(?:\s*-\s*[\dXx])?)/i.exec(clean);
   if(bank){add("agencia",bank[1].replace(/\s/g,""));add("conta",bank[2].replace(/\s/g,""));continue;}
+  const period=/^In[íi]cio(?: da vig[êe]ncia)?\s*:\s*(\d{2}\/\d{2}\/\d{4})\s*\|?\s*(?:T[ée]rmino|Fim(?: da vig[êe]ncia)?)\s*:\s*(\d{2}\/\d{2}\/\d{4})/i.exec(clean);
+  if(period){add('inicio',period[1]);add('fim',period[2]);continue;}
   // Only typed numeric labels accept a missing colon. Narrative headings and
   // historic/alternative rates must not become the requested contract values.
   const typed:Array<[string,RegExp]>=[
-   ["cnpj",/^CNPJ\s*(?:n[º°o.]?\s*)?:?\s*((?:\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})|\d{14})(?=\s|$|[;,])/i],
+   ["cnpj",/^CNPJ\s*(?:n[º°o.]?\s*)?:?\s*((?:\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})|\d{14})(?=\s|$|[;,]|[.](?!\d))/i],
    ["cep",/^CEP\s*:?\s*(\d{2}\.?\d{3}-?\d{3})(?=\s|$|[;,])/i],
    ["alunos",/^(?:Alunado|Quantidade de alunos)\s*:?\s*(\d{1,6})(?=\s|$)/i],
    ["remuneracao",/^Remunera[çc][ãa]o Kedu\s*\(%\)\s*:?\s*(\d{1,3}(?:[.,]\d{1,2})?\s*%)(?=\s|$)/i],
+   ["valor",/^Valor\s*\(R\$\)\s*:?\s*((?:R\$\s*)?(?:\d{1,3}(?:\.\d{3})*|\d+),\d{2})(?=\s|$)/i],
+   ["parcelas",/^(?:N[º°o]\.? de parcelas|Quantidade de parcelas)\s*:?\s*(\d{1,4})(?=\s|$)/i],
   ];
   const explicit=typed.find(([,pattern])=>pattern.test(clean));
   if(explicit){add(explicit[0],explicit[1].exec(clean)![1]);continue;}
@@ -59,6 +68,7 @@ export function fieldsFromLines(lines:string[]) {
   const colon=clean.indexOf(":",label.name.length),raw=colon>=0?clean.slice(colon+1).trim():"";
   const next=raw || (lines[i+1] && !/^[^:]{1,100}:\s*$/.test(lines[i+1].trim()) && !index.some(x=>norm(lines[i+1])===x.name || norm(lines[i+1]).startsWith(x.name+":"))?lines[i+1]:"");
   const value=normalizeValue(label.key,next||"");
+  if(label.key==="parcelas" && value && !/^\d+$/.test(value))continue;
   if(value)add(label.key,value);
  }
  return values;

@@ -1,13 +1,16 @@
 import { useEffect,useState } from "react";
+import {receivedDocumentKind} from '../shared/document-heading';
 import { Download,RefreshCw,ArrowLeft,CheckCircle2,AlertCircle } from "lucide-react";
 import { MatrixImport } from "./MatrixImport";
 import { SignedHistoryPanel } from "./GovernancePanel";
 import { fieldLabels } from "../shared/official-fields";
 import { ReceivedDocuments } from "./ReceivedDocuments";
-const labels:Record<string,string>={...fieldLabels,modalidade:"Modalidade de garantia",endereco:"Endereço",matriz:"Contrato matriz",motivo:"Descrição da solicitação"};
+import { RequestComparison } from "./RequestComparison";
+const baseLabels:Record<string,string>={...fieldLabels,modalidade:"Modalidade de garantia",endereco:"Endereço",matriz:"Contrato matriz",motivo:"Descrição da solicitação"};
 const dateKeys=["inicio","fim","dataAssinaturaMatriz","dataFormalizacao"];
 export function SimpleDemand({detail,data,can,api,action,busy,onBack,onAdvanced,onModels}:any) {
  const [job,setJob]=useState<any>(detail.processing),[message,setMessage]=useState("");
+ const labels:Record<string,string>={...baseLabels,...(job?.type==="Parcelamento"?{valor:"Valor parcelado",parcelas:"Quantidade de parcelas"}:{})};
  const [manual,setManual]=useState(false);
  useEffect(()=>{setJob(detail.processing);},[detail.processing]);
  useEffect(()=>{
@@ -26,7 +29,9 @@ export function SimpleDemand({detail,data,can,api,action,busy,onBack,onAdvanced,
   <div className="page-heading"><div><span className="eyebrow">{detail.id}{detail.glpi_id?` · GLPI #${detail.glpi_id}`:" · Demanda de teste/manual"}</span><h1>{title}</h1></div><span className={"badge "+(ready?"ok":analyzing?"":"warn")}>{job?.status || "Demanda manual"}</span></div>
   <section className="panel simple-result">
    <div className="simple-result-heading">{ready?<CheckCircle2 size={26}/>:<AlertCircle size={26}/>}<div><h2>{ready?"Contrato pronto para download":analyzing?"Lendo os dados e documentos do GLPI":job?.status==="Aguardando análise"?"Confira a leitura dos documentos":job?"O contrato precisa de correção":"Demanda de teste/manual"}</h2><p>{analyzing?"O resultado aparecerá automaticamente nesta página.":ready?"O preenchimento foi validado no modelo indicado.":job?.status==="Aguardando análise"?"Abra o documento, confira o texto extraído e resolva as leituras inconclusivas. Isso não significa que o documento esteja errado.":job?"Corrija somente os itens abaixo. O sistema validará novamente antes de liberar o download.":"Esta demanda não possui documentos importados do GLPI. O formulário de teste continua disponível nos detalhes administrativos."}</p></div></div>
+   {!!job?.files?.length && <div className="document-type-identification"><strong>Documento recebido: {[...new Set(job.files.map((f:any)=>receivedDocumentKind(f.name,f.text)))].join(', ')}</strong><p>{job.files.map((f:any)=>f.name).join(' · ')}</p></div>}
    {job?.template && <p className="selected-model"><strong>Modelo:</strong> {job.template.name} · versão {job.template.version}</p>}
+   {job?.typeIdentification && <div className="document-type-identification"><strong>Tipo solicitado: {job.typeIdentification.type}{job.subtype?' · '+job.subtype:''}</strong><p>{job.typeIdentification.ticketTitle}</p><small>Identificação: {job.typeIdentification.source}</small></div>}
    <div className="simple-actions">
     <button className="primary" disabled={!ready || busy || !can("write") || !can("files") || !can("bank")} onClick={()=>action(async()=>{const output=await api(`/demands/${detail.id}/processing/export`,{revision:job.revision});const a=document.createElement("a");a.href=output.url;a.download="";a.click();},"Contrato gerado e liberado para download.")}><Download size={17}/> Baixar contrato DOCX</button>
     {job && can("write") && can("files") && <button className="secondary" disabled={busy||analyzing} onClick={()=>action(()=>api(`/demands/${detail.id}/processing/recheck`,{}),"Leitura e validação atualizadas.")}><RefreshCw size={15}/> Atualizar leitura</button>}
@@ -34,6 +39,8 @@ export function SimpleDemand({detail,data,can,api,action,busy,onBack,onAdvanced,
    {ready && <small className="muted">A validação verifica preenchimento e consistência. Não verifica autenticidade das assinaturas.</small>}
    {message && <p role="alert" className="inline-warning">{message}</p>}
   </section>
+  <nav className="review-jump-links" aria-label="Ir para a conferência"><a href="#documento-recebido" className="secondary">Ver documento preenchido</a>{!!job?.comparisons?.length && <a href="#conferencia-preenchimento" className="secondary">Ver preenchimento e correções</a>}</nav>
+  {!analyzing && can("files") && can("bank") && <RequestComparison rows={job?.comparisons}/>}
   {job && can("files") && can("bank") && <ReceivedDocuments did={detail.id} files={job.files||[]} issues={issues} revision={job.revision} busy={busy} confirm={can("write")?(fileId:string,revision:number)=>action(()=>api(`/demands/${detail.id}/processing/files/${fileId}/confirm`,{revision,confirmed:true}),"Conferência da leitura registrada; pendências reavaliadas."):undefined}/>}
   {!analyzing && !!issues.length && <section className="panel simple-corrections">
    <h2>Leituras e pendências para resolver</h2>

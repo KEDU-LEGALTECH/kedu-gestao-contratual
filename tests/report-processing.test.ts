@@ -28,3 +28,12 @@ test("Relatório e CSV mostram a etapa de processamento e preservam cancelamento
 test("Saúde do servidor não exige login nem expõe dados internos",async()=>{
  const res=await fetch(base+"/healthz");assert.equal(res.status,200);assert.deepEqual(await res.json(),{status:"ok"});
 });
+test("Bootstrap entrega status e prioridade da origem para as abas de Demandas",async()=>{
+ run("UPDATE glpi_tickets SET status='4',payload=json_set(payload,'$.priority','5') WHERE external_id='pending'");
+ const res=await fetch(base+"/api/bootstrap",{headers:{Cookie:"session=session"}});assert.equal(res.status,200);
+ const body=await res.json();const d=body.demands.find((d:any)=>d.id==='pending');
+ assert.deepEqual(d.glpiOrigin,{status:'4',priority:'5'});
+ const {matchesDemandQueue}=await import('../shared/glpi-ticket-meta.js');
+ assert.equal(body.demands.filter((d:any)=>matchesDemandQueue(d,'pending')).length,1);
+ assert.equal(body.demands.filter((d:any)=>matchesDemandQueue(d,'open')).length,1);
+});

@@ -34,6 +34,7 @@ export function registerProcessingRoutes(app:Express,process:(did:string,userId?
    const plan=buildProcessingPlan(d.id);
    if(!plan || plan.job.status==="Analisando" || plan.job.revision!==b.revision || plan.job.ticket_hash!==plan.ticket.hash)throw Object.assign(Error("A leitura mudou. Reabra o documento antes de confirmar."),{status:409});
    const current=plan.files.find(f=>f.id===req.params.file),file=current && one("SELECT * FROM processing_files WHERE id=? AND demand_id=?",current.id,d.id);
+   if(file && JSON.parse(file.extracted).incomplete)throw Error('A leitura está incompleta. Envie o documento dividido em partes ou uma cópia com texto acessível antes de confirmar.');
    if(!file || file.problem || !current.needsReview || !current.text)throw Object.assign(Error("Este arquivo não está disponível para confirmação de leitura."),{status:409});
    run("INSERT INTO processing_file_reviews VALUES(?,?,?,?) ON CONFLICT(file_id) DO UPDATE SET extraction_hash=excluded.extraction_hash,author=excluded.author,created=excluded.created",file.id,sha256(Buffer.from(file.extracted)),req.user.id,now());
    run("UPDATE contract_processing SET revision=revision+1 WHERE demand_id=?",d.id);invalidate(d.id);

@@ -1,4 +1,5 @@
 import type { RawTicket } from "./glpi.js";
+import {headingType} from '../shared/document-heading.js';
 
 /** GLPI stores ticket content as HTML (often entity-encoded). Converts it to plain lines. */
 export function htmlToText(html: string) {
@@ -129,12 +130,21 @@ export function analyzeTicket(
   let suggestion = { type: "", subtype: "", basis: "" };
   if (hint?.[0] === "Migração de modalidade")
     suggestion = { type: "Migração de modalidade", subtype: "", basis: "Texto do chamado cita migração de modalidade (exige distrato e novo contrato)" };
+  else if (/parcelamento de d[ée]bitos|parcelamento de d[íi]vida/i.test(raw.motivo || raw.tipoSolicitacao || ""))
+    suggestion = {type:"Parcelamento",subtype:"",basis:"Motivo do formulário solicita explicitamente parcelamento de débitos; confirmar o modelo correspondente"};
   else if (isAddendum)
     suggestion = { type: "Aditivo", subtype: hint?.[0] || "", basis: hint ? "Palavras do motivo/observações: sugestão a confirmar" : "Chamado de aditivo sem tipo identificável" };
   else if (/kedu matr[íi]culas|contrato educacional/i.test([raw.contratoEspecificado, raw.tipoContrato].join(" ")))
     suggestion = { type: "Contrato educacional", subtype: "", basis: "Formulário cita Kedu Matrículas/contrato educacional; confirmar após revisar os anexos" };
   else if (/SOLICITA[ÇC][ÃA]O DE CONTRATO PARA ESCOLAS/i.test(ticket.title))
     suggestion = { type: "Contrato de garantia", subtype: "", basis: "Formulário de contrato para escolas; confirmar o instrumento e a modalidade" };
+  if(!suggestion.type){const type=headingType(ticket.title);if(type && type!=="Contrato")suggestion={type,subtype:"",basis:"Tipo explicitamente identificado no início do título do chamado GLPI; confirmar com o documento"};}
+  if(!suggestion.type){
+    const requested=raw.tipoSolicitacao||'';
+    const family=raw.contratoEspecificado||raw.tipoContrato||'';
+    const type=/an[áa]lise contratual/i.test(ticket.title)?'Análise contratual':/descredenciamento/i.test(ticket.title)?'Descredenciamento':/distrato/i.test(requested)?'Distrato':/aditivo/i.test(requested)?'Aditivo':/fornecedor/i.test(family)?'Contrato fornecedor':/matr[íi]cula|escola\s*\/\s*respons/i.test(family)?'Contrato educacional':/marketing/i.test(family)?'Contrato marketing':/parceria/i.test(family)?'Contrato de parceria':family && !/outros tipos/i.test(family)?family:'';
+    if(type)suggestion={type,subtype:'',basis:'Tipo de solicitação e especificação informados no formulário GLPI'};
+  }
   if (!suggestion.type) pendencies.push("Tipo de demanda não identificado; classifique manualmente");
   else if (suggestion.type === "Aditivo" && !suggestion.subtype) pendencies.push("Tipo específico de aditivo não identificado");
   if (suggestion.subtype === "Vigência") {

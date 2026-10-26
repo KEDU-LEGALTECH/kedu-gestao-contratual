@@ -32,7 +32,17 @@ test("XLSX e PPTX fornecem campos para validação com conferência obrigatória
  const pptx=new PizZip();pptx.file("ppt/slides/slide1.xml",'<p:sld xmlns:p="urn:p" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:p><a:r><a:t>Taxa de remuneracao: 11,84%</a:t></a:r></a:p></p:sld>');
  for(const [zip,name] of [[xlsx,"dados.xlsx"],[pptx,"dados.pptx"]] as const){const r=await readProcessingFile(zip.generate({type:"nodebuffer"}),name);assert.equal(r.problem,"");assert.deepEqual(r.fields.remuneracao,["11,84%"]);assert.equal(r.needsReview,true);}
  xlsx.file("xl/worksheets/sheet1.xml",'<worksheet><row><c><f>1+2</f><v>3</v></c></row></worksheet>');
- assert.match((await readProcessingFile(xlsx.generate({type:"nodebuffer"}),"formula.xlsx")).problem,/fórmulas/);
+  const formula=await readProcessingFile(xlsx.generate({type:"nodebuffer"}),"formula.xlsx");
+  assert.equal(formula.problem,"");assert.equal(formula.formulaCount,1);assert.equal(formula.needsReview,true);assert.match(formula.warnings!.join(' '),/fórmulas/);assert.deepEqual(formula.fields,{});assert.doesNotMatch(formula.text,/\b1\+2\b/);
+});
+
+test('XLSX com fórmulas preserva literais e percentuais formatados sem confiar no resultado calculado',async()=>{
+ const zip=new PizZip();
+ zip.file('xl/styles.xml','<styleSheet><cellXfs><xf numFmtId="0"/><xf numFmtId="10"/></cellXfs></styleSheet>');
+ zip.file('xl/worksheets/sheet1.xml','<worksheet><sheetData><row><c t="inlineStr"><is><t>Remuneração Kedu</t></is></c><c s="1"><v>0.0437</v></c></row><row><c t="inlineStr"><is><t>Quantidade de parcelas</t></is></c><c><v>24</v></c></row><row><c t="inlineStr"><is><t>Valor de referência</t></is></c><c><f>SUM(A1:A4)</f><v>999999</v></c></row></sheetData></worksheet>');
+ const r=await readProcessingFile(zip.generate({type:'nodebuffer'}),'parcial.xlsx');
+ assert.equal(r.problem,'');assert.deepEqual(r.fields.remuneracao,['4,37%']);assert.deepEqual(r.fields.parcelas,['24']);assert.equal(r.fields.valor,undefined);
+ assert.equal(r.formulaCount,1);assert.equal(r.needsReview,true);assert.doesNotMatch(r.text,/999999|SUM\(/);
 });
 
 test("BMP passa por normalização local e DOC inválido não é aprovado",async()=>{

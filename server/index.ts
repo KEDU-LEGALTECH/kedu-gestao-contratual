@@ -69,7 +69,7 @@ import { organizationAllowed } from "../shared/organization-policy.js";
 import { intakeForDemand, confirmGlpiIntake } from "./glpi-intake.js";
 import { registerMatrixRoutes } from "./matrix-registration.js";
 import { attachmentChecks, registerAttachmentRoutes } from "./attachment-routes.js";
-import { scheduleContractProcessing,processingSummary } from "./contract-processing.js";
+import { scheduleContractProcessing,processingSummary,receivedDocumentTypes } from "./contract-processing.js";
 import { processingView,registerProcessingRoutes } from "./processing-routes.js";
 import { fieldLabels as officialInputs } from "../shared/official-fields.js";
 import { officialVisible } from "../shared/request-policy.js";
@@ -96,6 +96,11 @@ const officialCatalog = registerOfficialCatalog();
 for (const message of officialCatalog.skipped)
   console.warn("Modelo oficial não registrado: " + message);
 startSchedule();
+if(process.env.NODE_ENV!=='test') {
+  // Retry unavailable originals even when nobody has the portal open.
+  const attachmentRecovery=setInterval(scheduleContractProcessing,60000);
+  attachmentRecovery.unref();
+}
 const app = express();
 if(process.env.TRUST_PROXY_HOPS==="1")app.set("trust proxy",1);
 app.disable("x-powered-by");
@@ -215,7 +220,8 @@ app.get("/api/bootstrap", (req: any, res) => {
   ).map((d) => {
     const checks = all("SELECT c.status,c.data_version,c.ticket_hash FROM attachment_checks c WHERE c.demand_id=? AND c.rowid=(SELECT MAX(x.rowid) FROM attachment_checks x WHERE x.demand_id=c.demand_id AND x.document_id=c.document_id)",d.id);
     const check = checks.find(c=>c.status==="divergente") || checks.find(c=>c.status==="inconclusiva") || checks[0];
-    return { ...d, processing:processingSummary(d.id),data: safeData(req.user, JSON.parse(d.data)), documentCheck: check ? {status:check.status,stale:checks.some(c=>c.data_version!==d.data_version || c.ticket_hash!==one("SELECT hash FROM glpi_tickets WHERE external_id=?",d.glpi_id)?.hash)} : null };
+    const glpiTicket=one("SELECT status,json_extract(payload,'$.priority') AS priority FROM glpi_tickets WHERE external_id=?",d.glpi_id);
+    return { ...d, receivedDocumentTypes:receivedDocumentTypes(d.id),glpiOrigin:glpiTicket || null, processing:processingSummary(d.id),data: safeData(req.user, JSON.parse(d.data)), documentCheck: check ? {status:check.status,stale:checks.some(c=>c.data_version!==d.data_version || c.ticket_hash!==one("SELECT hash FROM glpi_tickets WHERE external_id=?",d.glpi_id)?.hash)} : null };
   });
   const terminal = ["Concluído", "Cancelado"];
   const open = demands.filter((d) => !terminal.includes(d.stage));

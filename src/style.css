@@ -878,57 +878,6 @@ footer span {
   color: #899aa5;
   font-size: 11px;
 }
-.kanban {
-  display: flex;
-  overflow: auto;
-  gap: 15px;
-  padding-bottom: 20px;
-}
-.kanban > section {
-  min-width: 240px;
-  width: 240px;
-  background: #edf2f6;
-  border-radius: 9px;
-  padding: 12px;
-}
-.kanban h3 {
-  display: flex;
-  justify-content: space-between;
-  font-size: 11px;
-  margin: 5px 0 17px;
-}
-.kanban-card {
-  display: block;
-  text-align: left;
-  background: white;
-  border: var(--border);
-  border-radius: 9px;
-  padding: 15px;
-  width: 100%;
-  margin-bottom: 12px;
-}
-.kanban-card strong,
-.kanban-card small {
-  display: block;
-}
-.kanban-card small {
-  color: #94a3ac;
-  font-size: 9px;
-}
-.kanban-card strong {
-  margin: 8px 0;
-  font-size: 12px;
-}
-.kanban-card p {
-  font-size: 10px;
-  color: var(--muted);
-}
-.kanban-card > div {
-  margin-top: 17px;
-  font-size: 9px;
-  display: flex;
-  align-items: center;
-}
 .school-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -1926,3 +1875,4 @@ input[type="checkbox"] {
 .template-row > .template-viewer { width: 100%; min-width: 0; flex: 0 0 100%; }
 .template-text-preview { margin-top: 16px; padding: 20px; border: 1px solid var(--border, #718895); border-radius: 10px; max-height: 65vh; overflow: auto; overflow-wrap: anywhere; }
 .template-text-preview p { white-space: pre-wrap; line-height: 1.7; margin-bottom: 14px; }
+.glpi-queue-tabs {display:flex;flex-wrap:wrap;gap:12px;margin:16px 0;}

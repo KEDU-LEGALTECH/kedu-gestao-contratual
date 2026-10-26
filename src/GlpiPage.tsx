@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { RefreshCw, TriangleAlert, Link2, FileText, Inbox, Download } from "lucide-react";
 import { organizationAllowed } from "../shared/organization-policy";
+import {fieldLabels,officialInputs} from '../shared/official-fields';
+import {glpiStatusLabel,glpiPriorityLabel,isGlpiPending,glpiPriorityRank} from "../shared/glpi-ticket-meta";
 type Props = {
   data: any;
   can: (p: string) => boolean;
@@ -24,6 +26,7 @@ const stateLabel: Record<string, string> = {
 const inWeek = () => new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
 /** Read-only GLPI queue: a person confirms school, type and contract before a demand exists. */
 export function GlpiPage({ data, can, action, api, busy, open }: Props) {
+  const [queue,setQueue]=useState<"regular"|"pending">("regular");
   const [status, setStatus] = useState<any>(null),
     [tickets, setTickets] = useState<any[]>([]),
     [selected, setSelected] = useState(""),
@@ -42,22 +45,24 @@ export function GlpiPage({ data, can, action, api, busy, open }: Props) {
     refresh();
   }, [data]);
   const ticket = tickets.find((t) => t.external_id === selected);
+  const visible=tickets.filter(t=>isGlpiPending(t.status)===(queue==="pending")).sort((a,b)=>glpiPriorityRank(b.priority)-glpiPriorityRank(a.priority)||b.external_id.localeCompare(a.external_id,undefined,{numeric:true}));
   return (
     <>
-      <section className="panel">
+      <section className="panel glpi-sync-panel">
         <div className="panel-heading">
           <h2>Integração GLPI (somente leitura)</h2>
           <span className={"badge " + (status?.mode === "real" && !status?.problems.length ? "ok" : "warn")}>
             {status?.mode === "real" ? "Modo real" : "Demonstração"}
           </span>
         </div>
-        {status && (
-          <p className="muted">
-            {status.mode === "real" ? `Endereço: ${status.url}. ` : "Chamados fictícios para demonstração. "}
-            Grupos autorizados: {status.groups.join(", ")}. Agendamento:{" "}
-            {status.intervalMinutes ? `a cada ${status.intervalMinutes} min` : "desativado (execução manual)"}.
-          </p>
-        )}
+        <div className="glpi-sync-toolbar">
+          <div>
+            <strong>Sincronização automática</strong>
+            <p className="muted">{!status ? 'Carregando agendamento…' : status.dailyTimes?.length ? `Todos os dias às ${status.dailyTimes.join(', ')} · Brasília` : status.intervalMinutes ? `A cada ${status.intervalMinutes} minutos` : 'Desativada — sincronize manualmente'}</p>
+          </div>
+          {can("sync") && <button className="primary" disabled={busy} aria-busy={busy} onClick={() => action(() => api("/sync", {}), "Sincronização concluída. Dados locais preservados.")}><RefreshCw size={16} aria-hidden="true" />{busy ? 'Sincronizando…' : 'Sincronizar agora'}</button>}
+        </div>
+        <p className="muted glpi-sync-note">Importa chamados e documentos. As informações do GLPI são preservadas.</p>
         {status?.problems?.length > 0 && (
           <div className="inline-warning">
             <TriangleAlert size={16} aria-hidden="true" /> Configuração pendente no servidor:{" "}
@@ -65,35 +70,34 @@ export function GlpiPage({ data, can, action, api, busy, open }: Props) {
           </div>
         )}
         {error && <p className="inline-warning">{error}</p>}
-        {can("sync") && (
-          <button
-            className="primary"
-            disabled={busy}
-            onClick={() => action(() => api("/sync", {}), "Sincronização concluída. Dados locais preservados.")}
-          >
-            <RefreshCw size={16} /> Sincronizar agora
-          </button>
-        )}
-        <p className="muted">
-          A importação registra organizações com CNPJ válido e razão social informada, aguardando classificação na seção Organizações.
-          Cada chamado real cria uma demanda em Recebido. Organização, tipo, responsável, prazo e matriz são conferidos dentro da demanda antes de avançar. Anexar o documento assinado e encerrar o chamado continuam no GLPI.
-        </p>
-        <h3>Histórico de sincronização</h3>
-        {(data.sync || []).slice(0, 5).map((s: any) => (
-          <div className="report-row" key={s.id}>
-            <span className={s.status === "Falha" ? "urgent" : "positive"}>{s.status}</span>
-            <span>{s.message}</span>
-          </div>
-        ))}
-        {!data.sync?.length && <p className="muted">Nenhuma sincronização registrada.</p>}
+        <details className="glpi-sync-details">
+          <summary>Histórico de sincronização</summary>
+          {(data.sync || []).slice(0, 5).map((s: any) => (
+            <details className="glpi-sync-entry" key={s.id}>
+              <summary><span className={s.status === "Falha" ? "urgent" : "positive"}>{s.status}</span><time dateTime={s.created}>{new Date(s.created).toLocaleString('pt-BR', {timeZone:'America/Sao_Paulo',dateStyle:'short',timeStyle:'short'})}</time><span className="muted">Ver detalhes</span></summary>
+              <p>{s.message}</p>
+            </details>
+          ))}
+          {!data.sync?.length && <p className="muted">Nenhuma sincronização registrada.</p>}
+        </details>
+        <details className="glpi-sync-details">
+          <summary>Como funciona a integração</summary>
+          <p>Os chamados importados geram demandas. Confira os dados e a classificação das organizações no portal. O envio para assinatura e o encerramento do chamado continuam no GLPI.</p>
+          {status && <p className="muted">{status.mode === 'real' ? `Endereço: ${status.url}.` : 'Dados fictícios de demonstração.'} Grupos autorizados: {status.groups.join(', ')}.</p>}
+        </details>
       </section>
       <div className="detail-grid">
         <section className="panel">
           <div className="panel-heading">
-            <h2>Chamados importados</h2>
-            <span className="counter">{tickets.length}</span>
+            <h2>{queue==="pending"?"Chamados pendentes no GLPI":"Demais chamados"}</h2>
+            <span className="counter">{visible.length}</span>
           </div>
-          {tickets.map((t) => (
+          <div className="glpi-queue-tabs" role="group" aria-label="Separar chamados por status do GLPI">
+            <button className={queue==="regular"?"primary":"secondary"} aria-pressed={queue==="regular"} onClick={()=>{setQueue("regular");setSelected("");}}>Demais chamados ({tickets.filter(t=>!isGlpiPending(t.status)).length})</button>
+            <button className={queue==="pending"?"primary":"secondary"} aria-pressed={queue==="pending"} onClick={()=>{setQueue("pending");setSelected("");}}>Pendentes no GLPI ({tickets.filter(t=>isGlpiPending(t.status)).length})</button>
+          </div>
+          <p className="muted">Status e prioridade informados pelo GLPI. Maior prioridade aparece primeiro. Pendente no GLPI é diferente de pendência de documentação no portal.</p>
+          {visible.map((t) => (
             <button
               key={t.external_id}
               className={"ticket-row" + (t.external_id === selected ? " active" : "")}
@@ -103,16 +107,17 @@ export function GlpiPage({ data, can, action, api, busy, open }: Props) {
               <span>{t.analysis.fields.razaoSocial?.value || t.title}</span>
               <span className={"badge " + (t.state === "vinculado" ? "ok" : "warn")}>{stateLabel[t.state]}</span>
               <small>
+                {glpiStatusLabel(t.status)} • Prioridade GLPI: {glpiPriorityLabel(t.priority)} •{" "}
                 {t.analysis.suggestion.type || "Tipo não identificado"}
                 {t.analysis.suggestion.subtype ? " • " + t.analysis.suggestion.subtype : ""} •{" "}
                 {t.analysis.pendencies.length} pendência(s)
               </small>
             </button>
           ))}
-          {!tickets.length && (
+          {!visible.length && (
             <div className="empty">
               <Inbox />
-              <h3>Nenhum chamado importado</h3>
+              <h3>{queue==="pending"?"Nenhum chamado pendente importado":"Nenhum chamado nesta lista"}</h3>
               <p>Execute a sincronização para ler os chamados dos grupos autorizados.</p>
             </div>
           )}
@@ -174,10 +179,12 @@ function TicketDetail({ ticket, data, can, action, api, busy, open }: Props & { 
         <span className={"badge " + (ticket.state === "vinculado" ? "ok" : "warn")}>{stateLabel[ticket.state]}</span>
       </div>
       <p className="muted">
+        {glpiStatusLabel(ticket.status)} • Prioridade GLPI: {glpiPriorityLabel(ticket.priority)} •{" "}
         {ticket.title} • Grupos: {ticket.groups.join(", ")} • {ticket.followups} resposta(s) • {ticket.versions} versão(ões)
         registradas
       </p>
       <h3>Dados identificados (com origem)</h3>
+      <details><summary>Ver solicitação original completa do GLPI</summary><pre className="contract-text-preview">{ticket.requestText || "Solicitação indisponível nesta versão. Atualize o servidor do portal."}</pre></details>
       <dl className="responsibility">
         {Object.entries(a.fields as Record<string, any>).map(([key, f]) => (
           <React.Fragment key={key}>
@@ -189,6 +196,7 @@ function TicketDetail({ ticket, data, can, action, api, busy, open }: Props & { 
           </React.Fragment>
         ))}
       </dl>
+      {!!Object.keys(ticket.reference||{}).length && <><h3>Valores de referência para conferir o documento</h3><p className="muted">Extraídos do formulário e das observações deste chamado. Estes são os valores solicitados, separados dos valores lidos no anexo.</p><dl className="responsibility">{Object.entries(ticket.reference as Record<string,string[]>).map(([key,values])=><React.Fragment key={key}><dt>{({...fieldLabels,...officialInputs} as Record<string,string>)[key]||key}</dt><dd>{values.join("; ")}{values.length>1 && <small>Há valores diferentes no próprio pedido; confirmar antes de liberar.</small>}</dd></React.Fragment>)}</dl></>}
       <p className="muted">
         Sugestão: {a.suggestion.type || "—"}
         {a.suggestion.subtype ? " / " + a.suggestion.subtype : ""} ({a.suggestion.basis || "sem base"}). Confirme

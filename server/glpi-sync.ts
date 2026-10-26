@@ -1,13 +1,15 @@
 import { db, one, all, run, id, now, audit } from "./db.js";
 import { DemoTicketSource, RealGlpiSource, glpiConfig, configProblems, ticketHash, type TicketSource, type RawTicket } from "./glpi.js";
-import { analyzeTicket } from "./glpi-analysis.js";
+import { analyzeTicket,htmlToText } from "./glpi-analysis.js";
+import {requestExpectations} from './request-expectations.js';
 import { importGlpiSchools } from "./glpi-schools.js";
 import { organizations } from "./organizations.js";
 import { receiveGlpiDemands } from "./glpi-intake.js";
 import { scheduleContractProcessing } from "./contract-processing.js";
+import {dailySyncTimes,latestDueSlot,scheduleTimezone} from './glpi-schedule.js';
 
 export function ticketSource(): TicketSource {
-  return process.env.GLPI_MODE === "real" ? new RealGlpiSource(glpiConfig()) : new DemoTicketSource();
+  return process.env.GLPI_MODE === "real" ? new RealGlpiSource(glpiConfig(),fetch,all("SELECT external_id FROM glpi_tickets WHERE mode='real' AND status IN ('1','2','3','4')").map(t=>t.external_id)) : new DemoTicketSource();
 }
 export function glpiStatus() {
   const config = glpiConfig();
@@ -18,6 +20,8 @@ export function glpiStatus() {
     groups: config.groupIds.length ? config.groupIds.map(String) : config.groups,
     problems: mode === "real" ? configProblems(config) : [],
     intervalMinutes: scheduleMinutes(),
+    dailyTimes: dailySyncTimes(),
+    scheduleTimezone,
     readOnly: true,
   };
 }
@@ -31,7 +35,7 @@ let running = false;
 /** Imports tickets into a staging table. Idempotent by ticket id + content hash.
  * External changes never overwrite local demands, data or approvals: they are recorded as a new
  * immutable version and flagged for human review. */
-export async function syncGlpi(userId: string | null, source = ticketSource(), timeoutMs = 120000) {
+export async function syncGlpi(userId: string | null, source = ticketSource(), timeoutMs = 600000) {
   if (running) throw Error("Já existe uma sincronização em andamento.");
   running = true;
   const controller = new AbortController();
@@ -110,6 +114,25 @@ export function scheduleMinutes() {
 }
 /** Optional periodic read; disabled unless GLPI_SYNC_INTERVAL_MINUTES is between 5 and 1440. */
 export function startSchedule() {
+  const times = dailySyncTimes();
+  if (times.length && process.env.NODE_ENV !== 'test') {
+    const tick = () => {
+      const slot = latestDueSlot(new Date(), times);
+      if (!slot || running) return;
+      const due=new Date(slot+'-03:00').toISOString();
+      const success=one("SELECT created FROM sync_logs WHERE status='Concluído' ORDER BY created DESC LIMIT 1");
+      if(success?.created>=due)return;
+      const key='glpiSyncSlot:'+slot,stamp=now();
+      // A lease prevents simultaneous dispatch and permits retry after failure/restart.
+      const claim=run("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE settings.value<?",key,stamp,new Date(Date.now()-10*60000).toISOString());
+      if(!claim.changes)return;
+      void syncGlpi(null).catch(() => { /* Failure remains visible; retry after ten minutes. */ });
+    };
+    const timer = setInterval(tick, 15000);
+    timer.unref();
+    tick();
+    return timer;
+  }
   const minutes = scheduleMinutes();
   if (!minutes || process.env.NODE_ENV === "test") return null;
   const timer = setInterval(() => {
@@ -126,11 +149,15 @@ export function listTickets() {
     "SELECT external_id,mode,title,status,state,demand_id,first_seen,last_seen,changed_at,analysis,payload FROM glpi_tickets ORDER BY first_seen DESC,external_id DESC",
   ).map((t) => {
     const payload = JSON.parse(t.payload);
+    const analysis=analyzeTicket(payload,ctx);
     return {
       ...t,
       payload: undefined,
+      priority: payload.priority || "",
       // Re-analysed with the current registry (schools/matrices may have been registered since).
-      analysis: analyzeTicket(payload, ctx),
+      analysis,
+      reference:requestExpectations(payload.content,analysis.fields),
+      requestText:htmlToText(payload.content).join("\n"),
       documents: payload.documents,
       documentsAvailable: payload.documentsAvailable,
       followups: payload.followups.length,

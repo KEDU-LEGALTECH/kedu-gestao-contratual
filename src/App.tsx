@@ -20,8 +20,6 @@ import {
   PanelLeftClose,
   LogOut,
   ShieldCheck,
-  Columns3,
-  List,
   Inbox,
   FileText,
   Link2,
@@ -42,6 +40,7 @@ import { OfficialPanel } from "./OfficialPanel";
 import { GlpiPage } from "./GlpiPage";
 import { OfficialTemplates } from "./OfficialTemplates";
 import { TemplateViewer } from "./TemplateViewer";
+import {glpiStatusLabel,glpiPriorityLabel,demandPriorityRank,matchesDemandQueue,type DemandQueue} from "../shared/glpi-ticket-meta";
 import { officialInputs } from "../shared/official-fields";
 import { organizationAllowed } from "../shared/organization-policy";
 import { Organizations } from "./Organizations";
@@ -185,9 +184,9 @@ export function App() {
     [stage, setStage] = useState(""),
     [owner, setOwner] = useState(""),
     [priority, setPriority] = useState(""),
+    [demandQueue,setDemandQueue]=useState<DemandQueue>("all"),
     [type, setType] = useState(""),
     [deadline, setDeadline] = useState(""),
-    [kanban, setKanban] = useState(false),
     [mobile, setMobile] = useState(false);
   const can = (p: string) => user?.permissions.includes(p);
   async function load() {
@@ -385,6 +384,7 @@ export function App() {
   const flowStages=data.demands.some((d:any)=>d.processing)?listStages:stages.slice(0,7);
   const filtered = data.demands.filter(
     (d: any) =>
+      matchesDemandQueue(d,demandQueue) &&
       (!query ||
         [d.school, d.data.cnpj, d.glpi_id, d.id]
           .join(" ")
@@ -392,7 +392,7 @@ export function App() {
           .includes(query.toLowerCase())) &&
       (!stage || displayStage(d) === stage) &&
       (!owner || d.owner === owner) &&
-      (!priority || d.priority === priority) &&
+      (!priority || (d.glpiOrigin?glpiPriorityLabel(d.glpiOrigin.priority):d.priority) === priority) &&
       (!type || d.type === type) &&
       (!deadline ||
         (deadline === "overdue"
@@ -406,14 +406,16 @@ export function App() {
               timeZone: "America/Sao_Paulo",
             }).format(new Date()))),
   );
+  filtered.sort((a:any,b:any)=>demandPriorityRank(b)-demandPriorityRank(a));
   const table = (rows: any[], compact = false) => (
     <div className="table-scroll">
-      <table>
+      <table className="demand-table">
         <thead>
           <tr>
             <th>Escola / demanda</th>
             <th>Documento</th>
             <th>Etapa</th>
+            <th>Prioridade</th>
             <th>Responsável</th>
             <th>Prazo</th>
             <th aria-label="Abrir" />
@@ -434,19 +436,18 @@ export function App() {
                 </button>
                 <small>
                   {d.id} <span>• GLPI #{d.glpi_id || "Manual"}</span>
+                  {d.glpiOrigin && <span> • {glpiStatusLabel(d.glpiOrigin.status)} no GLPI</span>}
                 </small>
               </td>
               <td>
                 {d.type}
+                {!!d.receivedDocumentTypes?.length && <small><strong>Recebido: {d.receivedDocumentTypes.join(', ')}</strong></small>}
                 {d.documentCheck && !d.processing && <small className={d.documentCheck.stale ? "" : d.documentCheck.status === "divergente" ? "urgent" : d.documentCheck.status === "conforme" ? "positive" : ""}>{d.documentCheck.stale ? "Análise desatualizada" : d.documentCheck.status === "divergente" ? "Erro no anexo — corrigir" : d.documentCheck.status === "conforme" ? "Valores conferidos; revisão pendente" : "Anexo exige conferência manual"}</small>}
-                <small className={d.priority === "Urgente" ? "urgent" : ""}>
-                  {d.priority === "Urgente" ? "● " : ""}
-                  {d.priority}
-                </small>
               </td>
               <td>
                 <Badge stage={displayStage(d)} />
               </td>
+              <td><span className={"badge priority-badge priority-"+demandPriorityRank(d)}>{d.glpiOrigin?glpiPriorityLabel(d.glpiOrigin.priority):d.priority}</span></td>
               <td>
                 <span className="avatar tiny">
                   {d.owner_name
@@ -1480,7 +1481,7 @@ export function App() {
                                                 ).length,
                                             ),
                                           )) *
-                                          92,
+                                          72,
                                       ) + "%",
                                   }}
                                 >
@@ -1565,6 +1566,10 @@ export function App() {
               {page === "Demandas" && (
                 <>
                   <section className="panel filters">
+                    <div className="glpi-queue-tabs" role="group" aria-label="Separar demandas pelo status do GLPI">
+                      {([ ["all","Todas"],["open","Em andamento"],["pending","Pendentes no GLPI"] ] as const).map(([key,label])=><button key={key} type="button" className={demandQueue===key?"primary":"secondary"} aria-pressed={demandQueue===key} onClick={()=>setDemandQueue(key)}>{label} ({data.demands.filter((d:any)=>matchesDemandQueue(d,key)).length})</button>)}
+                    </div>
+                    <p className="muted">Separação pelo status do chamado no GLPI. As etapas abaixo mostram a análise do portal. “Todas” inclui também demandas manuais e chamados solucionados ou fechados.</p>
                     <div className="filter-top">
                       <div className="search">
                         <Search size={18} />
@@ -1574,20 +1579,7 @@ export function App() {
                           onChange={(e) => setQuery(e.target.value)}
                         />
                       </div>
-                      <div className="segmented">
-                        <button
-                          className={!kanban ? "selected" : ""}
-                          onClick={() => setKanban(false)}
-                        >
-                          <List size={17} /> Tabela
-                        </button>
-                        <button
-                          className={kanban ? "selected" : ""}
-                          onClick={() => setKanban(true)}
-                        >
-                          <Columns3 size={17} /> Kanban
-                        </button>
-                      </div>
+
                     </div>
                     <div className="filter-row">
                       <select
@@ -1618,7 +1610,7 @@ export function App() {
                         onChange={(e) => setPriority(e.target.value)}
                       >
                         <option value="">Todas as prioridades</option>
-                        {["Normal", "Alta", "Urgente"].map((s) => (
+                        {[...new Set<string>(data.demands.map((d:any)=>d.glpiOrigin?glpiPriorityLabel(d.glpiOrigin.priority):d.priority))].map((s) => (
                           <option key={s}>{s}</option>
                         ))}
                       </select>
@@ -1664,50 +1656,14 @@ export function App() {
                           setPriority("");
                           setDeadline("");
                           setQuery("");
+                          setDemandQueue("all");
                         }}
                       >
                         Limpar
                       </button>
                     </div>
                   </section>
-                  {kanban ? (
-                    <div className="kanban">
-                      {listStages.map((s) => (
-                        <section key={s}>
-                          <h3>
-                            {s}
-                            <span>
-                              {
-                                filtered.filter((d: any) => displayStage(d) === s)
-                                  .length
-                              }
-                            </span>
-                          </h3>
-                          {filtered
-                            .filter((d: any) => displayStage(d) === s)
-                            .map((d: any) => (
-                              <button
-                                className="kanban-card"
-                                key={d.id}
-                                onClick={() => open(d.id)}
-                              >
-                                <small>{d.id}</small>
-                                <strong>{d.school}</strong>
-                                <p>{d.type}</p>
-                                <div>
-                                  <span className="avatar tiny">
-                                    {d.owner_name[0]}
-                                  </span>
-                                  {date(d.due)}
-                                </div>
-                              </button>
-                            ))}
-                        </section>
-                      ))}
-                    </div>
-                  ) : (
-                    <section className="panel">{table(filtered)}</section>
-                  )}
+                  <section className="panel">{table(filtered)}</section>
                   <p className="muted">
                     {filtered.length} demandas encontradas. Etapas são alteradas
                     no detalhe com validação de pendências.

@@ -55,7 +55,7 @@ export function validateData(values: Record<string, unknown>) {
     else if (Number(match[1]) * 100 + Number(match[2]) > 10000)
       errors[key] = "Informe um percentual entre 0,00% e 100,00%.";
   }
-  if (text("cnpj") && !/^\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}$/.test(text("cnpj")))
+  if (text("cnpj") && !/^\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}[.;,]?$/.test(text("cnpj")))
     errors.cnpj = "Use o formato 00.000.000/0000-00.";
   for (const key of ["valor", "cashbackValor"])
     if (text(key)) {
