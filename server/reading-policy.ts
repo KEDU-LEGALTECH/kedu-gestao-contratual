@@ -21,9 +21,10 @@ export function interruptedReading<T extends {text:string;needsReview:boolean;wa
 /** Verifies extraction only; never grants legal approval or ignores missing data. */
 export function automaticReadingCheck(reading:{text:string;fields:Record<string,string[]>;method?:string;problem?:string;incomplete?:boolean;formulaCount?:number;verifiedFields?:string[];digitalFields?:Record<string,string[]>},role:string,reference:Record<string,string[]>) {
  if(!reading.text.trim()||reading.problem||reading.incomplete||['simulation','counterproposal','report'].includes(role))return false;
+ if((reading.formulaCount||0)>0)return false;
  if(reading.method==='XLSX')return reading.formulaCount===0;
  const adopted=fieldsForRole(role,reading.fields);
- if(reading.method==='PDF com OCR'&&Object.keys(adopted).length&&reading.digitalFields){
+ if(['PDF com OCR','DOCX com OCR','ODT com OCR','PPTX com OCR','XLSX com OCR'].includes(reading.method||'')&&Object.keys(adopted).length&&reading.digitalFields){
   const allDigital=Object.entries(adopted).every(([key,values])=>values.length>0&&values.every(value=>(reading.digitalFields![key]||[]).some(digital=>sameRequestedValue(key,value,digital))));
   if(allDigital)return true;
  }
@@ -31,8 +32,10 @@ export function automaticReadingCheck(reading:{text:string;fields:Record<string,
  const fields=fieldsForRole(role,reading.fields);
  const expected=fieldsForRole(role,Object.fromEntries(Object.entries(reference).filter(([key])=>editableKeys.includes(key)&&!['motivo','matriz'].includes(key))));
  const keys=Object.keys(fields);
+ const addressParts=['rua','numero','bairro'];
+ const addressChecked=fields.endereco?.length===1&&expected.endereco?.length===1&&sameRequestedValue('endereco',fields.endereco[0],expected.endereco[0])&&addressParts.every(key=>fields[key]?.length===1&&reading.verifiedFields!.includes(key))&&sameRequestedValue('endereco',fields.endereco[0],fields.rua[0]+', '+fields.numero[0]+', '+fields.bairro[0]);
  // Validate the fields actually supplied by this attachment. Missing requested
  // fields remain separate blocking issues in the demand comparison.
  if(!keys.length||!Object.keys(expected).length)return false;
- return keys.every(key=>reading.verifiedFields!.includes(key)&&fields[key].length===1&&expected[key]?.length===1&&sameRequestedValue(key,fields[key][0],expected[key][0]));
+ return keys.every(key=>reading.verifiedFields!.includes(key)&&fields[key].length===1&&((addressChecked&&addressParts.includes(key))||(expected[key]?.length===1&&sameRequestedValue(key,fields[key][0],expected[key][0]))));
 }

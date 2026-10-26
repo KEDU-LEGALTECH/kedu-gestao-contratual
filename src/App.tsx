@@ -31,6 +31,7 @@ import { ThemeToggle } from "./ThemeToggle";
 import { AttachmentCheck } from "./AttachmentCheck";
 import { SimpleDemand } from "./SimpleDemand";
 import { Reports } from "./Reports";
+import { ProcessingSummary } from './ProcessingSummary';
 import { GovernancePanel, SignedHistoryPanel } from "./GovernancePanel";
 import { requiredDataFields, validateData } from "../shared/data-validation";
 import { bankFields } from "../shared/request-policy";
@@ -1663,6 +1664,7 @@ export function App() {
                       </button>
                     </div>
                   </section>
+                  {['Aguardando análise','Aguardando correção'].includes(stage)&&can('files')&&can('bank')&&<ProcessingSummary stage={stage} demands={filtered} api={api}/>}
                   <section className="panel">{table(filtered)}</section>
                   <p className="muted">
                     {filtered.length} demandas encontradas. Etapas são alteradas

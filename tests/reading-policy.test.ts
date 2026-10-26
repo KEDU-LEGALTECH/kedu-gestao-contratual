@@ -43,3 +43,10 @@ test('interrupção preserva texto e campos sem aprovar uma leitura parcial',()=
  assert.deepEqual(partial.fields,original.fields);assert.equal(partial.text,original.text);assert.equal(partial.needsReview,true);
  assert.equal((partial as any).incomplete,true);assert.deepEqual(original.needsReview,false);
 });
+test('componentes de endereço verificados podem conferir com endereço completo explícito',()=>{
+ const fields={endereco:['AV CANADA, 49A, JACINTINHO'],rua:['AV CANADA'],numero:['49A'],bairro:['JACINTINHO']};
+ const read={text:'Documento cadastral',method:'OCR de imagem',fields,verifiedFields:Object.keys(fields)};
+ assert.equal(automaticReadingCheck(read,'registration',{endereco:['Avenida Canada, 49A, Jacintinho']}),true);
+ assert.equal(automaticReadingCheck(read,'registration',{endereco:['Avenida Canada, 50, Jacintinho']}),false);
+ assert.equal(automaticReadingCheck({...read,verifiedFields:['endereco']},'registration',{endereco:['Avenida Canada, 49A, Jacintinho']}),false);
+});

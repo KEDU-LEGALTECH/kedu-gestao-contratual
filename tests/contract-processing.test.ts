@@ -52,6 +52,14 @@ test('revisão de uma planilha não torna campos de um DOCX independente inconcl
  assert.equal(plan.comparisons.find(r=>r.field==='remuneracao')?.readingPending,true);
  assert.ok(plan.issues.some(i=>i.field==='review:scope-sheet'));
 });
+test('atualizar leitura reprocessa anexo saudável em cache sem baixar ou alterar o original',async()=>{
+ fixture('force-reading');await processContract('force-reading','u',mock());
+ const file=one('SELECT * FROM processing_files WHERE demand_id=?','force-reading'),reading=JSON.parse(file.extracted);
+ run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify({...reading,fields:{razaoSocial:['Leitura antiga incorreta']}}),file.id);
+ let downloads=0;await processContract('force-reading','u',async()=>{downloads++;throw Error('Não deveria baixar');},true);
+ const after=one('SELECT * FROM processing_files WHERE id=?',file.id);
+ assert.equal(downloads,0);assert.deepEqual(JSON.parse(after.extracted).fields.razaoSocial,[data.razaoSocial]);assert.deepEqual(Buffer.from(after.bytes),Buffer.from(file.bytes));
+});
 test('comprovante com dado confirmado em contrato digital dispensa revisão duplicada; divergência não',async()=>{
  fixture('corroborated');await processContract('corroborated','u',mock());
  const extracted={version:2,text:'Dados bancários',fields:{agencia:['0001']},needsReview:true,method:'OCR de imagem'};
@@ -77,6 +85,17 @@ test('relatório de apoio não fornece condições comerciais nem substitui cont
  assert.equal(plan.issues.some(i=>i.field==='review:'+file.id),false);
  assert.equal(plan.origins.rua,undefined);
  assert.equal(plan.status,'Aguardando correção');
+});
+test('comparação usa a parte do chamado em vez de misturar CNPJ da Kedu e da contratada',async()=>{
+ fixture('party-comparison');
+ const zip=new PizZip(doc(data));const xml=zip.file('word/document.xml')!.asText();
+ const declarations=['CONTRATANTE:','NOME: KEDU SERVICOS LTDA','CNPJ: 45.543.580/0001-00','CONTRATADA:','NOME: Escola teste','CNPJ: 11.444.777/0001-61'].map(text=>`<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`).join('');
+ zip.file('word/document.xml',xml.replace('</w:body>',declarations+'</w:body>'));
+ await processContract('party-comparison','u',async()=>({bytes:zip.generate({type:'nodebuffer'}),name:'partes.docx',mime:'application/octet-stream'}));
+ const plan=buildProcessingPlan('party-comparison')!;
+ assert.equal(plan.comparisons.find(r=>r.field==='cnpj')?.found,'11.444.777/0001-61');
+ assert.equal(plan.files[0].parties.length,2);assert.equal(plan.files[0].selectedParty?.role,'CONTRATADA');
+ assert.equal(plan.issues.some(i=>i.field==='cnpj'),false);
 });
 const app=express();app.use(express.json());app.use((req:any,_res,next)=>{req.user={id:"u",role:req.headers["x-role"]||"Administrador"};next();});
 registerProcessingRoutes(app);app.use((err:any,_req:any,res:any,_next:any)=>res.status(err.status||400).json({error:err.message}));
@@ -140,7 +159,7 @@ test("Cada chamado usa sua própria referência e a mesma referência aparece na
 });
 
 test("Imagem e modelo sem homologação não são liberados como corretos",async()=>{
- fixture("image","png");await processContract("image","u",mock(data,"Contrato.png") as any);assert.equal(completed("image").status,"Aguardando análise");
+ fixture("image","png");await processContract("image","u",(async()=>({bytes:readingImage(true).toBuffer('image/png'),name:'Contrato.png',mime:'image/png'})) as any);assert.equal(completed("image").status,"Aguardando análise");
  assert.ok(completed("image").issues.some((i:any)=>i.field.startsWith("file:")));
  fixture("draft");await processContract("draft","u",mock({...data,modalidade:"Garantia Conjunta"}) as any);
  const draft=completed("draft");assert.equal(draft.status,"Aguardando correção");assert.ok(draft.issues.some((i:any)=>i.field==="templateApproval"));
@@ -186,6 +205,44 @@ test('leitura parcial preservada não pode ser confirmada como documento complet
  assert.equal(response.status,400);assert.match((await response.json()).error,/incompleta/);
  assert.equal((await fetch(base+'/partial/processing/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:plan.revision})})).status,409);
  assert.equal(one('SELECT file_id FROM processing_file_reviews WHERE file_id=?',file.id),undefined);
+});
+test('conferência por campo é vinculada à extração e não dispensa outros campos',async()=>{
+ fixture('field-review');await processContract('field-review','u',mock());
+ const file=one('SELECT * FROM processing_files WHERE demand_id=?','field-review');
+ const extracted={...JSON.parse(file.extracted),needsReview:true,method:'OCR',verifiedFields:[],digitalFields:{}};
+ run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify(extracted),file.id);
+ let result=saveProcessingResult('field-review')!;
+ const post=(field:string,value:string,revision:number,role='Administrador')=>fetch(base+'/field-review/processing/files/'+file.id+'/fields/'+field+'/confirm',{method:'POST',headers:{'Content-Type':'application/json','x-role':role},body:JSON.stringify({revision,value,confirmed:true})});
+ assert.equal((await post('cnpj',data.cnpj,result.revision,'Consulta')).status,403);
+ assert.equal((await post('cnpj',data.cnpj,result.revision-1)).status,409);
+ assert.equal((await post('cnpj','valor inventado',result.revision)).status,409);
+ const response=await post('cnpj',result.files[0].fieldReviews.find(f=>f.key==='cnpj')!.values[0],result.revision);
+ assert.equal(response.status,200);result=await response.json();
+ assert.equal(result.files[0].fieldReviews.find(f=>f.key==='cnpj')!.confirmed,true);
+ assert.equal(result.files[0].needsReview,true,'outros campos continuam pendentes');
+ run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify({...extracted,text:extracted.text+'\nNova versão'}),file.id);
+ assert.equal(saveProcessingResult('field-review')!.files[0].fieldReviews.find(f=>f.key==='cnpj')!.confirmed,false);
+});
+test('um campo OCR verificado confere mesmo quando outro campo do arquivo exige revisão',async()=>{
+ fixture('selective-reading');await processContract('selective-reading','u',mock());
+ const file=one('SELECT * FROM processing_files WHERE demand_id=?','selective-reading');
+ const extracted={...JSON.parse(file.extracted),method:'OCR de imagem',needsReview:true,verifiedFields:['cnpj'],digitalFields:{}};
+ run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify(extracted),file.id);
+ let result=saveProcessingResult('selective-reading')!;
+ assert.equal(result.comparisons.find(c=>c.field==='cnpj')?.status,'matches');
+ assert.equal(result.comparisons.find(c=>c.field==='remuneracao')?.status,'review');
+ assert.equal(result.files[0].needsReview,true);
+ extracted.incomplete=true;run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify(extracted),file.id);
+ result=saveProcessingResult('selective-reading')!;assert.equal(result.comparisons.find(c=>c.field==='cnpj')?.status,'review');
+});
+test('resumos respeitam etapa, seleção e permissões de acesso aos documentos',async()=>{
+ const stage=completed('field-review').status;
+ const url=base.replace('/demands','')+'/processing/summary?'+new URLSearchParams({stage,ids:'field-review'});
+ const response=await fetch(url);assert.equal(response.status,200,await response.clone().text());
+ const summary=await response.json();assert.equal(summary.count,1);assert.match(summary.markdown,/GLPI #field-review/);
+ assert.equal((await fetch(url,{headers:{'x-role':'Consulta'}})).status,403);
+ const empty=await fetch(base.replace('/demands','')+'/processing/summary?'+new URLSearchParams({stage,ids:'inexistente'}));
+ assert.equal((await empty.json()).count,0);
 });
 test("Substituição manual de imagem por DOCX legível preenche os dados e libera a validação",async()=>{
  const before=completed("image"),original=one("SELECT id,bytes FROM processing_files WHERE demand_id='image' ORDER BY rowid LIMIT 1");

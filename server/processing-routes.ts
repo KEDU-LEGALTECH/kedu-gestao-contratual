@@ -10,6 +10,8 @@ import { generate,review } from "./documents.js";
 import { readProcessingFile,supportedReading } from "./file-reading.js";
 import sharp from "sharp";
 import { prepareImage } from "./image-input.js";
+import {processingSummaryReport} from './processing-summary.js';
+import {readingFilename} from './reading-format.js';
 const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:20*1024*1024,files:1}});
 const snapshot=(values:Record<string,string>)=>JSON.stringify(Object.fromEntries(Object.entries(values).sort(([a],[b])=>a.localeCompare(b))));
 function get(req:any,write=false) {
@@ -25,8 +27,47 @@ export function processingView(did:string) {
  return {status:"Analisando",revision:job.revision,ticket_hash:job.ticket_hash,issues:[],values:{},files:[],templates:[]};
 }
 export function registerProcessingRoutes(app:Express,process:(did:string,userId?:string|null,download?:any,force?:boolean)=>Promise<any>=processContract) {
+ app.get('/api/processing/summary',(req:any,res)=>{
+  permit(req.user,'files');permit(req.user,'bank');
+  const stage=z.enum(['Aguardando análise','Aguardando correção']).parse(req.query.stage);
+  const ids=z.string().max(100000).parse(req.query.ids).split(',');
+  const selected=new Set(ids),rows=[];
+  for(const d of all('SELECT d.*,s.name AS school FROM demands d LEFT JOIN schools s ON s.id=d.school_id ORDER BY d.glpi_id DESC,d.id')){
+   if(!selected.has(d.id))continue;
+   try{access(req.user,d);}catch(error:any){if(error.status===403)continue;throw error;}
+   const plan=d.glpi_id?processingView(d.id):null;
+   const status=plan?.status||d.stage;
+   if(status===stage)rows.push({...d,status,school:d.school||'Organização não informada',issues:plan?.issues||[]});
+  }
+  res.setHeader('Cache-Control','no-store');res.json(processingSummaryReport(stage,rows));
+ });
+ app.post('/api/demands/:id/processing/files/:file/region',async(req:any,res)=>{
+  const {demand:d}=get(req,true);
+  const body=z.object({revision:z.number().int(),region:z.object({page:z.number().int().min(1).max(30),x:z.number().min(0).max(1),y:z.number().min(0).max(1),width:z.number().min(.02).max(1),height:z.number().min(.02).max(1),rotation:z.union([z.literal(0),z.literal(90),z.literal(180),z.literal(270)])})}).parse(req.body);
+  const current=processingView(d.id),file=one('SELECT * FROM processing_files WHERE id=? AND demand_id=?',req.params.file,d.id);
+  if(!file?.bytes?.length||!current?.files?.some((f:any)=>f.id===file.id))throw Object.assign(Error('Arquivo não disponível nesta versão.'),{status:404});
+  if(current.revision!==body.revision||current.status==='Analisando')throw Object.assign(Error('A demanda mudou. Atualize a página.'),{status:409});
+  const hash=current.ticket_hash,reading=await readProcessingFile(Buffer.from(file.bytes),file.name,body.region);
+  const latest=processingView(d.id);
+  if(latest?.revision!==body.revision||latest?.ticket_hash!==hash)throw Object.assign(Error('A demanda mudou durante a leitura. Tente novamente.'),{status:409});
+  res.json(reading);
+ });
  app.get("/api/demands/:id/processing",(req:any,res)=>{get(req);res.json(processingView(req.params.id));});
  app.post("/api/demands/:id/processing/recheck",async(req:any,res)=>{get(req,true);await process(req.params.id,req.user.id,undefined,true);res.json(processingView(req.params.id));});
+ app.post('/api/demands/:id/processing/files/:file/fields/:field/confirm',(req:any,res)=>{
+  const {demand:d}=get(req,true),body=z.object({revision:z.number().int().min(1),value:z.string().min(1).max(500),confirmed:z.literal(true)}).parse(req.body);
+  db.exec('BEGIN IMMEDIATE');try{
+   const plan=buildProcessingPlan(d.id);
+   if(!plan||plan.job.status==='Analisando'||plan.job.revision!==body.revision||plan.job.ticket_hash!==plan.ticket.hash)throw Object.assign(Error('A leitura mudou. Reabra a demanda.'),{status:409});
+   const current=plan.files.find(f=>f.id===req.params.file),field=current?.fieldReviews.find(f=>f.key===req.params.field);
+   if(!current||current.incomplete||current.problem||!current.available||!field||field.values.length!==1||field.values[0]!==body.value||field.confirmed)throw Object.assign(Error('Campo indisponível, ambíguo ou já conferido. Corrija a leitura antes de confirmar.'),{status:409});
+   const file=one('SELECT extracted FROM processing_files WHERE id=? AND demand_id=?',current.id,d.id);
+   run('INSERT INTO processing_field_reviews VALUES(?,?,?,?,?,?) ON CONFLICT(file_id,field) DO UPDATE SET extraction_hash=excluded.extraction_hash,value=excluded.value,author=excluded.author,created=excluded.created',current.id,field.key,sha256(Buffer.from(file.extracted)),body.value,req.user.id,now());
+   run('UPDATE contract_processing SET revision=revision+1 WHERE demand_id=?',d.id);invalidate(d.id);
+   audit(d.id,req.user.id,'Campo conferido com o original: '+field.label+' — '+current.name+'. Não constitui aprovação jurídica.');
+   saveProcessingResult(d.id);db.exec('COMMIT');res.json(processingView(d.id));
+  }catch(error){db.exec('ROLLBACK');throw error;}
+ });
  app.post("/api/demands/:id/processing/files/:file/confirm",(req:any,res)=>{
   const {demand:d}=get(req,true),b=z.object({revision:z.number().int().min(1),confirmed:z.literal(true)}).parse(req.body);
   db.exec("BEGIN IMMEDIATE");
@@ -60,7 +101,7 @@ export function registerProcessingRoutes(app:Express,process:(did:string,userId?
   if(Object.keys(values).some(k=>!editableKeys.includes(k)))throw Error("Campo de correção não autorizado.");
   let file:any=null;
   if(req.file){
-   if(!supportedReading.test(req.file.originalname))throw Error("Envie PDF, imagem, Word, ODT, XLSX, PPTX, TXT ou CSV de até 20 MB.");
+   if(!supportedReading.test(readingFilename(req.file.buffer,req.file.originalname)))throw Error("Envie PDF, imagem, Word, ODT, XLSX, PPTX, TXT ou CSV de até 20 MB.");
    if(!JSON.parse(ticket.payload).documents.some((x:any)=>String(x.id)===b.document_id))throw Error("Selecione qual anexo está sendo corrigido.");
    const extracted=await readProcessingFile(req.file.buffer,req.file.originalname);
    if(extracted.problem)throw Error(extracted.problem);

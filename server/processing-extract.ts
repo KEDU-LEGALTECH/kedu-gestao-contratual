@@ -20,6 +20,26 @@ const aliases:Record<string,string[]>={
 };
 for(const k of editableKeys)aliases[k]=[...(aliases[k]||[]),inputLabels[k]];
 const index=Object.entries(aliases).flatMap(([key,names])=>names.map(name=>({key,name:norm(name)}))).sort((a,b)=>b.name.length-a.name.length);
+export const fieldKeyForLabel=(label:string)=>index.find(x=>x.name===norm(label.replace(/[:\s]+$/,'')))?.key;
+export function mergeExtractedFields(target:Record<string,string[]>,extra:Record<string,string[]>) {
+ for(const [key,values]of Object.entries(extra))for(const value of values)if(!(target[key]||=[]).some(v=>norm(v)===norm(value)))target[key].push(value);
+ return target;
+}
+/** Supports label/value cells and a header row followed by its values. */
+export function fieldsFromRows(rows:string[][]) {
+ const fields:Record<string,string[]>={};
+ const merge=(label:string,value:string)=>{
+  const key=fieldKeyForLabel(label);if(!key||!value.trim()||fieldKeyForLabel(value))return;
+  const values=fieldsFromLines([label.replace(/[:\s]+$/,'')+': '+value]);
+  for(const [name,vs]of Object.entries(values))for(const v of vs)if(!(fields[name]||=[]).includes(v))fields[name].push(v);
+ };
+ for(let i=0;i<rows.length;i++){
+  const row=rows[i];
+  if(row.length>1&&row.every(cell=>!!fieldKeyForLabel(cell))&&rows[i+1]?.length===row.length&&!rows[i+1].some(cell=>!!fieldKeyForLabel(cell))){row.forEach((label,column)=>merge(label,rows[i+1][column]));i++;continue;}
+  for(let j=0;j<row.length-1;j++)if(fieldKeyForLabel(row[j])){merge(row[j],row[j+1]);j++;}
+ }
+ return fields;
+}
 export function normalizeValue(key:string,value:string) {
  let s=value.trim().replace(/^[:\s]+/,"");
  if(['banco','agencia','conta'].includes(key))s=s.replace(/[.,:;]+\s*$/,'').trim();
@@ -48,7 +68,11 @@ export function fieldsFromLines(lines:string[]) {
   if(identity){add("razaoSocial",identity[1]);add("cnpj",identity[2]);continue;}
   // Bank screenshots commonly place both explicit labels on one line.
   const bank=/\bAg(?:[êe]ncia)?\.?\s*:?\s*(\d{1,6}(?:\s*-\s*[\dXx])?)\s*[-–—•«/]*\s*(?:Cc\.?|C\/C|Conta(?: corrente)?)\s*:?\s*(\d{1,15}(?:\s*-\s*[\dXx])?)/i.exec(clean);
-  if(bank){add("agencia",bank[1].replace(/\s/g,""));add("conta",bank[2].replace(/\s/g,""));continue;}
+  if(bank){add("agencia",bank[1].replace(/\s/g,""));add("conta",bank[2].replace(/\s/g,""));
+   const holder=clean.slice(0,bank.index).trim();
+   if(lines.some(l=>/^Aplicativo .+ Empresas$/i.test(l.trim()))&&/^[\p{L}][\p{L}\s.'-]{5,100}$/u.test(holder)&&holder.split(/\s+/).length>=2)add('titularConta',holder);
+   const app=lines.map(l=>/^Aplicativo (Santander) Empresas$/i.exec(l.trim())).find(Boolean);if(app)add('banco','Banco '+app[1]);
+   continue;}
   const period=/^In[íi]cio(?: da vig[êe]ncia)?\s*:\s*(\d{2}\/\d{2}\/\d{4})\s*\|?\s*(?:T[ée]rmino|Fim(?: da vig[êe]ncia)?)\s*:\s*(\d{2}\/\d{2}\/\d{4})/i.exec(clean);
   if(period){add('inicio',period[1]);add('fim',period[2]);continue;}
   // Only typed numeric labels accept a missing colon. Narrative headings and
@@ -79,6 +103,17 @@ export function extractProcessingFile(bytes:Buffer,name:string) {
   const lines=contractParagraphs(bytes),fields=fieldsFromLines(lines),W="http://schemas.openxmlformats.org/wordprocessingml/2006/main";
   const xml=new PizZip(bytes).file("word/document.xml")!.asText();
   const doc=new DOMParser({onError:()=>{throw Error("XML inválido.");}}).parseFromString(xml,"application/xml");
+  const tables=Array.from(doc.getElementsByTagNameNS(W,'tbl'));
+  if(tables.length){
+   const tableTexts=new Set(tables.flatMap(table=>Array.from(table.getElementsByTagNameNS(W,'p')).map(p=>Array.from(p.getElementsByTagNameNS(W,'t')).map(t=>t.textContent||'').join('').trim())));
+   for(const key of Object.keys(fields))delete fields[key];
+   mergeExtractedFields(fields,fieldsFromLines(lines.filter(line=>!tableTexts.has(line.trim()))));
+   for(const table of tables){
+    const rows=Array.from(table.getElementsByTagNameNS(W,'tr')).map(row=>Array.from(row.childNodes).filter((node:any)=>node.localName==='tc').map((cell:any)=>Array.from(cell.getElementsByTagNameNS(W,'p')).map((p:any)=>Array.from(p.getElementsByTagNameNS(W,'t')).map((t:any)=>t.textContent||'').join('')).join('\n')));
+    mergeExtractedFields(fields,fieldsFromRows(rows));
+    for(const row of rows)for(const cell of row)mergeExtractedFields(fields,fieldsFromLines(cell.split('\n')));
+   }
+  }
   for(const control of Array.from(doc.getElementsByTagNameNS(W,"sdt"))) {
    const tag=control.getElementsByTagNameNS(W,"tag")[0]?.getAttributeNS(W,"val")||"";
    const rawKey=tag.replace(/^kedu:/,"");

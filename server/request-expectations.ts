@@ -20,4 +20,12 @@ export function requestExpectations(content:string,explicitFields:Record<string,
  for(const key of ['cnpj','razaoSocial','remuneracao'])if(!fields[key] && explicitFields[key]?.value)fields[key]=[normalizeValue(key,explicitFields[key].value)];
  return fields;
 }
-export const sameRequestedValue=(key:string,a:string,b:string)=>norm(normalizeValue(key,a))===norm(normalizeValue(key,b));
+const states:Record<string,string>={ac:'acre',al:'alagoas',ap:'amapa',am:'amazonas',ba:'bahia',ce:'ceara',df:'distrito federal',es:'espirito santo',go:'goias',ma:'maranhao',mt:'mato grosso',ms:'mato grosso do sul',mg:'minas gerais',pa:'para',pb:'paraiba',pr:'parana',pe:'pernambuco',pi:'piaui',rj:'rio de janeiro',rn:'rio grande do norte',rs:'rio grande do sul',ro:'rondonia',rr:'roraima',sc:'santa catarina',sp:'sao paulo',se:'sergipe',to:'tocantins'};
+export const sameRequestedValue=(key:string,a:string,b:string)=>{
+ const canonical=(value:string)=>{
+  let v=norm(normalizeValue(key,value));
+  if(key==='estado')return states[v]||v;
+  if(key==='endereco')v=v.replace(/^av(?:enida)?\.?\s+/,'avenida ').replace(/^r(?:ua)?\.?\s+/,'rua ').replace(/[,]+/g,' ').replace(/\s+/g,' ').trim();
+  return v;
+ };return canonical(a)===canonical(b);
+};

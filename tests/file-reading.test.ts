@@ -5,6 +5,18 @@ import sharp from "sharp";
 import {readProcessingFile} from "../server/file-reading.js";
 import {fieldsFromLines,normalizeValue} from "../server/processing-extract.js";
 import {readingImage,readingPdf} from "./reading-fixtures.js";
+import {demoTemplate} from '../server/documents.js';
+
+test('Word mantém texto digital e lê imagens incorporadas sem substituir o original',async()=>{
+ const zip=new PizZip(demoTemplate());
+ zip.file('word/document.xml','<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Razão social: Empresa teste</w:t></w:r></w:p></w:body></w:document>');
+ zip.file('word/media/documento.png',readingImage().toBuffer('image/png'));
+ const bytes=zip.generate({type:'nodebuffer'}),original=Buffer.from(bytes);
+ const result=await readProcessingFile(bytes,'arquivo.docx');
+ assert.equal(result.problem,'');assert.equal(result.method,'DOCX com OCR');
+ assert.deepEqual(result.fields.razaoSocial,['Empresa teste']);assert.deepEqual(result.fields.cnpj,['11.444.777/0001-61']);
+ assert.equal(result.digitalFields?.cnpj,undefined);assert.deepEqual(bytes,original);
+});
 
 test("PDF digital extrai texto e campos sem exigir conversão para DOCX",async()=>{
  const r=await readProcessingFile(readingPdf(),"contrato.pdf");assert.equal(r.problem,"");assert.equal(r.method,"Texto do PDF");assert.equal(r.needsReview,false);assert.deepEqual(r.fields.remuneracao,["11,84%"]);

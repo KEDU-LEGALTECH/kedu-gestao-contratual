@@ -14,6 +14,8 @@ import {requestExpectations,sameRequestedValue} from './request-expectations.js'
 import {installmentTableFields} from './installment-table.js';
 import {identifyDocumentHeading,receivedDocumentKind} from '../shared/document-heading.js';
 import {attachmentRole,fieldsForRole,automaticReadingCheck} from './reading-policy.js';
+import {scopePartyReading,extractContractParties,selectContractParty} from './contract-parties.js';
+import {fieldExcerpt,readingGuidance,proposedChanges} from './reading-guidance.js';
 export function receivedDocumentTypes(did:string) {
  const {ticket}=processingSource(did);if(!ticket)return [];
  const files=filesFor(did,ticket.hash);
@@ -26,7 +28,7 @@ const running=new Set<string>();
 function fingerprint(did:string) {
  const d=one("SELECT school_id,contract_id,data_version FROM demands WHERE id=?",did);
  return sha256(Buffer.from(JSON.stringify([
-  'field-scoped-reading-v3',
+  'hybrid-local-ocr-v6',
   d,
   all("SELECT v.id,v.status,s.template_hash,h.template_hash AS approved_hash,i.version_id AS inactive FROM template_sources s JOIN template_versions v ON v.id=s.version_id LEFT JOIN template_homologations h ON h.version_id=v.id LEFT JOIN inactive_template_versions i ON i.version_id=v.id ORDER BY v.id"),
   all("SELECT id,parent_id,sequence,status FROM contracts WHERE school_id=? ORDER BY id",d?.school_id),
@@ -60,12 +62,18 @@ export function buildProcessingPlan(did:string) {
  const request=requestExpectations(raw.content,analysis.fields),files=filesFor(did,ticket.hash),candidates:Record<string,{value:string;source:string;fileId:string}[]>={};
  for(const f of files) {
   if(f.problem){add("file:"+f.document_id,f.problem,{source:f.name});continue;}
-  const extracted=JSON.parse(f.extracted);
+  const partyScope=scopePartyReading(JSON.parse(f.extracted),request.cnpj?.length===1?request.cnpj[0]:undefined);
+  const extracted=partyScope.reading;
   const role=attachmentRole(f.name,extracted.text||'');
+  const extractedHash=sha256(Buffer.from(f.extracted)),wholeReviewed=!!one('SELECT file_id FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?',f.id,extractedHash);
+  const scopedFields=fieldsForRole(role,extracted.fields),fieldChecks=all('SELECT field,value,extraction_hash FROM processing_field_reviews WHERE file_id=?',f.id);
+  const checkedAllFields=Object.keys(scopedFields).length>0&&Object.entries(scopedFields).every(([key,values])=>values.length===1&&fieldChecks.some(check=>check.field===key&&check.extraction_hash===extractedHash&&sameRequestedValue(key,check.value,values[0])));
+  if(role==='document'&&partyScope.parties.length&&!partyScope.selected)add('review:parties:'+f.id,'Há mais de uma parte contratual possível. Identifique a empresa correspondente ao chamado; os CNPJs das partes não foram misturados.',{label:'Identificação da parte contratual',source:f.name});
   if(extracted.incomplete)add('review:partial:'+f.id,'A leitura foi interrompida. Os trechos já lidos foram preservados, mas é necessário conferir as páginas restantes e enviar uma cópia completa legível.',{label:'Leitura parcial',source:f.name});
   if(role==='counterproposal')add('review:counterproposal:'+f.id,'Este anexo é uma contraproposta. As condições originais e propostas precisam ser decididas antes de preencher o contrato; nenhum desses valores foi adotado automaticamente.',{label:'Contraproposta — conferir alterações solicitadas',source:f.name});
-  if(extracted.needsReview && role!=='report' && !automaticReadingCheck(extracted,role,request) && !one("SELECT file_id FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?",f.id,sha256(Buffer.from(f.extracted))))add("review:"+f.id,"Confira o texto extraído com o original e confirme a leitura. OCR e outros leitores podem confundir números ou omitir trechos.",{label:"Conferência de leitura: "+f.name,source:f.name});
-  for(const [key,vs] of Object.entries(fieldsForRole(role,extracted.fields)) as [string,string[]][])for(const value of vs)(candidates[key]||=[]).push({value,source:f.name,fileId:f.id});
+  if(extracted.needsReview && role!=='report' && !automaticReadingCheck(extracted,role,request) && !wholeReviewed && !checkedAllFields)add("review:"+f.id,readingGuidance(extracted,role),{label:"Conferência de leitura: "+f.name,source:f.name});
+  if(extracted.needsReview&&extracted.formulaCount>0&&checkedAllFields&&!wholeReviewed)add('review:formulas:'+f.id,'Os campos foram conferidos individualmente, mas a planilha contém fórmulas. Confira o original e confirme a leitura completa; cálculos não foram executados pelo portal.',{label:'Cálculos da planilha',source:f.name});
+  for(const [key,vs] of Object.entries(fieldsForRole(role,extracted.fields)) as [string,string[]][])for(const value of vs)(candidates[key]||=[]).push({value,source:f.name+(partyScope.selected&&['cnpj','razaoSocial'].includes(key)?' — parte '+partyScope.selected.role:''),fileId:f.id});
   if(analysis.suggestion.type==="Parcelamento"){
    const count=request.parcelas?.length===1?request.parcelas[0]:undefined;
    const table=installmentTableFields(extracted.text||"",count);
@@ -98,7 +106,7 @@ export function buildProcessingPlan(did:string) {
  }
  for(const [key,vs] of Object.entries(request)) {
   const distinct=[...new Set(vs)];if(distinct.length===1){
-   if(values[key] && norm(values[key])!==norm(distinct[0]) && !Object.hasOwn(overrides,key))add(key,"O documento difere do pedido. Corrija o valor para gerar o contrato.",{found:values[key],expected:distinct[0],source:"Formulário GLPI e documento anexado"});
+   if(values[key] && !sameRequestedValue(key,values[key],distinct[0]) && !Object.hasOwn(overrides,key))add(key,"O documento difere do pedido. Corrija o valor para gerar o contrato.",{found:values[key],expected:distinct[0],source:"Formulário GLPI e documento anexado"});
    values[key]=distinct[0];origins[key]="Formulário do chamado GLPI";
   }
  }
@@ -120,7 +128,17 @@ export function buildProcessingPlan(did:string) {
   const corrected=expected.length===1 && Object.hasOwn(overrides,key) && sameRequestedValue(key,String(overrides[key]),expected[0]);
   const matches=expected.length===1 && found.length>0 && found.every(v=>sameRequestedValue(key,v,expected[0]));
   if(!found.length && !corrected && files.some(f=>!f.problem) && !issues.some(i=>i.field===key))add(key,"O chamado informa este dado, mas ele não foi identificado no documento. Confira o original ou informe a correção para a nova versão.",{expected:expected.join("; "),source:"Formulário e observações do GLPI"});
-  const needsFieldReview=(candidates[key]||[]).some(c=>issues.some(i=>i.field.startsWith('review:') && i.field.endsWith(c.fileId)));
+  const needsFieldReview=(candidates[key]||[]).some(c=>{
+   const pending=issues.filter(i=>i.field.startsWith('review:')&&i.field.endsWith(c.fileId));
+   if(!pending.length)return false;
+   // Structural, partial and legal reviews remain independent of OCR certainty.
+   if(pending.some(i=>i.field!=='review:'+c.fileId))return true;
+   const file=files.find(f=>f.id===c.fileId)!;
+   const reading=JSON.parse(file.extracted),role=attachmentRole(file.name,reading.text||'');
+   const confirmed=one('SELECT value FROM processing_field_reviews WHERE file_id=? AND field=? AND extraction_hash=?',file.id,key,sha256(Buffer.from(file.extracted)));
+   if(!reading.incomplete&&confirmed&&sameRequestedValue(key,confirmed.value,c.value))return false;
+   return !automaticReadingCheck({...reading,fields:{[key]:[c.value]}},role,request);
+  });
   return {field:key,readingPending:needsFieldReview,label:analysis.suggestion.type==="Parcelamento" && key==="valor"?"Valor parcelado":analysis.suggestion.type==="Parcelamento" && key==="parcelas"?"Quantidade de parcelas":inputLabels[key]||key,expected:expected.join("; "),found:found.join("; "),source:[...new Set((candidates[key]||[]).map(c=>c.source))].join("; "),used:values[key]||"",status:expected.length>1?"ambiguous":corrected?"corrected":!found.length?"missing":!matches?"different":needsFieldReview?"review":"matches"};
  });
  if(!values.duracaoMeses && values.inicio && values.fim)try{const months=wholeMonths(values.inicio,values.fim);if(months!==null && months>0){values.duracaoMeses=String(months);origins.duracaoMeses="Calculado a partir das datas exatas de início e fim";}}catch{}
@@ -173,12 +191,19 @@ export function buildProcessingPlan(did:string) {
  }catch{add("generation","Não foi possível preencher o modelo com estes dados. Confira o modelo e os campos indicados.");}
  const typeIdentification={type:actualType||"Não identificado",source:analysis.suggestion.type?analysis.suggestion.basis:d.type!=="A classificar"?"Classificação registrada na demanda":documentTypes.length===1?"Título no início do documento ou nome do arquivo":"Conferência manual necessária",ticketTitle:raw.title};
  return {demand:d,ticket,job,values,origins,issues,comparisons,typeIdentification,template,templates,version,sequence,matrix,derived,generated,type:actualType,subtype:actualSubtype,
-  files:files.map(f=>{const e=JSON.parse(f.extracted);return {
+  files:files.map(f=>{const scope=scopePartyReading(JSON.parse(f.extracted),request.cnpj?.length===1?request.cnpj[0]:undefined),e=scope.reading;return {
+   parties:scope.parties,selectedParty:scope.selected,
+   guidance:readingGuidance(e,attachmentRole(f.name,e.text||'')),changes:proposedChanges(e.text||''),
+   fieldReviews:Object.entries(candidates).filter(([,vs])=>vs.some(c=>c.fileId===f.id)).map(([key,vs])=>{
+    const values=[...new Set(vs.filter(c=>c.fileId===f.id).map(c=>c.value))];
+    const check=one('SELECT * FROM processing_field_reviews WHERE file_id=? AND field=?',f.id,key);
+    return {key,label:inputLabels[key]||key,values,expected:request[key]||[],excerpt:scope.selected&&['cnpj','razaoSocial'].includes(key)?scope.selected.excerpt:fieldExcerpt(e.text||'',values),confirmed:!!check&&check.extraction_hash===sha256(Buffer.from(f.extracted))&&values.length===1&&sameRequestedValue(key,check.value,values[0])};
+   }),
    available:!!f.bytes.length,incomplete:!!e.incomplete,role:attachmentRole(f.name,e.text||''),
    readingValidatedAutomatically:automaticReadingCheck(e,attachmentRole(f.name,e.text||''),request),
    reviewFields:Object.entries(candidates).filter(([,vs])=>vs.some(c=>c.fileId===f.id)).map(([key])=>inputLabels[key]||key),
-   warnings:e.warnings||[],formulaCount:e.formulaCount||0,identification:identifyDocumentHeading(f.name,e.text||""),id:f.id,document_id:f.document_id,name:f.name,mime:f.mime,problem:f.problem,method:e.method,confidence:e.confidence,pages:e.pages,
-   needsReview:!!e.needsReview && !e.incomplete && issues.some(i=>i.field==='review:'+f.id),corrected:f.ticket_hash.includes(":correction:"),text:e.text?.slice(0,500000)||""};})};
+   warnings:e.warnings||[],ocrEngine:e.ocrEngine,preprocessing:e.preprocessing||[],formulaCount:e.formulaCount||0,identification:identifyDocumentHeading(f.name,e.text||""),id:f.id,document_id:f.document_id,name:f.name,mime:f.mime,problem:f.problem,method:e.method,confidence:e.confidence,pages:e.pages,
+   needsReview:!!e.needsReview && !e.incomplete && issues.some(i=>i.field==='review:'+f.id||i.field==='review:formulas:'+f.id),corrected:f.ticket_hash.includes(":correction:"),text:e.text?.slice(0,500000)||""};})};
 }
 export function saveProcessingResult(did:string) {
  const plan=buildProcessingPlan(did);if(!plan)return null;
@@ -196,7 +221,7 @@ export async function processContract(did:string,userId:string|null=null,downloa
   const raw=JSON.parse(ticket.payload);
   for(const doc of (raw.documents||[]).slice(0,20)) {
    const cached=filesFor(did,ticket.hash).find(f=>f.document_id===String(doc.id));
-   if(cached?.bytes.length && JSON.parse(cached.extracted).version===readerVersion && (!force || !cached.problem && !JSON.parse(cached.extracted).incomplete))continue;
+   if(cached?.bytes.length && JSON.parse(cached.extracted).version===readerVersion && !force)continue;
    let file:any,extracted:any;
    try {
     if(cached?.bytes.length)file={name:cached.name,mime:cached.mime,bytes:Buffer.from(cached.bytes)};
