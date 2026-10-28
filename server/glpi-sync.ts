@@ -112,7 +112,8 @@ export function scheduleMinutes() {
   const n = Number(process.env.GLPI_SYNC_INTERVAL_MINUTES || 0);
   return Number.isInteger(n) && n >= 5 && n <= 1440 ? n : 0;
 }
-/** Optional periodic read; disabled unless GLPI_SYNC_INTERVAL_MINUTES is between 5 and 1440. */
+/** Daily slots in Brasilia time take precedence over the optional interval.
+ * Changes to GLPI_SYNC_TIMES are loaded when the backend restarts. */
 export function startSchedule() {
   const times = dailySyncTimes();
   if (times.length && process.env.NODE_ENV !== 'test') {
