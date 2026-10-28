@@ -4,8 +4,15 @@ export function fieldExcerpt(text:string,values:string[]) {
  const index=lines.findIndex(line=>values.some(value=>compact(value).length>=3&&compact(line).includes(compact(value))));
  return index<0?'':lines.slice(Math.max(0,index-1),index+2).join('\n').slice(0,700);
 }
-export function readingGuidance(reading:{fields?:Record<string,string[]>;confidence?:number;formulaCount?:number;incomplete?:boolean;problem?:string},role:string) {
+/** Documents that were read but by nature carry no contract data; "not recognised" would be misleading. */
+export function noDataReason(text:string) {
+ if((text.match(/\{\{\s*[\w.]+\s*\}\}|<%\w+%>/g)||[]).length>=3)return 'Modelo com campos ainda não preenchidos (marcadores como {{cpf_contratante}}). O arquivo foi lido, mas não contém dados da escola; confira se este é o documento certo.';
+ if(/carteira nacional de habilita|carteira de identidade|registro geral|documento de identifica/i.test(text.slice(0,3000)))return 'Documento de identificação pessoal. O arquivo foi lido; ele não contém dados do contrato e serve apenas para conferir o representante.';
+ return '';
+}
+export function readingGuidance(reading:{fields?:Record<string,string[]>;confidence?:number;formulaCount?:number;incomplete?:boolean;problem?:string;text?:string},role:string) {
  if(reading.problem)return reading.problem;
+ if(!Object.keys(reading.fields||{}).length&&noDataReason(reading.text||''))return noDataReason(reading.text||'');
  if(reading.incomplete)return 'Leitura parcial: ainda há trechos ou páginas não conferidos.';
  if(role==='counterproposal')return 'Contraproposta: as condições sugeridas ainda precisam de decisão.';
  const ambiguous=Object.entries(reading.fields||{}).filter(([,values])=>new Set(values.map(norm)).size>1).map(([key])=>inputLabels[key]||key);

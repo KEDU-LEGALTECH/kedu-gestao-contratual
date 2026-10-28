@@ -20,10 +20,10 @@ const server=app.listen(0,"127.0.0.1");await new Promise<void>(r=>server.on("lis
 const base=`http://127.0.0.1:${(server.address() as any).port}`;
 test("Relatório e CSV mostram a etapa de processamento e preservam cancelamentos",async()=>{
  const headers={Cookie:"session=session"},res=await fetch(base+"/api/reports",{headers});assert.equal(res.status,200);const body=await res.json();
- assert.equal(body.byStage.find((r:any)=>r.stage==="Aguardando correção").count,1);
+ assert.equal(body.byStage.find((r:any)=>r.stage==="Aguardando análise").count,1);
  assert.equal(body.byStage.find((r:any)=>r.stage==="Cancelado").count,1);
  assert.equal(body.divergences.length,1);assert.equal(body.divergences[0].id,"pending");
- const csv=await fetch(base+"/api/reports.csv",{headers});assert.equal(csv.status,200);const text=await csv.text();assert.match(text,/Aguardando correção/);assert.match(text,/Cancelado/);
+ const csv=await fetch(base+"/api/reports.csv",{headers});assert.equal(csv.status,200);const text=await csv.text();assert.match(text,/Aguardando análise/);assert.match(text,/Cancelado/);
 });
 test("Saúde do servidor não exige login nem expõe dados internos",async()=>{
  const res=await fetch(base+"/healthz");assert.equal(res.status,200);assert.deepEqual(await res.json(),{status:"ok"});

@@ -2,18 +2,23 @@ import { contractParagraphs } from "./attachment-analysis.js";
 import { fieldLabels,officialInputs,derivedFrom } from "../shared/official-fields.js";
 import PizZip from "pizzip";
 import { DOMParser } from "@xmldom/xmldom";
-export const inputLabels:Record<string,string>={...fieldLabels,...officialInputs,endereco:"Endereço",modalidade:"Modalidade de garantia",matriz:"Contrato matriz",motivo:"Descrição da solicitação"};
+import {structuredIdentityFields} from './structured-identities.js';
+import {qualificationFields} from './qualification-reading.js';
+import {bankFields} from './bank-reading.js';
+import {ownIdentity,labelLike} from './field-plausibility.js';
+import {sameFieldValue} from '../shared/value-comparison.js';
+export const inputLabels:Record<string,string>={...fieldLabels,...officialInputs,endereco:"Endereço",modalidade:"Modalidade de garantia",matriz:"Contrato matriz",motivo:"Descrição da solicitação",valorTotal:'Valor total',valorParcela:'Valor da parcela'};
 export const editableKeys=Object.keys(inputLabels).filter(k=>k!=="aditivo");
 export const norm=(s:string)=>s.normalize("NFD").replace(/\p{Diacritic}/gu,"").toLowerCase().replace(/\s+/g," ").trim();
 const aliases:Record<string,string[]>={
- cnpj:["CNPJ","CNPJ da contratante","NÚMERO DE INSCRIÇÃO"],razaoSocial:["RAZÃO SOCIAL","Razão social da contratante","NOME EMPRESARIAL"],nomeFantasia:["NOME FANTASIA"],
+ cnpj:["CNPJ","CNPJ da contratante","NÚMERO DE INSCRIÇÃO","CNPJ Nº"],razaoSocial:["RAZÃO SOCIAL","Razão social da contratante","NOME EMPRESARIAL"],nomeFantasia:["NOME FANTASIA","TÍTULO DO ESTABELECIMENTO (NOME DE FANTASIA)","TÍTULO DO ESTABELECIMENTO / NOME DE FANTASIA"],
  garantia:["PERCENTUAL DE GARANTIA"],repasse:["PERCENTUAL DE REPASSE"],valor:["VALOR DE REFERÊNCIA","VALOR CONTRATUAL","VALOR PARCELADO"],
  parcelas:["QTD PARCELAS","QTD. PARCELAS","QUANTIDADE DE PARCELAS","NÚMERO DE PARCELAS","Nº. DE PARCELAS","Nº DE PARCELAS"],
- endereco:["ENDEREÇO","ENDEREÇO COMPLETO"],rua:["RUA","LOGRADOURO","RUA / LOGRADOURO"],estado:["ESTADO","UF"],
+ endereco:["ENDEREÇO","ENDEREÇO COMPLETO"],rua:["RUA","LOGRADOURO","RUA / LOGRADOURO"],estado:["ESTADO","UF"],cidade:["MUNICÍPIO"],
  inicio:["INÍCIO DA VIGÊNCIA","DATA DE INÍCIO","INÍCIO"],fim:["FIM DA VIGÊNCIA","DATA FINAL","TÉRMINO DA VIGÊNCIA"],
  dataFormalizacao:["DATA DE FORMALIZAÇÃO"],dataAssinaturaMatriz:["DATA DE ASSINATURA DA MATRIZ","DATA DE ASSINATURA DO CONTRATO MATRIZ"],
  representanteNome:["REPRESENTANTE LEGAL","NOME DO REPRESENTANTE"],representanteCpf:["CPF DO REPRESENTANTE"],
- titularConta:["TITULAR DA CONTA","TITULARIDADE"],documentoTitular:["CPF/CNPJ DO TITULAR","CNPJ/CPF"],modalidade:["MODALIDADE","MODALIDADE DE GARANTIA"],
+ titularConta:["TITULAR DA CONTA","TITULARIDADE","NOME DO TITULAR"],documentoTitular:["CPF/CNPJ DO TITULAR","CNPJ/CPF","CNPJ DO TITULAR","CPF DO TITULAR"],modalidade:["MODALIDADE","MODALIDADE DE GARANTIA"],
  agencia:["AGÊNCIA","AG."],conta:["CONTA CORRENTE","C/C","CC."],
  remuneracao:["TAXA","TAXA KEDU","Taxa de remuneração","REMUNERAÇÃO","REMUNERAÇÃO KEDU","REMUNERAÇÃO KEDU (%)"],
  alunos:["ALUNADO","QUANTIDADE DE ALUNOS"],
@@ -22,7 +27,7 @@ for(const k of editableKeys)aliases[k]=[...(aliases[k]||[]),inputLabels[k]];
 const index=Object.entries(aliases).flatMap(([key,names])=>names.map(name=>({key,name:norm(name)}))).sort((a,b)=>b.name.length-a.name.length);
 export const fieldKeyForLabel=(label:string)=>index.find(x=>x.name===norm(label.replace(/[:\s]+$/,'')))?.key;
 export function mergeExtractedFields(target:Record<string,string[]>,extra:Record<string,string[]>) {
- for(const [key,values]of Object.entries(extra))for(const value of values)if(!(target[key]||=[]).some(v=>norm(v)===norm(value)))target[key].push(value);
+ for(const [key,values]of Object.entries(extra))for(const value of values)if(!(target[key]||=[]).some(v=>sameFieldValue(key,v,value)))target[key].push(value);
  return target;
 }
 /** Supports label/value cells and a header row followed by its values. */
@@ -46,9 +51,11 @@ export function normalizeValue(key:string,value:string) {
  if(!s || /^[_\s.\-–—]+$/.test(s) || /\{[^}]+\}|\[(?:DADO|NOME|PREENCHER)|PENDENTE|⟨/i.test(s))return "";
  if(["remuneracao","garantia","repasse","repasseSegundo","cashback"].includes(key)) {const m=/^(\d{1,3})(?:[.,](\d{1,2}))?\s*%$/.exec(s);if(m)s=Number(m[1])+","+(m[2]||"").padEnd(2,"0")+"%";}
  if(key==="modalidade"){const known=["Garantia Completa","Garantia Conjunta","Garantia Prevista"].find(x=>norm(x)===norm(s));if(known)s=known;}
+ // A document number followed by the next sentence ("07438321000111 Ocorrerá em...") keeps only the number.
+ if(["cnpj","representanteCpf","documentoTitular"].includes(key)){const lead=/^(\d[\d.\/\-\s]{9,20}\d)\s+\p{L}/u.exec(s);if(lead&&[11,14].includes(lead[1].replace(/\D/g,"").length))s=lead[1];}
  if(key==="cnpj"){const d=s.replace(/\D/g,"");if(d.length===14)s=`${d.slice(0,2)}.${d.slice(2,5)}.${d.slice(5,8)}/${d.slice(8,12)}-${d.slice(12)}`;}
  if(key==="cep" && /^\d{2}\.?\d{3}-?\d{3}$/.test(s)){const d=s.replace(/\D/g,"");s=d.slice(0,5)+"-"+d.slice(5);}
- if(["valor","cashbackValor"].includes(key) && /^(?:R\$\s*)?(?:\d{1,3}(?:\.\d{3})*|\d+),\d{2}$/.test(s))s=s.replace(/R\$|\s|\./g,"");
+ if(["valor","cashbackValor","valorTotal","valorParcela"].includes(key) && /^(?:R\$\s*)?(?:\d{1,3}(?:\.\d{3})*|\d+),\d{2}$/.test(s))s=s.replace(/R\$|\s|\./g,"");
  if(["representanteCpf","documentoTitular"].includes(key)){const d=s.replace(/\D/g,"");if(d.length===11)s=`${d.slice(0,3)}.${d.slice(3,6)}.${d.slice(6,9)}-${d.slice(9)}`;else if(key==="documentoTitular" && d.length===14)s=normalizeValue("cnpj",s);}
  if(["inicio","fim","dataAssinaturaMatriz","dataFormalizacao"].includes(key)){
   const m=/^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s);if(m)s=`${m[3]}-${m[2]}-${m[1]}`;
@@ -60,7 +67,7 @@ export function normalizeValue(key:string,value:string) {
 }
 export function fieldsFromLines(lines:string[]) {
  const values:Record<string,string[]>={};
- const add=(key:string,raw:string)=>{const value=normalizeValue(key,raw);if(value && !(values[key]||[]).includes(value.slice(0,500)))(values[key]||=[]).push(value.slice(0,500));};
+ const add=(key:string,raw:string)=>{const value=normalizeValue(key,raw);if(value && !labelLike(value) && !(values[key]||[]).includes(value.slice(0,500)))(values[key]||=[]).push(value.slice(0,500));};
  for(let i=0;i<lines.length;i++) {
   const clean=lines[i].replace(/^\s*\d+[.)]\s*/,"").replace(/^\s*(?:[•*“”"']+|[eé])\s*(?=(?:BANCO|AG[ÊE]NCIA|CONTA|TITULARIDADE|CNPJ\/CPF|RAZ[ÃA]O SOCIAL|NOME FANTASIA)\b)/i,''),n=norm(clean);
   // Identity printed in a document header: NAME (CNPJ), without form labels.
@@ -87,15 +94,19 @@ export function fieldsFromLines(lines:string[]) {
   ];
   const explicit=typed.find(([,pattern])=>pattern.test(clean));
   if(explicit){add(explicit[0],explicit[1].exec(clean)![1]);continue;}
-  const label=index.find(x=>n===x.name || n.startsWith(x.name+":") || n.startsWith(x.name+" :"));
+  const label=index.find(x=>n===x.name || n.startsWith(x.name+":") || n.startsWith(x.name+" :") || n.startsWith(x.name+" |"));
   if(!label)continue;
-  const colon=clean.indexOf(":",label.name.length),raw=colon>=0?clean.slice(colon+1).trim():"";
+  const separator=clean.slice(label.name.length).search(/[:|]/),raw=separator>=0?clean.slice(label.name.length+separator+1).trim():"";
   const next=raw || (lines[i+1] && !/^[^:]{1,100}:\s*$/.test(lines[i+1].trim()) && !index.some(x=>norm(lines[i+1])===x.name || norm(lines[i+1]).startsWith(x.name+":"))?lines[i+1]:"");
   const value=normalizeValue(label.key,next||"");
   if(label.key==="parcelas" && value && !/^\d+$/.test(value))continue;
   if(value)add(label.key,value);
  }
- return values;
+ const text=lines.join('\n');
+ // Party qualification paragraphs fill only fields that labelled lines did not provide.
+ const qualified={...bankFields(text),...qualificationFields(text,cnpj=>ownIdentity('cnpj',cnpj))};
+ for(const [key,found] of Object.entries(qualified))if(!values[key]?.length)values[key]=found;
+ return mergeExtractedFields(values,structuredIdentityFields(text));
 }
 export function extractProcessingFile(bytes:Buffer,name:string) {
  if(!/\.docx$/i.test(name))return {text:"",fields:{},problem:"O anexo não contém texto DOCX disponível para análise. Envie uma cópia DOCX legível."};

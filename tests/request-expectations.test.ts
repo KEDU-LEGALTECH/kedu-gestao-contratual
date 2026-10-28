@@ -3,6 +3,15 @@ import assert from 'node:assert/strict';
 import {requestExpectations} from '../server/request-expectations.js';
 import {analyzeTicket} from '../server/glpi-analysis.js';
 import {installmentTableFields} from '../server/installment-table.js';
+import {sameRequestedValue} from '../server/request-expectations.js';
+test('equivalência ignora caixa, acentos e separadores bancários, sem corrigir letras ou dígitos',()=>{
+ assert.equal(sameRequestedValue('cidade','Itaguaí','ITAGUAI'),true);
+ assert.equal(sameRequestedValue('cidade','IITAGUAI','ITAGUAI'),false);
+ assert.equal(sameRequestedValue('conta','68146786-2','681467862'),true);
+ assert.equal(sameRequestedValue('conta','000123-X','000123x'),true);
+ assert.equal(sameRequestedValue('conta','000123-X','123X'),false);
+ assert.equal(sameRequestedValue('conta','68146786-2','681467863'),false);
+});
 const content='<table><tr><td>RAZÃO SOCIAL:</td><td>Escola teste</td></tr><tr><td>CNPJ:</td><td>11444777000161</td></tr><tr><td>MOTIVO DO ADITIVO:</td><td>PARCELAMENTO DE DÉBITOS</td></tr><tr><td>OBSERVAÇÕES OU CONSIDERAÇÕES ADICIONAIS:</td><td>Valor parcelado: R$ 1.507,90<br>Remuneração Kedu: 4,58%<br>QTD parcelas: 3</td></tr></table>';
 test('Lê valores explícitos das observações de um formulário GLPI em tabela',()=>{
  const f=requestExpectations(content);assert.deepEqual(f.valor,['1507,90']);assert.deepEqual(f.remuneracao,['4,58%']);assert.deepEqual(f.parcelas,['3']);assert.deepEqual(f.cnpj,['11.444.777/0001-61']);

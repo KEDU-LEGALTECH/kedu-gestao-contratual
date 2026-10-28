@@ -13,7 +13,9 @@ let unavailable=false;
 export function paddleConfigured(){return process.env.OCR_ENGINE!=='legacy'&&((process.env.NODE_ENV!=='test'&&!process.env.NODE_TEST_CONTEXT)||process.env.OCR_ENGINE==='paddle')&&existsSync(join(root,'data/ocr-runtime.json'));}
 function stop(){child?.kill();child=undefined;buffer='';if(pending){clearTimeout(pending.timer);pending.resolve(null);pending=undefined;}}
 export function closePaddle(){stop();}
-export async function recognizeWithPaddle(png:Buffer):Promise<PaddleResult|null>{
+/** Each file gets a fresh attempt after an earlier engine failure; a running engine is kept between files. */
+export function resetPaddle(){if(!child)unavailable=false;}
+export async function recognizeWithPaddle(png:Buffer,timeoutMs=90000):Promise<PaddleResult|null>{
  if(!paddleConfigured()||unavailable)return null;
  if(!child){
   try{
@@ -35,7 +37,7 @@ export async function recognizeWithPaddle(png:Buffer):Promise<PaddleResult|null>
  }
  if(pending)return null;
  return new Promise(resolveResult=>{
-  const timer=setTimeout(()=>{unavailable=true;stop();},90000);
+  const timer=setTimeout(()=>{unavailable=true;stop();},Math.max(1000,Math.min(90000,timeoutMs)));
   pending={resolve:resolveResult,timer};child!.stdin.write(JSON.stringify({image:png.toString('base64')})+'\n',error=>{if(error){unavailable=true;stop();}});
  });
 }

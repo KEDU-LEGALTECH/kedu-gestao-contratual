@@ -103,7 +103,7 @@ export function Reports({
               [
                 "Demandas com pendências",
                 report.divergences.length,
-                "Leitura, dados, modelos e conferências",
+                "Leituras inconclusivas e divergências",
               ],
             ].map(([l, v, c]) => (
               <div className="metric" key={l}>

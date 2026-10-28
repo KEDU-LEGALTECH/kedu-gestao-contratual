@@ -1,4 +1,5 @@
 import "dotenv/config";
+import {acquireBackendInstance,backendVersion} from './backend-instance.js';
 import express from "express";
 import { contractParagraphs } from "./attachment-analysis.js";
 import helmet from "helmet";
@@ -91,6 +92,7 @@ import {
   evidenceLabels,
   subtypes,
 } from "./governance.js";
+if(process.env.NODE_ENV!=='test')acquireBackendInstance();
 seedCatalog();
 const officialCatalog = registerOfficialCatalog();
 for (const message of officialCatalog.skipped)
@@ -108,7 +110,7 @@ app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 startBackups();
-app.get("/healthz",(_req,res)=>{res.set("Cache-Control","no-store");try{db.prepare("SELECT 1").get();res.json({status:"ok"});}catch{res.status(503).json({status:"unavailable"});}});
+app.get("/healthz",(_req,res)=>{res.set("Cache-Control","no-store");res.set('X-Kedu-Build',backendVersion.build);try{db.prepare("SELECT 1").get();res.json({status:"ok"});}catch{res.status(503).json({status:"unavailable"});}});
 app.use("/api", (req, res, next) => {
   if (
     !["GET", "HEAD"].includes(req.method) &&

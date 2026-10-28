@@ -146,7 +146,7 @@ async function api(path: string, body?: any, method?: string) {
   return data;
 }
 const Badge = ({ stage }: { stage: string }) => (
-  <span className={"badge " + (stage==="Pronto para download"?"ok":["Aguardando análise","Aguardando correção"].includes(stage)?"warn":"stage-" + stages.indexOf(stage))}>
+  <span className={"badge " + (stage==="Sem erros"?"conference-clean":stage==="Aguardando correção"?"conference-correction":stage==="Aguardando análise"?"conference-analysis":"stage-" + stages.indexOf(stage))}>
     <i />
     {stage}
   </span>
@@ -381,7 +381,7 @@ export function App() {
       </div>
     );
   const displayStage=(d:any)=>d.processing?.status || d.stage;
-  const listStages=[...new Set<string>(["Analisando","Aguardando análise","Aguardando correção","Pronto para download",...data.demands.map(displayStage)])];
+  const listStages=[...new Set<string>(["Analisando","Aguardando análise","Aguardando correção","Sem erros",...data.demands.map(displayStage)])];
   const flowStages=data.demands.some((d:any)=>d.processing)?listStages:stages.slice(0,7);
   const filtered = data.demands.filter(
     (d: any) =>
@@ -1396,18 +1396,18 @@ export function App() {
                         "red",
                       ],
                       [
-                        "Prontos para download",
-                        data.demands.filter((d:any)=>d.processing?.status==="Pronto para download").length,
+                        "Sem erros",
+                        data.demands.filter((d:any)=>d.processing?.status==="Sem erros").length,
                         ShieldCheck,
-                        "Preenchimento validado",
-                        "purple",
+                        "Dados comparados conferem",
+                        "conference-clean",
                       ],
                       [
                         "Aguardando correção",
                         data.demands.filter((d:any)=>d.processing?.status==="Aguardando correção").length,
                         FileCheck2,
                         "Confira os itens indicados",
-                        "cyan",
+                        "conference-correction",
                       ],
                     ].map(([title, value, Icon, caption, color]: any) => (
                       <button
@@ -1419,8 +1419,8 @@ export function App() {
                             title === "Prazos vencidos" ? "overdue" : "",
                           );
                           setStage(
-                            title === "Prontos para download"
-                              ? "Pronto para download"
+                            title === "Sem erros"
+                              ? "Sem erros"
                               : title === "Aguardando correção"
                                 ? "Aguardando correção"
                                 : "",
@@ -1469,6 +1469,7 @@ export function App() {
                                 <div
                                   className={"bar bar-" + i}
                                   style={{
+                                    background:s==="Sem erros"?"#58a879":s==="Aguardando correção"?"#d86b62":s==="Aguardando análise"?"#d5ab44":undefined,
                                     height:
                                       Math.max(
                                         8,
@@ -1570,7 +1571,6 @@ export function App() {
                     <div className="glpi-queue-tabs" role="group" aria-label="Separar demandas pelo status do GLPI">
                       {([ ["all","Todas"],["open","Em andamento"],["pending","Pendentes no GLPI"] ] as const).map(([key,label])=><button key={key} type="button" className={demandQueue===key?"primary":"secondary"} aria-pressed={demandQueue===key} onClick={()=>setDemandQueue(key)}>{label} ({data.demands.filter((d:any)=>matchesDemandQueue(d,key)).length})</button>)}
                     </div>
-                    <p className="muted">Separação pelo status do chamado no GLPI. As etapas abaixo mostram a análise do portal. “Todas” inclui também demandas manuais e chamados solucionados ou fechados.</p>
                     <div className="filter-top">
                       <div className="search">
                         <Search size={18} />
@@ -1580,9 +1580,6 @@ export function App() {
                           onChange={(e) => setQuery(e.target.value)}
                         />
                       </div>
-
-                    </div>
-                    <div className="filter-row">
                       <select
                         aria-label="Filtrar etapa"
                         value={stage}
@@ -1593,6 +1590,11 @@ export function App() {
                           <option key={s}>{s}</option>
                         ))}
                       </select>
+                    </div>
+                    <p className="muted">Aguardando correção: erro identificado no preenchimento. Aguardando análise: parte dos documentos não foi lida ou confirmada.</p>
+                    <details className="more-filters" open={!!(owner||priority||type||deadline)}>
+                    <summary>Mais filtros</summary>
+                    <div className="filter-row">
                       <select
                         aria-label="Filtrar responsável"
                         value={owner}
@@ -1663,6 +1665,7 @@ export function App() {
                         Limpar
                       </button>
                     </div>
+                    </details>
                   </section>
                   {['Aguardando análise','Aguardando correção'].includes(stage)&&can('files')&&can('bank')&&<ProcessingSummary stage={stage} demands={filtered} api={api}/>}
                   <section className="panel">{table(filtered)}</section>

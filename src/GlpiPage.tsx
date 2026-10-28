@@ -26,6 +26,7 @@ const stateLabel: Record<string, string> = {
 const inWeek = () => new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
 /** Read-only GLPI queue: a person confirms school, type and contract before a demand exists. */
 export function GlpiPage({ data, can, action, api, busy, open }: Props) {
+  const [search,setSearch]=useState('');
   const [queue,setQueue]=useState<"regular"|"pending">("regular");
   const [status, setStatus] = useState<any>(null),
     [tickets, setTickets] = useState<any[]>([]),
@@ -45,7 +46,8 @@ export function GlpiPage({ data, can, action, api, busy, open }: Props) {
     refresh();
   }, [data]);
   const ticket = tickets.find((t) => t.external_id === selected);
-  const visible=tickets.filter(t=>isGlpiPending(t.status)===(queue==="pending")).sort((a,b)=>glpiPriorityRank(b.priority)-glpiPriorityRank(a.priority)||b.external_id.localeCompare(a.external_id,undefined,{numeric:true}));
+  const normalize=(value:string)=>value.normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase();
+  const visible=tickets.filter(t=>isGlpiPending(t.status)===(queue==="pending")&&normalize([t.external_id,t.title,t.analysis.fields.razaoSocial?.value,t.analysis.fields.cnpj?.value].join(' ')).includes(normalize(search.trim()))).sort((a,b)=>glpiPriorityRank(b.priority)-glpiPriorityRank(a.priority)||b.external_id.localeCompare(a.external_id,undefined,{numeric:true}));
   return (
     <>
       <section className="panel glpi-sync-panel">
@@ -96,7 +98,9 @@ export function GlpiPage({ data, can, action, api, busy, open }: Props) {
             <button className={queue==="regular"?"primary":"secondary"} aria-pressed={queue==="regular"} onClick={()=>{setQueue("regular");setSelected("");}}>Demais chamados ({tickets.filter(t=>!isGlpiPending(t.status)).length})</button>
             <button className={queue==="pending"?"primary":"secondary"} aria-pressed={queue==="pending"} onClick={()=>{setQueue("pending");setSelected("");}}>Pendentes no GLPI ({tickets.filter(t=>isGlpiPending(t.status)).length})</button>
           </div>
-          <p className="muted">Status e prioridade informados pelo GLPI. Maior prioridade aparece primeiro. Pendente no GLPI é diferente de pendência de documentação no portal.</p>
+          <label>Buscar chamado<input type="search" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Número GLPI, organização ou CNPJ"/></label>
+          <p className="muted">Selecione um chamado para ver o pedido e os documentos. A conferência do preenchimento fica na demanda vinculada.</p>
+          {!visible.length&&<p role="status">Nenhum chamado encontrado neste filtro.</p>}
           {visible.map((t) => (
             <button
               key={t.external_id}
@@ -110,7 +114,7 @@ export function GlpiPage({ data, can, action, api, busy, open }: Props) {
                 {glpiStatusLabel(t.status)} • Prioridade GLPI: {glpiPriorityLabel(t.priority)} •{" "}
                 {t.analysis.suggestion.type || "Tipo não identificado"}
                 {t.analysis.suggestion.subtype ? " • " + t.analysis.suggestion.subtype : ""} •{" "}
-                {t.analysis.pendencies.length} pendência(s)
+                {t.analysis.pendencies.length} item(ns) de triagem
               </small>
             </button>
           ))}

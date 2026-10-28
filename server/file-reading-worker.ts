@@ -1,8 +1,10 @@
 import { readDocument,readDocumentRegion } from "./file-reading-engine.js";
 import { readingFailure } from "./file-reading.js";
-import {closePaddle} from './paddle-ocr.js';
-process.once("message",async(input:any)=>{
+import {closePaddle,resetPaddle} from './paddle-ocr.js';
+// Serves consecutive files; the parent replaces this process after failures, time limits or a fixed number of files.
+process.on("message",async(input:any)=>{
+ resetPaddle();
  try {process.send?.(input.region?await readDocumentRegion(Buffer.from(input.bytes),input.name,input.region):await readDocument(Buffer.from(input.bytes),input.name,partial=>process.send?.({partial})));}
  catch(e:any){process.send?.(readingFailure(e?.message||"Não foi possível ler o arquivo. Confira se está íntegro e sem senha."));}
- finally{closePaddle();}
 });
+process.on("disconnect",()=>{closePaddle();process.exit(0);});

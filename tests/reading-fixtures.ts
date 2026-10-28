@@ -15,3 +15,13 @@ export function readingPdf(scan=false) {
  parts.push(Buffer.from(`xref\n0 ${objects.length+1}\n0000000000 65535 f \n`+offsets.slice(1).map(n=>String(n).padStart(10,"0")+" 00000 n \n").join("")+`trailer\n<< /Size ${objects.length+1} /Root 1 0 R >>\nstartxref\n${position}\n%%EOF`));
  return Buffer.concat(parts);
 }
+/** Scanned first page, digital second page: OCR must not hide the latter. */
+export function mixedReadingPdf() {
+ const jpeg=readingImage().toBuffer('image/jpeg');
+ const stream=(value:Buffer)=>Buffer.concat([Buffer.from(`<< /Length ${value.length} >>\nstream\n`),value,Buffer.from('\nendstream')]);
+ const objects=[Buffer.from('<< /Type /Catalog /Pages 2 0 R >>'),Buffer.from('<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>'),Buffer.from('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>'),stream(Buffer.from('q 600 0 0 160 0 500 cm /Im1 Do Q')),Buffer.concat([Buffer.from(`<< /Type /XObject /Subtype /Image /Width 1500 /Height 400 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpeg.length} >>\nstream\n`),jpeg,Buffer.from('\nendstream')]),Buffer.from('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Resources << /Font << /F1 8 0 R >> >> /Contents 7 0 R >>'),stream(Buffer.from('BT /F1 16 Tf 50 700 Td (CNPJ: 00.817.900/0001-26) Tj 0 -30 Td (Valor contratual: 2000,00) Tj ET')),Buffer.from('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>')];
+ const parts=[Buffer.from('%PDF-1.4\n')],offsets=[0];let position=parts[0].length;
+ objects.forEach((o,i)=>{offsets.push(position);const part=Buffer.concat([Buffer.from(`${i+1} 0 obj\n`),o,Buffer.from('\nendobj\n')]);parts.push(part);position+=part.length;});
+ parts.push(Buffer.from(`xref\n0 ${objects.length+1}\n0000000000 65535 f \n`+offsets.slice(1).map(n=>String(n).padStart(10,'0')+' 00000 n \n').join('')+`trailer\n<< /Size ${objects.length+1} /Root 1 0 R >>\nstartxref\n${position}\n%%EOF`));
+ return Buffer.concat(parts);
+}

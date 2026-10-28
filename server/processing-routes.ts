@@ -4,7 +4,7 @@ import { z } from "zod";
 import { all,one,run,db,id,now,audit } from "./db.js";
 import { access,permit,allocateAddendum,invalidate } from "./workflow.js";
 import { ensureProcessing,processContract,processingSource,saveProcessingResult,buildProcessingPlan } from "./contract-processing.js";
-import { editableKeys,extractProcessingFile } from "./processing-extract.js";
+import { editableKeys,extractProcessingFile,normalizeValue } from "./processing-extract.js";
 import { sha256,officialValues } from "./official-templates.js";
 import { generate,review } from "./documents.js";
 import { readProcessingFile,supportedReading } from "./file-reading.js";
@@ -12,6 +12,7 @@ import sharp from "sharp";
 import { prepareImage } from "./image-input.js";
 import {processingSummaryReport} from './processing-summary.js';
 import {readingFilename} from './reading-format.js';
+import {recordReadingGold} from './reading-gold.js';
 const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:20*1024*1024,files:1}});
 const snapshot=(values:Record<string,string>)=>JSON.stringify(Object.fromEntries(Object.entries(values).sort(([a],[b])=>a.localeCompare(b))));
 function get(req:any,write=false) {
@@ -63,8 +64,31 @@ export function registerProcessingRoutes(app:Express,process:(did:string,userId?
    if(!current||current.incomplete||current.problem||!current.available||!field||field.values.length!==1||field.values[0]!==body.value||field.confirmed)throw Object.assign(Error('Campo indisponível, ambíguo ou já conferido. Corrija a leitura antes de confirmar.'),{status:409});
    const file=one('SELECT extracted FROM processing_files WHERE id=? AND demand_id=?',current.id,d.id);
    run('INSERT INTO processing_field_reviews VALUES(?,?,?,?,?,?) ON CONFLICT(file_id,field) DO UPDATE SET extraction_hash=excluded.extraction_hash,value=excluded.value,author=excluded.author,created=excluded.created',current.id,field.key,sha256(Buffer.from(file.extracted)),body.value,req.user.id,now());
+   recordReadingGold(current.id,field.key,body.value,sha256(Buffer.from(file.extracted)),req.user.id,field.excerpt||'Conferido pelo usuário no original.');
    run('UPDATE contract_processing SET revision=revision+1 WHERE demand_id=?',d.id);invalidate(d.id);
    audit(d.id,req.user.id,'Campo conferido com o original: '+field.label+' — '+current.name+'. Não constitui aprovação jurídica.');
+   saveProcessingResult(d.id);db.exec('COMMIT');res.json(processingView(d.id));
+  }catch(error){db.exec('ROLLBACK');throw error;}
+ });
+ app.post('/api/demands/:id/processing/files/:file/fields/:field/correct-reading',(req:any,res)=>{
+  const {demand:d}=get(req,true);
+  const body=z.object({revision:z.number().int().min(1),value:z.string().trim().min(1).max(500),evidence:z.string().trim().min(5).max(2000),confirmed:z.literal(true)}).parse(req.body);
+  if(!editableKeys.includes(req.params.field))throw Error('Campo de leitura não permitido.');
+  const compact=(s:string)=>s.normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().replace(/[^a-z0-9]/g,'');
+  const value=normalizeValue(req.params.field,body.value);
+  if(!value||!compact(value)||!compact(body.evidence).includes(compact(value)))throw Error('Transcreva o trecho do original que contém o valor informado.');
+  db.exec('BEGIN IMMEDIATE');try {
+   const plan=buildProcessingPlan(d.id),file=one('SELECT * FROM processing_files WHERE id=? AND demand_id=?',req.params.file,d.id);
+   if(!plan||plan.job.status==='Analisando'||plan.job.revision!==body.revision||!plan.files.some(f=>f.id===file?.id)||!file?.bytes?.length)throw Object.assign(Error('O documento mudou ou está indisponível. Atualize a página.'),{status:409});
+   const reading=JSON.parse(file.extracted);
+   if(reading.incomplete||file.problem)throw Error('Conclua a leitura do arquivo antes de corrigir um campo.');
+   reading.fields[req.params.field]=[value];
+   const extracted=JSON.stringify(reading),hash=sha256(Buffer.from(extracted));
+   run('UPDATE processing_files SET extracted=? WHERE id=?',extracted,file.id);
+   run('INSERT INTO processing_field_reviews VALUES(?,?,?,?,?,?) ON CONFLICT(file_id,field) DO UPDATE SET extraction_hash=excluded.extraction_hash,value=excluded.value,author=excluded.author,created=excluded.created',file.id,req.params.field,hash,value,req.user.id,now());
+   recordReadingGold(file.id,req.params.field,value,hash,req.user.id,body.evidence);
+   run('UPDATE contract_processing SET revision=revision+1 WHERE demand_id=?',d.id);invalidate(d.id);
+   audit(d.id,req.user.id,'Transcrição de campo corrigida e conferida no original; gabarito registrado. Arquivo original preservado.');
    saveProcessingResult(d.id);db.exec('COMMIT');res.json(processingView(d.id));
   }catch(error){db.exec('ROLLBACK');throw error;}
  });
@@ -78,6 +102,7 @@ export function registerProcessingRoutes(app:Express,process:(did:string,userId?
    if(file && JSON.parse(file.extracted).incomplete)throw Error('A leitura está incompleta. Envie o documento dividido em partes ou uma cópia com texto acessível antes de confirmar.');
    if(!file || file.problem || !current.needsReview || !current.text)throw Object.assign(Error("Este arquivo não está disponível para confirmação de leitura."),{status:409});
    run("INSERT INTO processing_file_reviews VALUES(?,?,?,?) ON CONFLICT(file_id) DO UPDATE SET extraction_hash=excluded.extraction_hash,author=excluded.author,created=excluded.created",file.id,sha256(Buffer.from(file.extracted)),req.user.id,now());
+   for(const field of current.fieldReviews)if(field.values.length===1)recordReadingGold(file.id,field.key,field.values[0],sha256(Buffer.from(file.extracted)),req.user.id,field.excerpt||'Leitura completa conferida pelo usuário no original.');
    run("UPDATE contract_processing SET revision=revision+1 WHERE demand_id=?",d.id);invalidate(d.id);
    audit(d.id,req.user.id,"Texto extraído conferido com o original: "+file.name+". Não constitui aprovação jurídica.");
    saveProcessingResult(d.id);db.exec("COMMIT");

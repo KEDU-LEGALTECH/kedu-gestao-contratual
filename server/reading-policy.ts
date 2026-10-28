@@ -1,12 +1,19 @@
 import {receivedDocumentKind} from '../shared/document-heading.js';
 import {sameRequestedValue} from './request-expectations.js';
 import {editableKeys} from './processing-extract.js';
+import {documentSourceKind} from './document-evidence.js';
+import {distinctiveValue} from './field-plausibility.js';
+/** Keep explicitly labelled fields omitted by the preferred OCR pass, without replacing conflicts. */
+export function complementaryOcrFields(preferred:Record<string,string[]>,other:Record<string,string[]>,confidence:number) {
+ if(confidence<85)return {};
+ return Object.fromEntries(Object.entries(other).filter(([key,values])=>!preferred[key]?.length&&values.length===1));
+}
 export function attachmentRole(name:string,text='') {
  const s=(name+'\n'+text.slice(0,2000)).normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().replace(/_/g,' ');
  if(receivedDocumentKind(name,text)==='Contraproposta')return 'counterproposal';
  if(receivedDocumentKind(name,text)==='Relatório')return 'report';
- if(/cartao.*cnpj|comprovante de inscricao e de situacao cadastral/.test(s))return 'registration';
- if(/comprovante bancario|dados bancarios|pix.*gerenciador/.test(s))return 'bank';
+ const sourceKind=documentSourceKind({name,text});
+ if(sourceKind==='registration'||sourceKind==='bank')return sourceKind;
  if(/proposta de antecipacao|simulacao|parcelamentos contratados/.test(s))return 'simulation';
  return 'document';
 }
@@ -28,10 +35,13 @@ export function automaticReadingCheck(reading:{text:string;fields:Record<string,
   const allDigital=Object.entries(adopted).every(([key,values])=>values.length>0&&values.every(value=>(reading.digitalFields![key]||[]).some(digital=>sameRequestedValue(key,value,digital))));
   if(allDigital)return true;
  }
- if(!/OCR/.test(reading.method||'')||!reading.verifiedFields?.length)return false;
  const fields=fieldsForRole(role,reading.fields);
  const expected=fieldsForRole(role,Object.fromEntries(Object.entries(reference).filter(([key])=>editableKeys.includes(key)&&!['motivo','matriz'].includes(key))));
  const keys=Object.keys(fields);
+ // Independent agreement: a distinctive recognised value identical to the request was read correctly.
+ // Values the request does not mention, or that differ from it, still need a person.
+ if(/OCR/.test(reading.method||'')&&keys.length&&keys.every(key=>expected[key]?.length===1&&fields[key].length>0&&fields[key].every(value=>distinctiveValue(key,value)&&sameRequestedValue(key,value,expected[key][0]))))return true;
+ if(!/OCR/.test(reading.method||'')||!reading.verifiedFields?.length)return false;
  const addressParts=['rua','numero','bairro'];
  const addressChecked=fields.endereco?.length===1&&expected.endereco?.length===1&&sameRequestedValue('endereco',fields.endereco[0],expected.endereco[0])&&addressParts.every(key=>fields[key]?.length===1&&reading.verifiedFields!.includes(key))&&sameRequestedValue('endereco',fields.endereco[0],fields.rua[0]+', '+fields.numero[0]+', '+fields.bairro[0]);
  // Validate the fields actually supplied by this attachment. Missing requested

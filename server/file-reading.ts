@@ -1,12 +1,16 @@
-import { fork } from "node:child_process";
+import { fork,type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
+import { existsSync,mkdirSync,readdirSync,readFileSync } from "node:fs";
+import { dirname,join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { extractProcessingFile,fieldsFromLines } from "./processing-extract.js";
 import {interruptedReading} from './reading-policy.js';
 import PizZip from 'pizzip';
 import {readingFilename} from './reading-format.js';
-export const readerVersion=2;
+export const readerVersion=4;
 export const supportedReading=/\.(docx|doc|pdf|png|jpe?g|webp|tiff?|bmp|gif|txt|csv|odt|xlsx|pptx)$/i;
-export type Reading={version:number;text:string;fields:Record<string,string[]>;problem:string;method:string;needsReview:boolean;incomplete?:boolean;confidence?:number;pages?:number;formulaCount?:number;warnings?:string[];verifiedFields?:string[];digitalFields?:Record<string,string[]>;tableFields?:Record<string,string[]>};
+export type Reading={version:number;text:string;fields:Record<string,string[]>;problem:string;method:string;needsReview:boolean;incomplete?:boolean;confidence?:number;pages?:number;formulaCount?:number;warnings?:string[];verifiedFields?:string[];digitalFields?:Record<string,string[]>;tableFields?:Record<string,string[]>;ocrEngine?:string;preprocessing?:string[];calculatedFields?:Record<string,string[]>;transient?:boolean};
 export function readingFailure(problem:string):Reading{return {version:readerVersion,text:"",fields:{},problem,method:"inconclusiva",needsReview:false};}
 let queue:Promise<unknown>=Promise.resolve();
 /** Parsers and OCR run in a bounded child process; no remote OCR service. */
@@ -22,7 +26,7 @@ export async function readProcessingFile(bytes:Buffer,name:string,region?:Readin
  if(!supportedReading.test(name))return readingFailure("Formato sem leitor disponível. O original foi preservado; envie PDF, imagem, Word, ODT, XLSX, PPTX, TXT ou CSV para análise.");
  if(/\.docx$/i.test(name)){
   const extracted=extractProcessingFile(bytes,name);
-  if(extracted.problem)return {...extracted,version:readerVersion,method:'DOCX',needsReview:false};
+  if(extracted.problem&&extracted.problem!=='O documento está vazio ou contém apenas imagens.')return {...extracted,version:readerVersion,method:'DOCX',needsReview:false};
   const embedded=Object.keys(new PizZip(bytes).files).some(n=>/^word\/media\/.+\.(png|jpe?g|webp|bmp|tiff?)$/i.test(n));
   if(!embedded)return {...extracted,version:readerVersion,method:'DOCX',needsReview:false};
  }
@@ -31,15 +35,82 @@ export async function readProcessingFile(bytes:Buffer,name:string,region?:Readin
   if(text.length>500000 || /\x00|\uFFFD/.test(text))return readingFailure("Texto muito grande ou codificação não reconhecida. Salve como UTF-8.");
   return {version:readerVersion,text,fields:fieldsFromLines(text.split(/\r?\n/).map(x=>x.replace(/[;\t]/g,": "))),problem:text.trim()?"":"Nenhum texto legível foi encontrado.",method:"Texto",needsReview:false};
  }
+ const key=region?undefined:createHash("sha256").update(bytes).digest("hex")+"\0"+name;
+ const cached=key?cachedReading(key):undefined;
+ if(cached)return cached;
  const task=()=>new Promise<Reading>(resolve=>{
-  const child=fork(fileURLToPath(new URL("./file-reading-worker.ts",import.meta.url)),[],{execArgv:["--import","tsx","--max-old-space-size=512"],serialization:"advanced",stdio:["ignore","ignore","ignore","ipc"]});
+  const current=acquireWorker(),child=current.child;
   let done=false,partial:Reading|undefined;
-  const finish=(result:Reading)=>{if(done)return;done=true;clearTimeout(timer);child.kill();resolve(result);};
-  const timer=setTimeout(()=>finish(partial?.text?interruptedReading(partial,'Leitura parcial: o tempo limite foi atingido. As páginas restantes precisam ser conferidas; este resultado não permite aprovação automática.'):readingFailure("A leitura excedeu 180 segundos. Divida o arquivo ou confira manualmente.")),180000);
-  child.on("message",(result:any)=>{if(result.partial){partial=result.partial;return;}finish(result.problem && partial?.text?interruptedReading(partial,'Leitura incompleta: '+result.problem):result);});
-  child.on("error",()=>finish(readingFailure("O leitor local não pôde ser iniciado. Tente novamente.")));
-  child.on("exit",()=>finish(partial?.text?interruptedReading(partial,'Leitura parcial: o leitor foi interrompido antes de concluir o arquivo.'):readingFailure("Não foi possível concluir a leitura deste arquivo. Confira se está íntegro e sem senha.")));
-  child.send({bytes,name,region});
+  const finish=(result:Reading,healthy:boolean)=>{
+   if(done)return;done=true;clearTimeout(timer);
+   child.off("message",onMessage);child.off("error",onError);child.off("exit",onExit);
+   if(healthy)releaseWorker(current);else retireWorker(current);
+   if(key)storeReading(key,result);
+   resolve(result);
+  };
+  const timer=setTimeout(()=>finish(partial?.text?interruptedReading(partial,'Leitura parcial: o tempo limite foi atingido. As páginas restantes precisam ser conferidas; este resultado não permite aprovação automática.'):readingFailure("A leitura excedeu 180 segundos. Divida o arquivo ou confira manualmente."),false),180000);
+  const onMessage=(result:any)=>{if(result.partial){partial=result.partial;return;}finish(result.problem && partial?.text?interruptedReading(partial,'Leitura incompleta: '+result.problem):result,true);};
+  // Engine start failures and crashed workers (e.g. memory pressure) say nothing about the file itself.
+  const onError=()=>finish({...readingFailure("O leitor local não pôde ser iniciado. Tente novamente."),transient:true},false);
+  const onExit=()=>finish(partial?.text?interruptedReading(partial,'Leitura parcial: o leitor foi interrompido antes de concluir o arquivo.'):{...readingFailure("Não foi possível concluir a leitura deste arquivo. Confira se está íntegro e sem senha."),transient:true},false);
+  child.on("message",onMessage);child.on("error",onError);child.on("exit",onExit);
+  child.send({bytes,name,region},error=>{if(error)onError();});
  });
  const result=queue.then(task,task);queue=result.catch(()=>{});return result;
 }
+/** One reader process serves consecutive files, so OCR models load once. It is replaced after a
+ * failure or time limit, after a fixed number of files, and closed when idle. */
+const filesPerWorker=20,idleWorkerMs=120000;
+type Worker={child:ChildProcess;files:number;idle?:ReturnType<typeof setTimeout>};
+let worker:Worker|undefined;
+function acquireWorker() {
+ if(!worker){
+  const child=fork(fileURLToPath(new URL("./file-reading-worker.ts",import.meta.url)),[],{execArgv:["--import","tsx","--max-old-space-size=512"],serialization:"advanced",stdio:["ignore","ignore","ignore","ipc"]});
+  const created:Worker={child,files:0};worker=created;
+  child.on("error",()=>{});
+  child.on("exit",()=>{clearTimeout(created.idle);if(worker===created)worker=undefined;});
+ }
+ clearTimeout(worker.idle);worker.child.ref();(worker.child as any).channel?.ref?.();
+ return worker;
+}
+function retireWorker(current:Worker) {clearTimeout(current.idle);if(worker===current)worker=undefined;current.child.kill();}
+function releaseWorker(current:Worker) {
+ if(++current.files>=filesPerWorker){retireWorker(current);return;}
+ // An idle reader must not keep the server, scripts or tests alive.
+ current.child.unref();(current.child as any).channel?.unref?.();
+ current.idle=setTimeout(()=>retireWorker(current),idleWorkerMs);current.idle.unref();
+}
+/** Completed readings are reused for identical bytes and name while the reader code and OCR setup stay the same.
+ * Failures, partial readings and readings without the configured OCR engine are always repeated. */
+let cache:DatabaseSync|null|undefined,fingerprint="";
+function readerFingerprint() {
+ const root=fileURLToPath(new URL("..",import.meta.url)),hash=createHash("sha256");
+ const files=[...["server","shared"].flatMap(folder=>(readdirSync(join(root,folder),{recursive:true}) as string[]).filter(f=>/\.(ts|py)$/.test(f)).map(f=>join(folder,f))),"package-lock.json","data/ocr-runtime.json"].sort();
+ for(const file of files)if(existsSync(join(root,file)))hash.update(file+"\0").update(readFileSync(join(root,file)));
+ return hash.update(String(readerVersion)+(process.env.OCR_ENGINE||"")).digest("hex");
+}
+function readingCache() {
+ if(cache!==undefined)return cache;
+ const path=process.env.READING_CACHE_PATH;
+ if(process.env.READING_CACHE==="off"||(!path&&(process.env.NODE_ENV==="test"||process.env.NODE_TEST_CONTEXT)))return cache=null;
+ try{
+  const file=path||"data/reading-cache.sqlite";mkdirSync(dirname(file),{recursive:true});
+  const db=new DatabaseSync(file);fingerprint=readerFingerprint();
+  db.exec("PRAGMA journal_mode=WAL;PRAGMA busy_timeout=5000;CREATE TABLE IF NOT EXISTS readings(key TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,reading TEXT NOT NULL,created TEXT NOT NULL)");
+  // Extracted text is personal data: keep it only while useful.
+  db.prepare("DELETE FROM readings WHERE fingerprint<>? OR created<?").run(fingerprint,new Date(Date.now()-30*86400000).toISOString());
+  cache=db;
+ }catch{cache=null;}
+ return cache;
+}
+function cachedReading(key:string):Reading|undefined {
+ try{const row=readingCache()?.prepare("SELECT reading FROM readings WHERE key=? AND fingerprint=?").get(key,fingerprint) as any;return row?JSON.parse(row.reading):undefined;}
+ catch{return undefined;}
+}
+function storeReading(key:string,reading:Reading) {
+ if(reading.problem||reading.incomplete||reading.warnings?.some(w=>/indispon[íi]vel/i.test(w)))return;
+ try{readingCache()?.prepare("INSERT OR REPLACE INTO readings VALUES(?,?,?,?)").run(key,fingerprint,JSON.stringify(reading),new Date().toISOString());}catch{}
+}
+/** Completed page OCR survives a file deadline; partial pages are never reused. */
+export function cachedPdfPage(originalHash:string,page:number){return cachedReading(`pdf-page:${originalHash}:${page}`);}
+export function storePdfPage(originalHash:string,page:number,reading:Reading){storeReading(`pdf-page:${originalHash}:${page}`,reading);}

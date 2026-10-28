@@ -20,7 +20,8 @@
 :root:not([data-theme="dark"]) .table-scroll th {color:#2c4b5c;background:#dce7ed;}
 .filters .glpi-queue-tabs {margin:0 0 18px;gap:12px;}
 .filters > .muted {margin:0 0 20px;line-height:1.7;max-width:80ch;}
-.filters .filter-top {margin-bottom:16px;}
+.filters .filter-top {margin-bottom:12px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;}
+.filters .filter-top .search {flex:1 1 280px;}
 .filters .search {max-width:none;min-width:0;min-height:48px;padding:0 14px;background:var(--surface);border-color:var(--line);color:var(--text-secondary);}
 .filters .search input {min-width:0;border:0;background:transparent;box-shadow:none;font-size:13px;padding:13px 0;color:var(--ink);}
 .filters .search input:focus {box-shadow:none;outline:none;}
@@ -29,6 +30,16 @@
 .bar-space {padding-top:28px;}
 .bar span {color:var(--ink);font-size:12px;font-weight:600;line-height:18px;top:-24px;}
 .priority-badge {white-space:nowrap;font-weight:600;}
+.badge.conference-analysis {background:#fff0bf;color:#684800;border:1px solid #c48b12;}
+.badge.conference-correction {background:#fde2df;color:#9d241c;border:1px solid #cf655b;}
+.badge.conference-clean {background:#dff3e5;color:#185e34;border:1px solid #55996b;}
+.metric.conference-clean .metric-icon {background:#dff3e5;color:#185e34;}
+.metric.conference-correction .metric-icon {background:#fde2df;color:#9d241c;}
+[data-theme="dark"] .metric.conference-clean .metric-icon {background:#193f2b;color:#b1efc7;}
+[data-theme="dark"] .metric.conference-correction .metric-icon {background:#512724;color:#ffc3bb;}
+[data-theme="dark"] .badge.conference-analysis {background:#473712;color:#ffe29a;border-color:#b99337;}
+[data-theme="dark"] .badge.conference-correction {background:#512724;color:#ffc3bb;border-color:#ca756c;}
+[data-theme="dark"] .badge.conference-clean {background:#193f2b;color:#b1efc7;border-color:#55996b;}
 .request-comparison table {white-space:normal;table-layout:fixed;min-width:800px;font-size:12px;}
 .request-comparison thead th:nth-child(1) {width:18%;}
 .request-comparison thead th:nth-child(2) {width:25%;}
@@ -48,6 +59,7 @@
 .legend-request,.request-comparison .requested-column {background:#e2f0fb;color:#154d76;}
 .legend-error,.comparison-found-error,.state-different {background:#fce1dd;color:#9c2821;}
 .legend-review,.state-review,.state-missing,.state-ambiguous {background:#fff0cb;color:#765000;}
+.state-not_applicable {background:var(--surface-muted,#eef0f3);color:var(--text-secondary,#4a5160);}
 .legend-match,.state-matches,.state-corrected {background:#dff1e5;color:#205c3b;}
 .comparison-found-error {padding:4px 7px;border-radius:4px;display:inline-block;}
 .request-comparison .comparison-different > th {border-left:5px solid #c53f36;}
@@ -68,6 +80,16 @@
 [data-theme="dark"] :is(.legend-error,.comparison-found-error,.state-different) {background:#542b2c;color:#ffd0ca;}
 [data-theme="dark"] :is(.legend-review,.state-review,.state-missing,.state-ambiguous) {background:#4b3b1c;color:#ffe1a3;}
 [data-theme="dark"] :is(.legend-match,.state-matches,.state-corrected) {background:#214333;color:#b5edcb;}
+.comparison-counters {display:flex;flex-wrap:wrap;gap:10px;margin:16px 0;}
+.comparison-counters span {padding:10px 14px;border-radius:8px;font-weight:600;font-size:14px;}
+.comparison-counters strong {font-size:20px;margin-right:6px;}
+.counter-error {background:#fce1dd;color:#9c2821;}
+.counter-review {background:#fff0cb;color:#765000;}
+.counter-match {background:#dff1e5;color:#205c3b;}
+[data-theme="dark"] .counter-error {background:#542b2c;color:#ffd0ca;}
+[data-theme="dark"] .counter-review {background:#4b3b1c;color:#ffe1a3;}
+[data-theme="dark"] .counter-match {background:#214333;color:#b5edcb;}
+.request-comparison h3 {margin:20px 0 8px;font-size:15px;}
 @media(max-width:600px){.comparison-heading {flex-direction:column;}.comparison-legend {gap:8px;}.comparison-legend span {font-size:11px;}}
 .demand-table {table-layout:fixed;min-width:780px;white-space:normal;}
 .demand-table :is(th,td) {padding-left:10px;padding-right:10px;overflow-wrap:anywhere;}
@@ -188,3 +210,7 @@
 .glpi-sync-entry > summary .muted { margin-left:auto; font-size:12px; }
 .glpi-sync-details summary:focus-visible { outline:2px solid var(--ink); outline-offset:4px; }
 @media(max-width:600px) { .glpi-sync-toolbar { align-items:stretch; flex-direction:column; gap:16px; } .glpi-sync-entry > summary .muted { margin-left:0; } }
+.more-filters {margin-top:10px;}
+.more-filters summary {cursor:pointer;font-weight:600;font-size:14px;}
+.more-filters .filter-row {margin-top:10px;}
+.filters .filter-top select {min-height:48px;}

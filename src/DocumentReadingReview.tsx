@@ -1,6 +1,6 @@
 import {useEffect,useState} from 'react';
 
-export function FieldReadingReview({file,revision,confirm,busy}:any) {
+export function FieldReadingReview({file,revision,confirm,correct,busy}:any) {
  const [checked,setChecked]=useState<Record<string,boolean>>({});
  useEffect(()=>setChecked({}),[file.id,revision]);
  return <details className="pending-groups"><summary>Conferir campos individualmente ({file.fieldReviews?.length||0})</summary>
@@ -11,6 +11,13 @@ export function FieldReadingReview({file,revision,confirm,busy}:any) {
    {field.excerpt?<blockquote style={{whiteSpace:'pre-wrap'}}>{field.excerpt}</blockquote>:<p className="muted">Trecho não localizado. Confira o arquivo original.</p>}
    {field.confirmed?<p className="positive">Leitura conferida nesta versão.</p>:confirm&&file.available&&!file.incomplete&&field.values.length===1?<><label><input type="checkbox" checked={!!checked[field.key]} onChange={e=>setChecked({...checked,[field.key]:e.target.checked})}/> Conferi este campo no original</label><button type="button" className="secondary" disabled={busy||!checked[field.key]} onClick={()=>confirm(file.id,field.key,field.values[0],revision)}>Confirmar leitura deste campo</button></>:<p className="muted">Valores ambíguos ou leitura incompleta precisam de correção ou nova cópia.</p>}
   </section>)}
+  {correct&&file.available&&!file.incomplete&&!file.problem&&<details><summary>Corrigir ou completar a transcrição de um campo</summary><p>Copie o valor e o trecho que você conferiu no original. Isso corrige a leitura, preserva o arquivo e registra um exemplo para medir o leitor.</p><form onSubmit={e=>{e.preventDefault();const data=new FormData(e.currentTarget);correct(file.id,String(data.get('field')),String(data.get('value')),String(data.get('evidence')),revision);}}>
+   <label>Campo<select name="field" required>{(file.fieldReviews||[]).map((f:any)=><option key={f.key} value={f.key}>{f.label}</option>)}</select></label>
+   <label>Valor no original<input name="value" required maxLength={500}/></label>
+   <label>Trecho do original contendo o valor<textarea name="evidence" required minLength={5} maxLength={2000}/></label>
+   <label><input type="checkbox" required/> Conferi o valor no documento original</label>
+   <button className="secondary" disabled={busy}>Salvar transcrição conferida</button>
+  </form></details>}
  </details>;
 }
 

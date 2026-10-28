@@ -12,6 +12,7 @@
     "admin:prepare": "tsx server/provision-admin.ts",
     "db:backup": "tsx server/backup.ts",
     "documents:reextract": "tsx server/reextract-fields.ts",
+    "reading:benchmark": "tsx server/reading-benchmark.ts",
     "migration:prepare": "tsx server/migration-inventory.ts",
     "supabase:check": "tsx server/supabase-check.ts",
     "legal:package": "tsx server/legal-review-package.ts",

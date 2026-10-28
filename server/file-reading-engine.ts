@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import {createHash} from 'node:crypto';
 import { dirname,join,extname } from "node:path";
 import PizZip from "pizzip";
 import { DOMParser } from "@xmldom/xmldom";
@@ -10,10 +11,12 @@ import { fieldsFromLines,fieldsFromRows,mergeExtractedFields,norm,normalizeValue
 import {positionedRows} from './table-reading.js';
 import {extractContractParties} from './contract-parties.js';
 import { preflight } from "./documents.js";
-import { readerVersion,validReadingRegion,type Reading,type ReadingRegion } from "./file-reading.js";
+import { readerVersion,validReadingRegion,cachedPdfPage,storePdfPage,type Reading,type ReadingRegion } from "./file-reading.js";
 import { prepareImage } from "./image-input.js";
 import {needsPdfOcr} from './pdf-reading-policy.js';
-import {recognizeWithPaddle,combineOcrFields,paddleConfigured} from './paddle-ocr.js';
+import {recognizeWithPaddle,combineOcrFields,paddleConfigured,closePaddle} from './paddle-ocr.js';
+import {withinBudget} from './ocr-budget.js';
+import {readSpreadsheet} from './xlsx-reading.js';
 const require=createRequire(import.meta.url);
 const maxPages=30,maxText=500000;
 function result(text:string,method:string,ocr=false,confidence?:number,pages=1):Reading {
@@ -34,7 +37,12 @@ async function recognizeImage(worker:Awaited<ReturnType<typeof ocrSession>>,png:
  const fields=(text:string)=>fieldsFromLines(text.split(/\r?\n/).map(x=>x.trim()).filter(Boolean));
  const first=fields(original.data.text),second=fields(retry.data.text);
  const verifiedFields=Math.min(original.data.confidence,retry.data.confidence)>=85?Object.keys(first).filter(key=>first[key].length===1&&second[key]?.length===1&&norm(first[key][0])===norm(second[key][0])):[];
- return {...data,verifiedFields};
+ const other=data===original.data?retry.data:original.data;
+ const {complementaryOcrFields}=await import('./reading-policy.js');
+ const {inputLabels}=await import('./processing-extract.js');
+ const recovered=complementaryOcrFields(fields(data.text),fields(other.text),other.confidence);
+ const extra=Object.entries(recovered).map(([key,values])=>`${inputLabels[key]||key}: ${values[0]}`).join('\n');
+ return {...data,text:data.text+(extra?'\n'+extra:''),verifiedFields};
 }
 async function registrationRegions(worker:Awaited<ReturnType<typeof ocrSession>>,png:Buffer){
  const m=await sharp(png).metadata(),width=m.width!,height=m.height!,found:LocatedField[]=[];
@@ -121,61 +129,115 @@ async function image(bytes:Buffer,name='') {
  return {...reading,verifiedFields,ocrEngine:paddleUsed?'Tesseract + PaddleOCR PP-OCRv5':'Tesseract',preprocessing:[...operations],warnings:paddleConfigured()&&!paddleUsed?['PaddleOCR indisponível nesta tentativa; leitura alternativa preservada.']:[]};
 }
 async function pdf(bytes:Buffer,progress?:(reading:Reading)=>void,nativeOnly=false,layerOnly=false) {
- const {getDocument}=await import("pdfjs-dist/legacy/build/pdf.mjs");
+ const {getDocument,OPS}=await import("pdfjs-dist/legacy/build/pdf.mjs");
  const root=dirname(require.resolve("pdfjs-dist/package.json"));
  const loading=getDocument({data:new Uint8Array(bytes),useSystemFonts:false,standardFontDataUrl:join(root,"standard_fonts")+"/",cMapUrl:join(root,"cmaps")+"/",cMapPacked:true,wasmUrl:join(root,"wasm")+"/",verbosity:0});
  let document:any,worker:Awaited<ReturnType<typeof ocrSession>>|undefined;
  try {
   document=await loading.promise;
   if(document.numPages>maxPages)throw Error("PDF contém mais de 30 páginas. Separe o arquivo; nenhuma página foi ignorada na aprovação.");
-  const texts:string[]=[],digitalTexts:string[]=[],scores:number[]=[],verified:string[][]=[];const tableFields:Record<string,string[]>={},ocrFields:Record<string,string[]>={};let usedOcr=false,paddleUsed=false;
+  const texts:string[]=[],digitalTexts:string[]=[],scores:number[]=[],verified:string[][]=[];
+  const tableFields:Record<string,string[]>={},ocrFields:Record<string,string[]>={},digitalFields:Record<string,string[]>={};
+  const pendingPages:number[]=[],unreadPages:number[]=[],warnings:string[]=[],complementary=new Set<number>();let usedOcr=false,paddleUsed=false;
+  const originalHash=createHash('sha256').update(bytes).digest('hex');
+  const snapshot=(partial=false):Reading=>{
+   const reading=result(texts.join('\n\n'),usedOcr?'PDF com OCR':'Texto do PDF',usedOcr,scores.length?Math.min(...scores):undefined,document.numPages);
+   return {...reading,fields:mergeExtractedFields(mergeExtractedFields(reading.fields,tableFields),ocrFields),tableFields,digitalFields:structuredClone(digitalFields),verifiedFields:document.numPages===1&&verified.length===1?verified[0]:[],incomplete:partial||unreadPages.length>0,needsReview:partial||usedOcr||unreadPages.length>0,warnings:[...warnings,...(unreadPages.length?['Páginas com leitura inconclusiva: '+unreadPages.join(', ')+'.']:[])],ocrEngine:usedOcr?(paddleUsed?'PaddleOCR / OpenCV (Tesseract quando necessário)':'Tesseract'):undefined};
+  };
+  // Read EVERY digital page before spending the OCR budget. A scan on page 1
+  // must not hide the selectable fields on later pages if the deadline expires.
   for(let n=1;n<=document.numPages;n++) {
    const page=await document.getPage(n),content=await page.getTextContent();
    let text="";
    for(const item of content.items as any[])if(typeof item.str==="string")text+=item.str+(item.hasEOL?"\n":" ");
    digitalTexts.push(text);
    mergeExtractedFields(tableFields,fieldsFromRows(positionedRows(content.items as any[])));
-   // A page with sparse text may contain a scanned body below a digital header.
+   texts.push(text);
+   mergeExtractedFields(digitalFields,fieldsFromLines(text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean)));
+   mergeExtractedFields(digitalFields,tableFields);
+   for(const party of extractContractParties(text))mergeExtractedFields(digitalFields,{cnpj:[party.cnpj],razaoSocial:[party.name]});
    const operators=await page.getOperatorList();
-   const {OPS}=await import("pdfjs-dist/legacy/build/pdf.mjs");
-   const hasImage=operators.fnArray.some((op:number)=>[OPS.paintImageXObject,OPS.paintInlineImageXObject,OPS.paintImageXObjectRepeat].includes(op));
+   const hasImage=operators.fnArray.some((op:number)=>[OPS.paintImageXObject,OPS.paintInlineImageXObject,OPS.paintImageXObjectRepeat,OPS.paintInlineImageXObjectGroup,OPS.paintImageMaskXObject,OPS.paintImageMaskXObjectRepeat,OPS.paintImageMaskXObjectGroup].includes(op));
    const basePage=page.getViewport({scale:1});
    const needsOcr=hasImage?needsPdfOcr(text,operators,OPS,basePage.width*basePage.height):text.trim().length<40;
-   if(needsOcr && !layerOnly) {
-    if(nativeOnly)throw Error(`Este PDF ainda precisa de OCR: página ${n}, ${text.trim().length} caracteres digitais.`);
-    worker??=await ocrSession();
+   if(needsOcr) {
+    if(layerOnly)unreadPages.push(n);
+    else{
+     if(nativeOnly)throw Error(`Este PDF ainda precisa de OCR: página ${n}, ${text.trim().length} caracteres digitais.`);
+     pendingPages.push(n);
+     // A page whose text layer is already substantial only gets complementary OCR (logos, stamps, backgrounds).
+     if(text.replace(/\s+/g,' ').trim().length>=600&&!/[� ]/.test(text))complementary.add(n);
+    }
+   }
+   page.cleanup();
+   if(texts.join('\n').length>maxText)throw Error('PDF excede o limite de texto; separe em partes.');
+   progress?.({...snapshot(true),warnings:[`Camada digital: ${n} de ${document.numPages} páginas. OCR ainda não concluído.`]});
+  }
+  // Pages without a usable text layer first; complementary OCR uses what time is left.
+  pendingPages.sort((a,b)=>Number(complementary.has(a))-Number(complementary.has(b))||a-b);
+  const required=pendingPages.filter(n=>!complementary.has(n)).length;
+  const deadline=Date.now()+140000;let skipComplementary=false;
+  for(let index=0;index<pendingPages.length;index++){
+   const n=pendingPages[index],budget=Math.floor(Math.min(35000,(deadline-Date.now())/Math.max(1,(index<required?required:pendingPages.length)-index)));
+   const cached=cachedPdfPage(originalHash,n);
+   if(cached&&!cached.problem&&!cached.incomplete){
+    texts[n-1]+='\n'+cached.text;mergeExtractedFields(ocrFields,cached.fields);verified.push(cached.verifiedFields||[]);usedOcr=true;
+    if(cached.confidence!==undefined)scores.push(cached.confidence);
+    if(cached.ocrEngine?.includes('Paddle'))paddleUsed=true;
+    progress?.(snapshot(true));continue;
+   }
+   if(complementary.has(n)&&skipComplementary){warnings.push(`Página ${n}: texto digital mantido; OCR complementar não executado.`);continue;}
+   if(budget<2000){if(complementary.has(n))warnings.push(`Página ${n}: texto digital mantido; OCR complementar não executado por tempo.`);else unreadPages.push(n);continue;}
+   const page=await document.getPage(n);
+   let active=true;
+   try {
+    await withinBudget(async()=>{
     const base=page.getViewport({scale:1});
     const scale=Math.min(2.5,3200/Math.max(base.width,base.height));
     if(!Number.isFinite(scale) || scale<=0)throw Error("Dimensão de página inválida.");
     const viewport=page.getViewport({scale});
     const canvas=createCanvas(Math.ceil(viewport.width),Math.ceil(viewport.height));
     await page.render({canvas:canvas as any,canvasContext:canvas.getContext("2d") as any,viewport}).promise;
+    if(!active)throw Error('Leitura cancelada.');
     const png=canvas.toBuffer('image/png');
-    const recognition={data:await recognizeImage(worker,png)};
-    const paddle=await recognizeWithPaddle(png);
+    const paddle=await recognizeWithPaddle(png,Math.min(25000,budget*.65));
+    if(!active)throw Error('Leitura cancelada.');
+    const combined=paddle?combineOcrFields({},[],paddle):null;
+    const confident=paddle&&paddle.passes.every(pass=>pass.filter(b=>b.confidence>=85).map(b=>b.text).join(' ').length>=80);
+    // Two agreeing Paddle/OpenCV passes are the primary reader. Tesseract is
+    // an independent fallback only when the page remains weak or unstructured.
+    let recognition:{data:{text:string;confidence:number;verifiedFields:string[]}};
+    if(combined&&confident&&Object.keys(combined.fields).length){
+     recognition={data:{text:combined.text,confidence:Math.min(...paddle!.passes.map(pass=>pass.reduce((s,b)=>s+b.confidence,0)/Math.max(1,pass.length))),verifiedFields:combined.verifiedFields}};
+    }else{worker??=await ocrSession();if(!active){void worker.terminate();worker=undefined;throw Error('Leitura cancelada.');}recognition={data:await recognizeImage(worker,png)};}
+    if(!active)throw Error('Leitura cancelada.');
     if(paddle){
      const combined=combineOcrFields(fieldsFromLines(recognition.data.text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean)),recognition.data.verifiedFields,paddle);
      mergeExtractedFields(ocrFields,combined.fields);recognition.data.text+='\n'+combined.text;recognition.data.verifiedFields=combined.verifiedFields;paddleUsed=true;
     }
+    if(recognition.data.text.trim())storePdfPage(originalHash,n,{...result(recognition.data.text,'OCR de página PDF',true,recognition.data.confidence),verifiedFields:recognition.data.verifiedFields,ocrEngine:paddle?'PaddleOCR / OpenCV':'Tesseract'});
     verified.push(recognition.data.verifiedFields);
     // Keep digital text when OCR cannot read a sparse page; an unreadable scanned page blocks.
     if(recognition.data.text.trim()){
-     const tokens=(s:string)=>s.normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().match(/[a-z0-9]+/g)||[];
+    const tokens=(s:string)=>s.normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().match(/[a-z0-9]+/g)||[];
+     const text=texts[n-1];
      const digital=new Set(tokens(text));
      const novel=tokens(recognition.data.text).filter(token=>!digital.has(token));
      // When OCR only repeats existing digital text, do not turn digital fields into OCR fields.
-     if(!text.trim() || novel.length){usedOcr=true;text=text.trim()?text+'\n'+recognition.data.text:recognition.data.text;scores.push(recognition.data.confidence);}
+     if(!text.trim() || novel.length){usedOcr=true;texts[n-1]=text.trim()?text+'\n'+recognition.data.text:recognition.data.text;scores.push(recognition.data.confidence);}
     }
-    else if(!text.trim())throw Error(`Página ${n}: nenhum texto legível encontrado. Confira a digitalização.`);
+    else throw Error(`Página ${n}: nenhum texto legível encontrado. Confira a digitalização.`);
+    },budget,()=>{active=false;void worker?.terminate();worker=undefined;closePaddle();});
+   }catch(error:any){
+    // One timeout restarts the OCR engine; further complementary pages keep their digital text instead of cascading.
+    if(complementary.has(n)){skipComplementary=true;warnings.push(`Página ${n}: texto digital mantido; OCR complementar não concluído (${error.message||'leitura inconclusiva'}).`);}
+    else{unreadPages.push(n);warnings.push(`Página ${n}: ${error.message||'leitura inconclusiva'}`);}
    }
-   texts.push(text);page.cleanup();
+   finally{page.cleanup();}
    if(texts.join("\n").length>maxText)throw Error("PDF excede o limite de texto; separe em partes.");
-   progress?.({...result(texts.join('\n\n'),usedOcr?'PDF com OCR':'Texto do PDF',usedOcr,scores.length?Math.min(...scores):undefined,document.numPages),needsReview:true,warnings:[`Leitura parcial: ${n} de ${document.numPages} páginas processadas.`]});
+   progress?.(snapshot(true));
   }
-  const reading=result(texts.join("\n\n"),usedOcr?"PDF com OCR":"Texto do PDF",usedOcr,scores.length?Math.min(...scores):undefined,document.numPages);
-  const digitalText=digitalTexts.join('\n'),digitalFields=mergeExtractedFields(fieldsFromLines(digitalText.split(/\r?\n/).map(s=>s.trim()).filter(Boolean)),tableFields);
-  for(const party of extractContractParties(digitalText))mergeExtractedFields(digitalFields,{cnpj:[party.cnpj],razaoSocial:[party.name]});
-  return {...reading,fields:mergeExtractedFields(mergeExtractedFields(reading.fields,tableFields),ocrFields),tableFields,digitalFields,verifiedFields:document.numPages===1&&verified.length===1?verified[0]:[],ocrEngine:usedOcr?(paddleUsed?'Tesseract + PaddleOCR PP-OCRv5':'Tesseract'):undefined};
+  return snapshot();
  }catch(e:any){if(e?.name==="PasswordException")throw Error("PDF protegido por senha. Envie uma cópia acessível para análise.");throw e;}
  finally{await worker?.terminate();await loading.destroy();}
 }
@@ -190,7 +252,7 @@ function xml(source:string) {
 async function office(bytes:Buffer,name:string,progress?:(reading:Reading)=>void) {
  preflight(bytes);const zip=new PizZip(bytes),extension=extname(name).toLowerCase();
  for(const f of Object.values(zip.files))if(/vbaProject|embeddings|activeX/i.test(f.name))throw Error("Arquivo com conteúdo ativo requer conferência manual.");
- let text="",formulaCount=0;
+ let text="",formulaCount=0,sheet:ReturnType<typeof readSpreadsheet>|undefined;
  if(extension===".odt") {
   const entry=zip.file("content.xml");if(!entry)throw Error("ODT inválido.");
   const doc=xml(entry.asText());text=Array.from(doc.getElementsByTagNameNS("urn:oasis:names:tc:opendocument:xmlns:text:1.0","p")).map(p=>p.textContent||"").join("\n");
@@ -199,26 +261,14 @@ async function office(bytes:Buffer,name:string,progress?:(reading:Reading)=>void
   if(!slides.length || slides.length>maxPages)throw Error("PPTX inválido ou acima de 30 slides.");
   text=slides.map(f=>Array.from(xml(f.asText()).getElementsByTagNameNS("http://schemas.openxmlformats.org/drawingml/2006/main","p")).map(p=>p.textContent||"").join("\n")).join("\n\n");
  }else {
-  const shared=zip.file("xl/sharedStrings.xml"),strings=shared?Array.from(xml(shared.asText()).getElementsByTagName("si")).map(p=>p.textContent||""):[];
-  const styleEntry=zip.file("xl/styles.xml"),styles=styleEntry?xml(styleEntry.asText()):null;
-  const formats:Record<string,string>={'9':'0%','10':'0.00%'};
-  for(const f of Array.from(styles?.getElementsByTagName('numFmt')||[]))formats[f.getAttribute('numFmtId')||'']=f.getAttribute('formatCode')||'';
-  const cellStyles=Array.from(styles?.getElementsByTagName('cellXfs')[0]?.getElementsByTagName('xf')||[]);
-  const sheets=Object.values(zip.files).filter(f=>/^xl\/worksheets\/sheet\d+\.xml$/.test(f.name));
-  if(!sheets.length || sheets.length>30)throw Error("XLSX inválido ou acima de 30 planilhas.");
-  text=sheets.map(f=>Array.from(xml(f.asText()).getElementsByTagName("row")).map(row=>Array.from(row.getElementsByTagName("c")).map(cell=>{
-   if(cell.getElementsByTagName("f").length){formulaCount++;return "[DADO CALCULADO: conferir na planilha original]";}
-   const value=cell.getElementsByTagName("v")[0]?.textContent||cell.getElementsByTagName("is")[0]?.textContent||"";
-   if(cell.getAttribute('t')==='s')return strings[Number(value)]||'';
-   const format=formats[cellStyles[Number(cell.getAttribute('s')||0)]?.getAttribute('numFmtId')||'']||'';
-   if((!cell.getAttribute('t')||cell.getAttribute('t')==='n') && value && Number.isFinite(Number(value)) && /%/.test(format.replace(/"[^"]*"|\\./g,'')))return (Number(value)*100).toFixed(2).replace('.',',')+'%';
-   return value;
-  }).filter((value,index,values)=>!!value && (value!=="[DADO CALCULADO: conferir na planilha original]" || values.indexOf(value)===index)).join(": ")).filter(Boolean).join("\n")).join("\n\n");
+  sheet=readSpreadsheet(zip);
+  text=sheet.text;formulaCount=sheet.formulaCount;
  }
  // Office containers can have image-only or hidden areas that plain text extraction misses.
  const incomplete=text.length>maxText;
  if(incomplete)text=text.slice(0,maxText).replace(/\n[^\n]*$/,'');
- const native={...result(text,extension.slice(1).toUpperCase()),needsReview:!!text.trim(),incomplete,warnings:[...(incomplete?['Leitura parcial: o documento excedeu o limite de texto. O trecho já lido foi preservado; envie o restante em partes para concluir a conferência.']:[]),...(formulaCount?[`${formulaCount} célula(s) com fórmulas foram omitidas da extração. As fórmulas não foram executadas e seus resultados salvos não foram usados. Confira a planilha original; para analisar os resultados, envie uma cópia com valores conferidos.`]:[])],formulaCount};
+ const native={...result(text,extension.slice(1).toUpperCase()),needsReview:!!text.trim(),incomplete,warnings:[...(incomplete?['Leitura parcial: o documento excedeu o limite de texto. O trecho já lido foi preservado; envie o restante em partes para concluir a conferência.']:[]),...(formulaCount?[`${formulaCount} célula(s) com fórmulas foram omitidas da extração. As fórmulas não foram executadas e seus resultados salvos não foram adotados${sheet&&Object.keys(sheet.calculatedFields).length?'; os resultados salvos aparecem separados apenas para conferência':''}. Confira a planilha original; para analisar os resultados, envie uma cópia com valores conferidos.`]:[]),...(sheet?.hiddenSheets.length?[`Aba(s) oculta(s) não usadas para identificar campos: ${sheet.hiddenSheets.join(', ')}. O texto delas aparece abaixo para consulta.`]:[])],formulaCount};
+ if(sheet)native.fields=sheet.fields;
  const embedded=Object.values(zip.files).filter(f=>/^(?:Pictures|ppt\/media|xl\/media)\/.+\.(png|jpe?g|webp|bmp|tiff?)$/i.test(f.name));
  if(embedded.length>30)throw Error('Arquivo contém mais de 30 imagens. Divida o documento.');
  const digitalFields=structuredClone(native.fields);let usedOcr=false;
@@ -231,7 +281,7 @@ async function office(bytes:Buffer,name:string,progress?:(reading:Reading)=>void
   else{mergeExtractedFields(native.fields,read.fields);native.text+='\n\nIMAGEM INCORPORADA: '+entry.name+'\n'+read.text;native.problem='';}
   if(native.text.length>maxText)throw Error('Arquivo excede o limite de texto. Divida o documento.');
  }
- return {...native,digitalFields,needsReview:native.needsReview||usedOcr,method:native.method+(usedOcr?' com OCR':'')};
+ return {...native,digitalFields,...(sheet&&Object.keys(sheet.calculatedFields).length?{calculatedFields:sheet.calculatedFields}:{}),needsReview:native.needsReview||usedOcr,method:native.method+(usedOcr?' com OCR':'')};
 }
 export async function readDocumentRegion(bytes:Buffer,name:string,region:ReadingRegion):Promise<Reading> {
  if(!validReadingRegion(region)||bytes.length>20*1024*1024)throw Error('Região inválida ou arquivo maior que 20 MB.');
@@ -263,7 +313,7 @@ export async function readDocument(bytes:Buffer,name:string,progress?:(reading:R
  const extension=extname(name).toLowerCase();
  if(extension==='.docx'){
   const native=extractProcessingFile(bytes,name);
-  if(native.problem)return {...native,version:readerVersion,method:'DOCX',needsReview:false};
+  if(native.problem&&native.problem!=='O documento está vazio ou contém apenas imagens.')return {...native,version:readerVersion,method:'DOCX',needsReview:false};
   const zip=new PizZip(bytes),images=Object.values(zip.files).filter(f=>/^word\/media\/.+\.(png|jpe?g|webp|bmp|tiff?)$/i.test(f.name));
   const digitalFields=structuredClone(native.fields),fields=structuredClone(native.fields),texts=[native.text],warnings:string[]=[];
   if(images.length>30)throw Error('Word contém mais de 30 imagens. Divida o documento para leitura completa.');
@@ -279,7 +329,7 @@ export async function readDocument(bytes:Buffer,name:string,progress?:(reading:R
    if(texts.join('\n').length>maxText)throw Error('Word excede o limite de texto. Divida o arquivo.');
    progress?.({...native,version:readerVersion,fields,text:texts.join('\n\n'),digitalFields,needsReview:true,incomplete:true,method:'DOCX com OCR'});
   }
-  return {...native,version:readerVersion,fields,text:texts.join('\n\n'),digitalFields,needsReview:usedOcr,incomplete,warnings,method:usedOcr?'DOCX com OCR':'DOCX'};
+  return {...native,version:readerVersion,problem:texts.some(text=>text.trim())?'':native.problem,fields,text:texts.join('\n\n'),digitalFields,needsReview:usedOcr,incomplete,warnings,method:usedOcr?'DOCX com OCR':'DOCX'};
  }
  if(extension===".pdf") {
   if(bytes.subarray(0,5).toString()!=="%PDF-")throw Error("O conteúdo recebido não corresponde a um PDF válido.");
