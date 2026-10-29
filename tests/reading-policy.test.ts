@@ -11,14 +11,14 @@ test('contraproposta e documentos de apoio não fornecem condições comerciais 
  assert.deepEqual(fieldsForRole('document',fields),fields);
  assert.equal(attachmentRole('LUMO EDUCACAO - CARTÃO CNPJ.pdf'),'registration');
 });
-test('OCR só dispensa confirmação dos campos fornecidos com duas leituras concordantes e referência exata',()=>{
+test('OCR exige pessoa para percentuais e nomes mesmo com consenso entre leituras',()=>{
  const reference={cnpj:['11.444.777/0001-61'],remuneracao:['11,84%']};
  const reading={text:'Dados identificados',method:'OCR de imagem',fields:reference,verifiedFields:['cnpj','remuneracao']};
- assert.equal(automaticReadingCheck(reading,'document',reference),true);
+ assert.equal(automaticReadingCheck(reading,'document',reference),false);
  assert.equal(automaticReadingCheck({...reading,verifiedFields:[]},'document',reference),false);
  assert.equal(automaticReadingCheck({...reading,incomplete:true},'document',reference),false);
  assert.equal(automaticReadingCheck({...reading,fields:{...reference,remuneracao:['11,00%']}},'document',reference),false);
- assert.equal(automaticReadingCheck(reading,'document',{...reference,razaoSocial:['Outra instituição']}),true);
+ assert.equal(automaticReadingCheck(reading,'document',{...reference,razaoSocial:['Outra instituição']}),false);
  assert.equal(automaticReadingCheck(reading,'simulation',reference),false);
  assert.equal(automaticReadingCheck(reading,'counterproposal',reference),false);
 });
@@ -46,7 +46,7 @@ test('interrupção preserva texto e campos sem aprovar uma leitura parcial',()=
 test('componentes de endereço verificados podem conferir com endereço completo explícito',()=>{
  const fields={endereco:['AV CANADA, 49A, JACINTINHO'],rua:['AV CANADA'],numero:['49A'],bairro:['JACINTINHO']};
  const read={text:'Documento cadastral',method:'OCR de imagem',fields,verifiedFields:Object.keys(fields)};
- assert.equal(automaticReadingCheck(read,'registration',{endereco:['Avenida Canada, 49A, Jacintinho']}),true);
+ assert.equal(automaticReadingCheck(read,'registration',{endereco:['Avenida Canada, 49A, Jacintinho']}),false);
  assert.equal(automaticReadingCheck(read,'registration',{endereco:['Avenida Canada, 50, Jacintinho']}),false);
  assert.equal(automaticReadingCheck({...read,verifiedFields:['endereco']},'registration',{endereco:['Avenida Canada, 49A, Jacintinho']}),false);
 });

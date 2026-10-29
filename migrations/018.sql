@@ -1,0 +1,1 @@
+ALTER TABLE reading_jobs ADD COLUMN progress INTEGER NOT NULL DEFAULT 0;

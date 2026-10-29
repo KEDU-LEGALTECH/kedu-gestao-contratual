@@ -8,17 +8,39 @@ import { extractProcessingFile,fieldsFromLines } from "./processing-extract.js";
 import {interruptedReading} from './reading-policy.js';
 import PizZip from 'pizzip';
 import {readingFilename} from './reading-format.js';
+import {acquireReadingLease} from './reading-runtime-lock.js';
+import {freemem} from 'node:os';
+import {recoverTextFields} from './text-recovery.js';
 export const readerVersion=4;
 export const supportedReading=/\.(docx|doc|pdf|png|jpe?g|webp|tiff?|bmp|gif|txt|csv|odt|xlsx|pptx)$/i;
-export type Reading={version:number;text:string;fields:Record<string,string[]>;problem:string;method:string;needsReview:boolean;incomplete?:boolean;confidence?:number;pages?:number;formulaCount?:number;warnings?:string[];verifiedFields?:string[];digitalFields?:Record<string,string[]>;tableFields?:Record<string,string[]>;ocrEngine?:string;preprocessing?:string[];calculatedFields?:Record<string,string[]>;transient?:boolean};
+export type Reading={version:number;text:string;fields:Record<string,string[]>;problem:string;method:string;needsReview:boolean;incomplete?:boolean;completedPages?:number[];pendingPages?:number[];confidence?:number;fieldConfidence?:Record<string,number>;pages?:number;formulaCount?:number;warnings?:string[];verifiedFields?:string[];digitalFields?:Record<string,string[]>;tableFields?:Record<string,string[]>;ocrEngine?:string;preprocessing?:string[];calculatedFields?:Record<string,string[]>;transient?:boolean;fieldOrigins?:Record<string,{value:string;page:number;excerpt:string}[]>;timings?:{queueMs:number;readMs:number;shutdownMs:number;totalMs:number;cacheHit?:boolean}};
 export function readingFailure(problem:string):Reading{return {version:readerVersion,text:"",fields:{},problem,method:"inconclusiva",needsReview:false};}
 let queue:Promise<unknown>=Promise.resolve();
 /** Parsers and OCR run in a bounded child process; no remote OCR service. */
 export type ReadingRegion={page:number;x:number;y:number;width:number;height:number;rotation:number};
 export function validReadingRegion(region:ReadingRegion) {
- return region && Number.isInteger(region.page)&&region.page>=1&&region.page<=30&&[0,90,180,270].includes(region.rotation)&&[region.x,region.y,region.width,region.height].every(Number.isFinite)&&region.x>=0&&region.y>=0&&region.width>=0.02&&region.height>=0.02&&region.x+region.width<=1.000001&&region.y+region.height<=1.000001;
+ return region && Number.isInteger(region.page)&&region.page>=1&&region.page<=200&&[0,90,180,270].includes(region.rotation)&&[region.x,region.y,region.width,region.height].every(Number.isFinite)&&region.x>=0&&region.y>=0&&region.width>=0.02&&region.height>=0.02&&region.x+region.width<=1.000001&&region.y+region.height<=1.000001;
 }
 export async function readProcessingFile(bytes:Buffer,name:string,region?:ReadingRegion):Promise<Reading> {
+ const queued=performance.now();
+ const task=async()=>{
+  let release:(()=>void)|undefined,started:number|undefined;
+  try{
+   release=await acquireReadingLease();started=performance.now();
+   const reading=await readSingleFile(bytes,name,region);
+   if(!reading.problem){
+    const recovered=recoverTextFields(reading.text,reading.fields||{});
+    reading.fields={...reading.fields,...recovered};
+    if(!reading.incomplete&&['Texto do PDF','DOCX','Texto'].includes(reading.method))reading.digitalFields={...reading.digitalFields,...recovered};
+   }
+   const finished=performance.now();
+   return {...reading,timings:{queueMs:Math.round(started-queued),readMs:reading.timings?.readMs??Math.round(finished-started),shutdownMs:reading.timings?.shutdownMs||0,totalMs:Math.round(finished-queued),cacheHit:reading.timings?.cacheHit||false}};
+  }catch{const finished=performance.now();return {...readingFailure('O leitor está temporariamente indisponível. A leitura anterior foi preservada para nova tentativa.'),transient:true,timings:{queueMs:Math.round((started??finished)-queued),readMs:started?Math.round(finished-started):0,shutdownMs:0,totalMs:Math.round(finished-queued)}};}
+  finally{release?.();}
+ };
+ const pending=queue.then(task,task);queue=pending.then(()=>{},()=>{});return pending;
+}
+async function readSingleFile(bytes:Buffer,name:string,region?:ReadingRegion):Promise<Reading> {
  if(!bytes.length)return readingFailure("O arquivo recebido está vazio. Obtenha uma cópia legível.");
  if(bytes.length>20*1024*1024)return readingFailure("O arquivo excede o limite de leitura de 20 MB. Separe o documento em partes para conferência.");
  const detected=readingFilename(bytes,name);if(detected!==name)name=name.replace(/\.[^./\\]+$/,'')+'.'+detected.split('.').pop();
@@ -37,30 +59,33 @@ export async function readProcessingFile(bytes:Buffer,name:string,region?:Readin
  }
  const key=region?undefined:createHash("sha256").update(bytes).digest("hex")+"\0"+name;
  const cached=key?cachedReading(key):undefined;
- if(cached)return cached;
+ if(cached)return {...cached,timings:{queueMs:0,readMs:0,shutdownMs:0,totalMs:0,cacheHit:true}};
+ if(process.env.NODE_ENV!=='test'&&!process.env.NODE_TEST_CONTEXT&&freemem()<512*1024*1024)return {...readingFailure('Memória disponível insuficiente; leitura adiada para preservar a estabilidade.'),transient:true};
  const task=()=>new Promise<Reading>(resolve=>{
+  const started=performance.now();
   const current=acquireWorker(),child=current.child;
   let done=false,partial:Reading|undefined;
-  const finish=(result:Reading,healthy:boolean)=>{
+  const finish=async(result:Reading,healthy:boolean,rss=0)=>{
    if(done)return;done=true;clearTimeout(timer);
    child.off("message",onMessage);child.off("error",onError);child.off("exit",onExit);
-   if(healthy)releaseWorker(current);else retireWorker(current);
+   const readMs=Math.round(performance.now()-started),shutdown=performance.now();
+   if(healthy&&rss<256*1024*1024)await releaseWorker(current);else await retireWorker(current);
    if(key)storeReading(key,result);
-   resolve(result);
+   resolve({...result,timings:{queueMs:0,readMs,shutdownMs:Math.round(performance.now()-shutdown),totalMs:Math.round(performance.now()-started)}});
   };
   const timer=setTimeout(()=>finish(partial?.text?interruptedReading(partial,'Leitura parcial: o tempo limite foi atingido. As páginas restantes precisam ser conferidas; este resultado não permite aprovação automática.'):readingFailure("A leitura excedeu 180 segundos. Divida o arquivo ou confira manualmente."),false),180000);
-  const onMessage=(result:any)=>{if(result.partial){partial=result.partial;return;}finish(result.problem && partial?.text?interruptedReading(partial,'Leitura incompleta: '+result.problem):result,true);};
+  const onMessage=(result:any)=>{if(result.partial){partial=result.partial;return;}const {readerRssBytes,...reading}=result;void finish(reading.problem && partial?.text?interruptedReading(partial,'Leitura incompleta: '+reading.problem):reading,true,readerRssBytes);};
   // Engine start failures and crashed workers (e.g. memory pressure) say nothing about the file itself.
   const onError=()=>finish({...readingFailure("O leitor local não pôde ser iniciado. Tente novamente."),transient:true},false);
-  const onExit=()=>finish(partial?.text?interruptedReading(partial,'Leitura parcial: o leitor foi interrompido antes de concluir o arquivo.'):{...readingFailure("Não foi possível concluir a leitura deste arquivo. Confira se está íntegro e sem senha."),transient:true},false);
+  const onExit=()=>finish(partial?.text?{...interruptedReading(partial,'Leitura parcial: o leitor foi interrompido antes de concluir o arquivo.'),transient:true}:{...readingFailure("Não foi possível concluir a leitura deste arquivo. Confira se está íntegro e sem senha."),transient:true},false);
   child.on("message",onMessage);child.on("error",onError);child.on("exit",onExit);
   child.send({bytes,name,region},error=>{if(error)onError();});
  });
- const result=queue.then(task,task);queue=result.catch(()=>{});return result;
+ return task();
 }
 /** One reader process serves consecutive files, so OCR models load once. It is replaced after a
  * failure or time limit, after a fixed number of files, and closed when idle. */
-const filesPerWorker=20,idleWorkerMs=120000;
+const filesPerWorker=5,idleWorkerMs=15000;
 type Worker={child:ChildProcess;files:number;idle?:ReturnType<typeof setTimeout>};
 let worker:Worker|undefined;
 function acquireWorker() {
@@ -73,9 +98,13 @@ function acquireWorker() {
  clearTimeout(worker.idle);worker.child.ref();(worker.child as any).channel?.ref?.();
  return worker;
 }
-function retireWorker(current:Worker) {clearTimeout(current.idle);if(worker===current)worker=undefined;current.child.kill();}
-function releaseWorker(current:Worker) {
- if(++current.files>=filesPerWorker){retireWorker(current);return;}
+async function retireWorker(current:Worker) {
+ clearTimeout(current.idle);if(worker===current)worker=undefined;
+ if(current.child.exitCode!==null||current.child.signalCode!==null)return;
+ await new Promise<void>(resolve=>{let timer:ReturnType<typeof setTimeout>;const done=()=>{clearTimeout(timer);current.child.off('exit',done);resolve();};current.child.once('exit',done);timer=setTimeout(done,2000);current.child.kill();});
+}
+async function releaseWorker(current:Worker) {
+ if(++current.files>=filesPerWorker){await retireWorker(current);return;}
  // An idle reader must not keep the server, scripts or tests alive.
  current.child.unref();(current.child as any).channel?.unref?.();
  current.idle=setTimeout(()=>retireWorker(current),idleWorkerMs);current.idle.unref();

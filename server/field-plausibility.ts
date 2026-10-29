@@ -6,7 +6,7 @@ import {validCpf} from './reading-validation.js';
 const labelText=/^(?:data de (?:abertura|constituicao|inscricao(?: no cnpj)?|emissao|nascimento)|bairro(?:\/distrito)?|municipio|uf|cep|logradouro|numero|complemento|nome empresarial|nome de fantasia|titulo do estabelecimento.*|porte|situacao cadastral|natureza juridica.*|telefone|endereco eletronico|cnpj|cpf|final da vigencia|inicio da vigencia|sistema para matricula)$/;
 const shapes:Record<string,RegExp>={
  cep:/^\d{5}-?\d{3}$/,
- estado:/^(?:[A-Z]{2}|[\p{L} ]{4,25})$/u,
+ estado:/^(?:[A-Z]{2}|[\p{L} ]{4,50})$/u,
  numero:/^\d{1,6}[A-Za-z]?$|^s\/?n$/i,
  remuneracao:/^\d{1,3},\d{2}%$/,garantia:/^\d{1,3},\d{2}%$/,repasse:/^\d{1,3},\d{2}%$/,repasseSegundo:/^\d{1,3},\d{2}%$/,cashback:/^\d{1,3},\d{2}%$/,
  valor:/^\d+,\d{2}$/,valorTotal:/^\d+,\d{2}$/,valorParcela:/^\d+,\d{2}$/,cashbackValor:/^\d+,\d{2}$/,
@@ -18,6 +18,7 @@ export const labelLike=(value:string)=>labelText.test(norm(value).replace(/[:.]+
 /** A value that cannot be what the field holds is a reading artifact, never evidence of an error. */
 export function plausibleFieldValue(key:string,value:string) {
  const v=value.trim();if(!v||labelLike(v))return false;
+ if(['razaoSocial','nomeFantasia','titularConta'].includes(key)&&/^(?:LTDA|LTD|ME|EPP|EIRELI|S\/?A)(?:[\s.\-]+(?:LTDA|ME|EPP|[A-Z]{2}))*[.\s]*$/i.test(v))return false;
  if(key==='cnpj')return validCnpj(v);
  if(key==='representanteCpf')return validCpf(v);
  if(key==='documentoTitular'){const d=v.replace(/\D/g,'');return /^[\d.\/\-\s]+$/.test(v)&&(d.length===11?validCpf(d):d.length===14&&validCnpj(d));}

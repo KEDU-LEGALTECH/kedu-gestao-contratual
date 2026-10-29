@@ -47,6 +47,7 @@ export function fieldsFromRows(rows:string[][]) {
 }
 export function normalizeValue(key:string,value:string) {
  let s=value.trim().replace(/^[:\s]+/,"");
+ if(key==='cidade')s=s.split(/\s+(?:UF|ESTADO|INSCRI[ÇC][ÃA]O MUNICIPAL|CEP)\s*:/i)[0].trim();
  if(['banco','agencia','conta'].includes(key))s=s.replace(/[.,:;]+\s*$/,'').trim();
  if(!s || /^[_\s.\-–—]+$/.test(s) || /\{[^}]+\}|\[(?:DADO|NOME|PREENCHER)|PENDENTE|⟨/i.test(s))return "";
  if(["remuneracao","garantia","repasse","repasseSegundo","cashback"].includes(key)) {const m=/^(\d{1,3})(?:[.,](\d{1,2}))?\s*%$/.exec(s);if(m)s=Number(m[1])+","+(m[2]||"").padEnd(2,"0")+"%";}

@@ -32,3 +32,5 @@ export function needsPdfOcr(text:string,ops:{fnArray:number[];argsArray:any[]},c
  }
  return !Number.isFinite(pageArea)||pageArea<=0||!Number.isFinite(area)||area/pageArea>0.15;
 }
+/** Finish useful pages and resume the rest; dividing by all pages can starve every OCR attempt. */
+export function pdfPageBudget(remainingMs:number,registration=false){return Math.floor(Math.max(0,Math.min(registration?70000:35000,remainingMs)));}

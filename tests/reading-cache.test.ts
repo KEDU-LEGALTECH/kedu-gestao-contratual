@@ -15,7 +15,8 @@ test("leitura repetida do mesmo original reutiliza o resultado sem guardar falha
  const first=await readProcessingFile(image,"documento.png");
  assert.equal(first.problem,"");
  const second=await readProcessingFile(image,"documento.png");
- assert.deepEqual(second,first);
+ assert.deepEqual(second.fields,first.fields);assert.equal(second.text,first.text);assert.equal(second.timings?.cacheHit,true);
+ assert.ok(first.timings&&first.timings.queueMs>=0&&first.timings.readMs>=0&&first.timings.shutdownMs>=0);
  const blank=await readProcessingFile(readingImage(true).toBuffer("image/png"),"branco.png");
  assert.notEqual(blank.problem,"");
  const db=new DatabaseSync(process.env.READING_CACHE_PATH!,{readOnly:true});

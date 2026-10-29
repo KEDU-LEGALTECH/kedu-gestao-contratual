@@ -60,11 +60,35 @@ test('atualizar leitura reprocessa anexo saudável em cache sem baixar ou altera
  const after=one('SELECT * FROM processing_files WHERE id=?',file.id);
  assert.equal(downloads,0);assert.deepEqual(JSON.parse(after.extracted).fields.razaoSocial,[data.razaoSocial]);assert.deepEqual(Buffer.from(after.bytes),Buffer.from(file.bytes));
 });
+
+test('nova versão reutiliza leitura saudável somente após confirmar bytes atuais idênticos',async()=>{
+ fixture('identical-original');await processContract('identical-original','u',mock());
+ const original=one('SELECT * FROM processing_files WHERE demand_id=?','identical-original');
+ const reading={...JSON.parse(original.extracted),reuseMarker:'leitura anterior'};
+ run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify(reading),original.id);
+ run('UPDATE glpi_tickets SET hash=? WHERE external_id=?','new-identical','identical-original');
+ let downloads=0;
+ await processContract('identical-original','u',async()=>{downloads++;return {bytes:Buffer.from(original.bytes),name:original.name,mime:original.mime};});
+ assert.equal(downloads,1);
+ const current=one('SELECT * FROM processing_files WHERE demand_id=? AND ticket_hash=?','identical-original','new-identical');
+ assert.equal(JSON.parse(current.extracted).reuseMarker,'leitura anterior');
+ assert.deepEqual(Buffer.from(current.bytes),Buffer.from(original.bytes));
+ run('UPDATE glpi_tickets SET hash=? WHERE external_id=?','new-changed','identical-original');
+ await processContract('identical-original','u',mock({...data,razaoSocial:'Outra escola'}));
+ const changed=one('SELECT extracted FROM processing_files WHERE demand_id=? AND ticket_hash=?','identical-original','new-changed');
+ assert.equal(JSON.parse(changed.extracted).reuseMarker,undefined);
+ assert.deepEqual(JSON.parse(changed.extracted).fields.razaoSocial,['Outra escola']);
+});
 test('comprovante com dado confirmado em contrato digital dispensa revisão duplicada; divergência não',async()=>{
  fixture('corroborated');await processContract('corroborated','u',mock());
  const extracted={version:2,text:'Dados bancários',fields:{agencia:['0001']},needsReview:true,method:'OCR de imagem'};
  run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)','bank-support','corroborated','8','hash-corroborated','Comprovante bancario.png','image/png',Buffer.from('original'),JSON.stringify(extracted),'',now());
  assert.equal(buildProcessingPlan('corroborated')!.issues.some(i=>i.field==='review:bank-support'),false);
+ const source=one('SELECT * FROM processing_files WHERE demand_id=? AND id<>?','corroborated','bank-support');
+ run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify({...JSON.parse(source.extracted),method:'PDF com OCR',needsReview:true,incomplete:true,digitalFields:{agencia:['0001']}}),source.id);
+ const mixed=buildProcessingPlan('corroborated')!;
+ assert.equal(mixed.issues.some(i=>i.field==='review:bank-support'),false,'campo digital independente evita confirmação duplicada');
+ assert.ok(mixed.issues.some(i=>i.field==='review:partial:'+source.id),'outra página parcial continua pendente');
  extracted.fields.agencia=['0002'];run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify(extracted),'bank-support');
  assert.ok(buildProcessingPlan('corroborated')!.issues.some(i=>i.field==='review:bank-support'));
  assert.ok(buildProcessingPlan('corroborated')!.issues.some(i=>i.field==='agencia'));
@@ -109,8 +133,8 @@ test('campo sustentado por fonte confiável não herda dúvida de outra leitura 
  let plan=buildProcessingPlan('trusted-field')!;
  assert.equal(plan.comparisons.find(c=>c.field==='razaoSocial')?.status,'matches');
  assert.equal(plan.comparisons.find(c=>c.field==='razaoSocial')?.readingPending,false);
- // A distinctive OCR value identical to the request is independent agreement, not an inconclusive reading.
- assert.ok(!plan.issues.some(i=>i.field==='review:trusted-field-weak'));
+ // Another reliable source confirms the value; the weak OCR itself was not approved.
+ assert.ok(plan.issues.some(i=>i.field==='review:trusted-field-weak'));
  run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify({version:4,text:'Razão social: Outra escola',fields:{razaoSocial:['Outra escola']},needsReview:true,method:'PDF com OCR',confidence:40}),'trusted-field-weak');
  plan=buildProcessingPlan('trusted-field')!;
  assert.notEqual(plan.comparisons.find(c=>c.field==='razaoSocial')?.status,'matches');
@@ -266,7 +290,7 @@ test('conferência por campo é vinculada à extração e não dispensa outros c
 test('um campo OCR verificado confere mesmo quando outro campo do arquivo exige revisão',async()=>{
  fixture('selective-reading');await processContract('selective-reading','u',mock());
  const file=one('SELECT * FROM processing_files WHERE demand_id=?','selective-reading');
- const extracted={...JSON.parse(file.extracted),method:'OCR de imagem',needsReview:true,verifiedFields:['cnpj'],digitalFields:{}};
+ const extracted={...JSON.parse(file.extracted),method:'OCR de imagem',pages:1,needsReview:true,verifiedFields:['cnpj'],digitalFields:{}};
  run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify(extracted),file.id);
  let result=saveProcessingResult('selective-reading')!;
  assert.equal(result.comparisons.find(c=>c.field==='cnpj')?.status,'matches');
@@ -275,6 +299,57 @@ test('um campo OCR verificado confere mesmo quando outro campo do arquivo exige 
  extracted.incomplete=true;run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify(extracted),file.id);
  result=saveProcessingResult('selective-reading')!;assert.equal(result.comparisons.find(c=>c.field==='cnpj')?.status,'review');
 });
+test('campo digital confere individualmente, mas o PDF parcial mantém a demanda em análise',async()=>{
+ const raw=fixture('digital-partial');raw.content+='<p>ENDEREÇO: Rua Teste, 10</p>';
+ run('UPDATE glpi_tickets SET payload=? WHERE external_id=?',JSON.stringify(raw),'digital-partial');
+ await processContract('digital-partial','u',mock());
+ const file=one('SELECT * FROM processing_files WHERE demand_id=?','digital-partial');
+ const e=JSON.parse(file.extracted);
+ e.method='PDF com OCR';e.needsReview=true;e.incomplete=true;e.pages=16;
+ e.digitalFields={razaoSocial:[data.razaoSocial],cnpj:[data.cnpj],rua:[data.rua],numero:[data.numero]};
+ run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify(e),file.id);
+ const result=saveProcessingResult('digital-partial')!;
+ for(const key of ['cnpj','razaoSocial','endereco'])assert.equal(result.comparisons.find(c=>c.field===key)?.status,'matches',key);
+ assert.equal(result.status,'Aguardando análise');
+ assert.ok(result.issues.some(i=>i.field==='review:partial:'+file.id));
+ assert.equal(result.comparisons.find(c=>c.field==='remuneracao')?.status,'review');
+});
+
+test('campos solicitados comprovados não herdam revisão de campos OCR não usados; arquivo parcial ainda bloqueia',async()=>{
+ fixture('field-certainty');await processContract('field-certainty','u',mock());
+ const f=one('SELECT * FROM processing_files WHERE demand_id=?','field-certainty'),e=JSON.parse(f.extracted);
+ e.method='PDF com OCR';e.pages=1;e.needsReview=true;e.confidence=50;e.digitalFields={cnpj:e.fields.cnpj,razaoSocial:e.fields.razaoSocial,remuneracao:e.fields.remuneracao};
+ run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify(e),f.id);
+ let r=saveProcessingResult('field-certainty')!;assert.equal(r.status,'Sem erros');assert.ok(!r.issues.some(i=>i.field==='review:'+f.id));
+ e.incomplete=true;run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify(e),f.id);
+ r=saveProcessingResult('field-certainty')!;assert.equal(r.status,'Aguardando análise');assert.ok(r.issues.some(i=>i.field==='review:partial:'+f.id));
+});
+
+test('frase capturada como taxa não vira percentual inválido, mas taxa numérica fora da faixa é sinalizada',async()=>{
+ fixture('percent-artifact');await processContract('percent-artifact','u',mock());
+ const file=one('SELECT * FROM processing_files WHERE demand_id=?','percent-artifact');const e=JSON.parse(file.extracted);
+ e.fields.remuneracao=['Montante integral dos créditos anuais'];run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify(e),file.id);
+ assert.ok(!saveProcessingResult('percent-artifact')!.issues.some(i=>i.field==='review:validation:remuneracao'));
+ e.fields.remuneracao=['110,00%'];run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify(e),file.id);
+ assert.ok(saveProcessingResult('percent-artifact')!.issues.some(i=>i.field==='review:validation:remuneracao'));
+});
+
+test('CNPJ inválido no GLPI pede confirmação da referência, não correção do documento',async()=>{
+ const raw=fixture('invalid-reference');raw.content=raw.content.replace('11.444.777/0001-61','1.444.777/0001-61');
+ run('UPDATE glpi_tickets SET payload=? WHERE external_id=?',JSON.stringify(raw),'invalid-reference');
+ await processContract('invalid-reference','u',mock());const result=saveProcessingResult('invalid-reference')!;
+ assert.equal(result.comparisons.find(c=>c.field==='cnpj')?.status,'ambiguous');
+ assert.equal(result.status,'Aguardando análise');
+});
+
+test('nova versão sem anexo atual informa atualização pendente, sem reutilizar leitura antiga',async()=>{
+ fixture('new-version');await processContract('new-version','u',mock());
+ run('UPDATE glpi_tickets SET hash=? WHERE external_id=?','new-hash','new-version');ensureProcessing('new-version');
+ const result=saveProcessingResult('new-version')!;
+ assert.equal(result.comparisons.find(c=>c.field==='cnpj')?.missingReason,'awaiting_version');
+ assert.equal(result.comparisons.find(c=>c.field==='cnpj')?.found,'');
+});
+
 test('resumos respeitam etapa, seleção e permissões de acesso aos documentos',async()=>{
  const stage=completed('field-review').status;
  const url=base.replace('/demands','')+'/processing/summary?'+new URLSearchParams({stage,ids:'field-review'});

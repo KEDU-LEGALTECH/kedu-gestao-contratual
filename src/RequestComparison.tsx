@@ -1,7 +1,7 @@
 const states:Record<string,string>={matches:"Confere",review:"Conferir leitura",different:"Erro — corrigir",missing:"Não lido",ambiguous:"Pedido ambíguo",corrected:"Corrigido na nova versão",not_applicable:"Não se aplica"};
 const order:Record<string,number>={different:0,ambiguous:1,missing:2,review:3,corrected:4,matches:5,not_applicable:6};
-function missingMessage(row:any){return row.missingReason==="not_sent"?`Envie o documento de origem: ${row.expectedDocument}.`:row.missingReason==="source_unidentified"?`Identifique o anexo que contém este campo. Fonte esperada: ${row.expectedDocument}.`:row.missingReason==="unreadable"?`O anexo foi enviado, mas a leitura falhou ou ficou parcial. Releia ou envie uma cópia legível de ${row.expectedDocument}.`:`O campo não foi encontrado no texto lido. Confira o original${row.expectedDocument?" — "+row.expectedDocument:""}.`;}
-function notFound(row:any){return row.missingReason==="not_sent"?'Documento de origem não enviado':row.missingReason==="source_unidentified"?'Anexo de origem não identificado':row.missingReason==="unreadable"?'Leitura parcial ou falha do anexo':'Não encontrado no documento';}
+function missingMessage(row:any){return row.missingReason==="awaiting_version"?"O chamado foi atualizado. Aguardando obter e conferir os anexos da versão atual; isso não significa que o campo esteja ausente no documento.":row.missingReason==="not_sent"?`Envie o documento de origem: ${row.expectedDocument}.`:row.missingReason==="source_unidentified"?`Identifique o anexo que contém este campo. Fonte esperada: ${row.expectedDocument}.`:row.missingReason==="unreadable"?`O anexo foi enviado, mas a leitura falhou ou ficou parcial. Releia ou envie uma cópia legível de ${row.expectedDocument}.`:`O campo não foi encontrado no texto lido. Confira o original${row.expectedDocument?" — "+row.expectedDocument:""}.`;}
+function notFound(row:any){return row.missingReason==="awaiting_version"?"Leitura da versão atual pendente":row.missingReason==="not_sent"?'Documento de origem não enviado':row.missingReason==="source_unidentified"?'Anexo de origem não identificado':row.missingReason==="unreadable"?'Leitura parcial ou falha do anexo':'Não localizado na extração';}
 function display(key:string,value:string){
  if(['valor','cashbackValor','valorTotal','valorParcela'].includes(key))return value.split('; ').map(v=>/^\d+,\d{2}$/.test(v)?new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(Number(v.replace(',','.'))):v).join('; ');
  return value;
@@ -20,8 +20,8 @@ function Rows({rows}:{rows:any[]}){
  return <div className="table-scroll"><table><thead><tr><th scope="col">Campo</th><th scope="col">No documento</th><th scope="col" className="requested-column">Como deve ser preenchido · GLPI</th><th scope="col">Situação</th></tr></thead><tbody>{rows.map(r=><tr key={r.field} className={'comparison-row comparison-'+r.status}>
   <th scope="row">{r.label}</th>
   <td><strong className={r.status==='different'?'comparison-found-error':''}>{r.found?display(r.field,r.found):r.status==='not_applicable'?'Não consta neste tipo de documento':r.field==='clausulaCessao'?'Não encontrada':notFound(r)}</strong>{r.source&&<small>{r.source}</small>}</td>
-  <td className="requested-column"><strong>{display(r.field,r.expected)}</strong></td>
-  <td><span className={'comparison-state state-'+r.status}>{r.status==="missing"&&r.missingReason==="not_sent"?"Documento não enviado":states[r.status]}</span>{action(r)}</td>
+  <td className="requested-column">{r.expectedEntities?.length>1?r.expectedEntities.map((entity:any)=><div key={entity.cnpj+entity.name}><strong>{entity.cnpj}</strong><small>{entity.name}</small></div>):<strong>{display(r.field,r.expected)}</strong>}</td>
+  <td><span className={'comparison-state state-'+r.status}>{r.expectedEntities?.length>1?"Conferir empresas":r.status==="missing"&&r.missingReason==="awaiting_version"?"Atualização pendente":r.status==="missing"&&r.missingReason==="not_sent"?"Documento não enviado":states[r.status]}</span>{action(r)}</td>
  </tr>)}</tbody></table></div>;
 }
 export function RequestComparison({rows}:{rows:any[]}){

@@ -18,11 +18,7 @@ const args=process.argv.slice(2),option=(name:string)=>{const i=args.indexOf(nam
 const seed=args.includes("--seed"),onlyFormat=option("--format"),limit=Number(option("--limit")||Infinity);
 
 const db=new DatabaseSync(process.env.DATABASE_PATH||"data/kedu.sqlite",{readOnly:true});
-const originals=new Map<string,{name:string;bytes:Buffer}>();
-for(const row of db.prepare("SELECT name,bytes FROM processing_files WHERE length(bytes)>0 ORDER BY created").all() as any[]){
- const bytes=Buffer.from(row.bytes),sha256=createHash("sha256").update(bytes).digest("hex");
- if(!originals.has(sha256))originals.set(sha256,{name:row.name,bytes});
-}
+const originals=db.prepare("SELECT id,name FROM processing_files WHERE length(bytes)>0 ORDER BY created").all() as any[];
 const formatOf=(name:string,bytes:Buffer)=>extname(readingFilename(bytes,name)).slice(1).toLowerCase().replace("jpg","jpeg")||"(sem)";
 const gold:GoldEntry[]=existsSync(goldPath)?JSON.parse(readFileSync(goldPath,"utf8")):[];
 const known=new Map(gold.map(entry=>[entry.sha256,entry]));
@@ -37,7 +33,12 @@ const same=(key:string,a:string[]=[],b:string[]=[])=>a.length===b.length&&a.ever
 type Stats={arquivos:number;conferidos:number;camposEsperados:number;iguais:number;perdidos:number;divergentes:number;novos:number;problemas:number;ms:number;humanFields:number;humanCorrect:number};
 const stats:Record<string,Stats>={},changes:string[]=[];
 let processed=0;
-for(const [sha256,original] of originals){
+const seen=new Set<string>(),timings:any[]=[];
+for(const row of originals){
+ if(processed>=limit)break;
+ const original={name:row.name,bytes:Buffer.from((db.prepare('SELECT bytes FROM processing_files WHERE id=?').get(row.id) as any).bytes)};
+ const sha256=createHash('sha256').update(original.bytes).digest('hex');
+ if(seen.has(sha256))continue;seen.add(sha256);
  const format=formatOf(original.name,original.bytes);
  if(onlyFormat&&format!==onlyFormat)continue;
  const baseline=known.get(sha256),reviewed=human.get(sha256);
@@ -45,6 +46,7 @@ for(const [sha256,original] of originals){
  if(!entry&&!seed)continue;
  if(processed++>=limit)break;
  const started=performance.now(),reading=await readProcessingFile(original.bytes,original.name),ms=performance.now()-started;
+ timings.push({sha256,name:original.name,format,...reading.timings,totalMs:Math.round(ms)});
  const s=stats[format]||={arquivos:0,conferidos:0,camposEsperados:0,iguais:0,perdidos:0,divergentes:0,novos:0,problemas:0,ms:0,humanFields:0,humanCorrect:0};
  s.arquivos++;s.ms+=ms;if(reading.problem)s.problemas++;
  if(!entry){
@@ -75,5 +77,6 @@ if(changes.length)console.log("\nDiferenças em relação à referência:\n"+cha
 else if(!seed)console.log("\nNenhuma diferença em relação à referência.");
 const total=Object.values(stats).reduce((sum,s)=>sum+s.ms,0);
 console.log(`\nTempo total de leitura: ${(total/1000).toFixed(1)} s${seed?` · referência salva em ${goldPath}`:""}`);
+writeFileSync('data/reading-benchmark-last.json',JSON.stringify({created:new Date().toISOString(),stats,files:timings},null,2));
 for(const [format,s] of Object.entries(stats))console.log(`${format}: gabarito humano ${s.humanCorrect}/${s.humanFields} campos corretos (${pct(s.humanCorrect,s.humanFields)}). Sem conferência humana, a comparação mede mudanças, não precisão.`);
 db.close();

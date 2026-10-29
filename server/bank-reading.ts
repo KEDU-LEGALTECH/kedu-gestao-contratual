@@ -5,6 +5,10 @@ const digits=(s:string)=>s.replace(/\D/g,'');
 const documentMask=(d:string)=>d.length===14?`${d.slice(0,2)}.${d.slice(2,5)}.${d.slice(5,8)}/${d.slice(8,12)}-${d.slice(12)}`:`${d.slice(0,3)}.${d.slice(3,6)}.${d.slice(6,9)}-${d.slice(9)}`;
 const validDocument=(value:string)=>{const d=digits(value);return d.length===14?validCnpj(d):d.length===11&&validCpf(d);};
 const holder=(value:string)=>{const v=value.replace(/\s+/g,' ').replace(/[\s,;.:-]+$/,'').trim();return /\p{L}{2}/u.test(v)&&v.length<=120&&!/^(?:cpf|cnpj|conta|ag[êe]ncia|banco)\b/i.test(v)?v:'';};
+export function bankAccountSection(text:string){
+ const match=/(?:^|\n)\s*Dados banc[áa]rios(?:[ \t]+Copiar todos)?[ \t]*:?[ \t]*\n/i.exec(text);if(!match)return '';
+ return text.slice(match.index+match[0].length).split(/\n\s*(?:Chaves Pix|Dados pessoais|Hist[óo]rico|Observa[çc][õo]es|Assinatura)\b/i)[0].split(/\r?\n/).slice(0,30).join('\n');
+}
 
 /**
  * Bank details written as label blocks ("BANCO: X AGÊNCIA: Y CONTA: Z TITULAR DA CONTA: W CNPJ/CPF: N"),
@@ -28,6 +32,15 @@ export function bankFields(source:string):Fields {
   if(number&&validDocument(number))add('documentoTitular',documentMask(digits(number)));
  }
  const lines=text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+ // Screenshots put CNPJ under Dados bancários, separately from the Pix key above it.
+ const section=bankAccountSection(text).split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+ const mixedParties=section.some(line=>/\b(?:pagador|remetente|destinat[áa]rio|benefici[áa]rio|conta de origem)\b/i.test(line));
+ for(let i=0;i<section.length;i++){
+  const document=/^(?:CPF\s*\/\s*CNPJ|CNPJ\s*\/\s*CPF|CNPJ|CPF)\s*:?\s*(.*)$/i.exec(section[i]);
+  if(document&&!mixedParties){const value=document[1]||section[i+1]||'';if(validDocument(value)&&/^[\d.\/\-\s]+$/.test(value))add('documentoTitular',documentMask(digits(value)));}
+  const owner=/^(?:Nome do titular|Titular da conta|Titular)\s*:?\s*(.*)$/i.exec(section[i]);
+  if(owner)add('titularConta',holder(owner[1]||section[i+1]||''));
+ }
  // Payment-account declarations: "Informações do titular da conta / Nome X / CPF Y / Banco 0260 - ... / Agência / Conta".
  const ownerSection=lines.findIndex(l=>/^(?:informa[çc][õo]es do titular|dados do recebedor|dados do titular)\b/i.test(l));
  if(ownerSection>=0){

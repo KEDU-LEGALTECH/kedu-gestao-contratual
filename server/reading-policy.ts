@@ -2,7 +2,8 @@ import {receivedDocumentKind} from '../shared/document-heading.js';
 import {sameRequestedValue} from './request-expectations.js';
 import {editableKeys} from './processing-extract.js';
 import {documentSourceKind} from './document-evidence.js';
-import {distinctiveValue} from './field-plausibility.js';
+import {identityEvidence,type FieldOrigin} from './identity-evidence.js';
+import {verifiedFieldEvidence} from './verified-field-evidence.js';
 /** Keep explicitly labelled fields omitted by the preferred OCR pass, without replacing conflicts. */
 export function complementaryOcrFields(preferred:Record<string,string[]>,other:Record<string,string[]>,confidence:number) {
  if(confidence<85)return {};
@@ -26,7 +27,7 @@ export function interruptedReading<T extends {text:string;needsReview:boolean;wa
  return {...partial,needsReview:true,incomplete:true,warnings:[...(partial.warnings||[]),message]};
 }
 /** Verifies extraction only; never grants legal approval or ignores missing data. */
-export function automaticReadingCheck(reading:{text:string;fields:Record<string,string[]>;method?:string;problem?:string;incomplete?:boolean;formulaCount?:number;verifiedFields?:string[];digitalFields?:Record<string,string[]>},role:string,reference:Record<string,string[]>) {
+export function automaticReadingCheck(reading:{text:string;fields:Record<string,string[]>;method?:string;problem?:string;incomplete?:boolean;confidence?:number;fieldConfidence?:Record<string,number>;formulaCount?:number;verifiedFields?:string[];digitalFields?:Record<string,string[]>;pages?:number;fieldOrigins?:Record<string,FieldOrigin[]>},role:string,reference:Record<string,string[]>) {
  if(!reading.text.trim()||reading.problem||reading.incomplete||['simulation','counterproposal','report'].includes(role))return false;
  if((reading.formulaCount||0)>0)return false;
  if(reading.method==='XLSX')return reading.formulaCount===0;
@@ -38,14 +39,6 @@ export function automaticReadingCheck(reading:{text:string;fields:Record<string,
  const fields=fieldsForRole(role,reading.fields);
  const expected=fieldsForRole(role,Object.fromEntries(Object.entries(reference).filter(([key])=>editableKeys.includes(key)&&!['motivo','matriz'].includes(key))));
  const keys=Object.keys(fields);
- // Independent agreement: a distinctive recognised value identical to the request was read correctly.
- // Values the request does not mention, or that differ from it, still need a person.
- if(/OCR/.test(reading.method||'')&&keys.length&&keys.every(key=>expected[key]?.length===1&&fields[key].length>0&&fields[key].every(value=>distinctiveValue(key,value)&&sameRequestedValue(key,value,expected[key][0]))))return true;
- if(!/OCR/.test(reading.method||'')||!reading.verifiedFields?.length)return false;
- const addressParts=['rua','numero','bairro'];
- const addressChecked=fields.endereco?.length===1&&expected.endereco?.length===1&&sameRequestedValue('endereco',fields.endereco[0],expected.endereco[0])&&addressParts.every(key=>fields[key]?.length===1&&reading.verifiedFields!.includes(key))&&sameRequestedValue('endereco',fields.endereco[0],fields.rua[0]+', '+fields.numero[0]+', '+fields.bairro[0]);
- // Validate the fields actually supplied by this attachment. Missing requested
- // fields remain separate blocking issues in the demand comparison.
- if(!keys.length||!Object.keys(expected).length)return false;
- return keys.every(key=>reading.verifiedFields!.includes(key)&&fields[key].length===1&&((addressChecked&&addressParts.includes(key))||(expected[key]?.length===1&&sameRequestedValue(key,fields[key][0],expected[key][0]))));
+ // Matching GLPI alone never confirms names, addresses, city, CEP or accounts.
+ return /OCR/.test(reading.method||'')&&keys.length>0&&keys.every(key=>fields[key].length===1&&(verifiedFieldEvidence(reading,key,fields[key][0],role)||(expected[key]?.length===1&&sameRequestedValue(key,fields[key][0],expected[key][0])&&!!identityEvidence(reading,key,fields[key][0],role))));
 }

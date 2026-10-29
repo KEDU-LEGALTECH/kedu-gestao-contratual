@@ -15,13 +15,13 @@ export function canonicalFieldValue(key:string,value:string) {
  }
  if(['inicio','fim','dataFormalizacao','dataAssinaturaMatriz'].includes(key)){const m=/^(\d{2})\/(\d{2})\/(\d{4})$/.exec(v);if(m)return `${m[3]}-${m[2]}-${m[1]}`;}
  // Legal-form suffixes, quotes and punctuation do not identify a different company.
- if(['razaoSocial','nomeFantasia','titularConta'].includes(key))v=v.replace(/,\s*nome fantasia\b.*$/,'').replace(/["'“”‘’.,]/g,' ').replace(/\s+-\s+/g,' ').replace(/(?:\s+(?:ltda|ltd|me|epp|eireli|s\/?a))+\s*$/,'').replace(/\s+/g,' ').trim();
+ if(['razaoSocial','nomeFantasia','titularConta'].includes(key))v=v.replace(/,\s*nome fantasia\b.*$/,'').replace(/["'“”‘’„‟‚‛«»‹›`´]/g,'').replace(/[.,]/g,' ').replace(/\s+-\s+/g,' ').replace(/\s+/g,' ').trim().replace(/(?:\s+(?:ltda|ltd|me|epp|eireli|s\/?a))+\s*$/,'').trim();
  if(['endereco','rua'].includes(key))v=v.replace(/^av(?:enida)?\.?\s+/,'avenida ').replace(/^r(?:ua)?\.?\s+/,'rua ').replace(/\s+[\-\u2010-\u2015]\s+|[,]+/g,' ').replace(/\s+/g,' ').trim();
  return v;
 }
 // Street and number of a free-text address; neighbourhood, city and state vary between sources.
 function addressParts(value:string) {
- const v=value.normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().replace(/\s+/g,' ').trim();
+ const v=value.normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().replace(/\b(?:num|numero)\.?\s*(?=\d)/g,'nº ').replace(/\s+/g,' ').trim();
  const m=/^((?:rua|r|avenida|av|travessa|tv|rodovia|estrada|alameda|al|praca|pc|quadra|largo)\.?\s+[^,:\-–—\d]+)(?:[,\s]*(?:-\s*)?(?:n[o°º]?\.?\s*)?(\d{1,6}[a-z]?|s\/?n)\b)?/.exec(v);
  if(!m)return null;
  const street=m[1].replace(/\s+bairro\b.*$/,'').replace(/[\s,]+(?:n[o°º]?\.?)?\s*$/,'').replace(/^(?:r|rua)\.?\s+/,'rua ').replace(/^(?:av|avenida)\.?\s+/,'avenida ').replace(/^(?:tv|travessa)\.?\s+/,'travessa ').replace(/^(?:al|alameda)\.?\s+/,'alameda ').replace(/^(?:pc|praca)\.?\s+/,'praca ').replace(/\b(?:d[aeo]s?)\b/g,' ').replace(/\s+/g,' ').trim();

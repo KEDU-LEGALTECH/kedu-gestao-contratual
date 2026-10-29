@@ -44,7 +44,7 @@ export function registerProcessingRoutes(app:Express,process:(did:string,userId?
  });
  app.post('/api/demands/:id/processing/files/:file/region',async(req:any,res)=>{
   const {demand:d}=get(req,true);
-  const body=z.object({revision:z.number().int(),region:z.object({page:z.number().int().min(1).max(30),x:z.number().min(0).max(1),y:z.number().min(0).max(1),width:z.number().min(.02).max(1),height:z.number().min(.02).max(1),rotation:z.union([z.literal(0),z.literal(90),z.literal(180),z.literal(270)])})}).parse(req.body);
+  const body=z.object({revision:z.number().int(),region:z.object({page:z.number().int().min(1).max(200),x:z.number().min(0).max(1),y:z.number().min(0).max(1),width:z.number().min(.02).max(1),height:z.number().min(.02).max(1),rotation:z.union([z.literal(0),z.literal(90),z.literal(180),z.literal(270)])})}).parse(req.body);
   const current=processingView(d.id),file=one('SELECT * FROM processing_files WHERE id=? AND demand_id=?',req.params.file,d.id);
   if(!file?.bytes?.length||!current?.files?.some((f:any)=>f.id===file.id))throw Object.assign(Error('Arquivo não disponível nesta versão.'),{status:404});
   if(current.revision!==body.revision||current.status==='Analisando')throw Object.assign(Error('A demanda mudou. Atualize a página.'),{status:409});

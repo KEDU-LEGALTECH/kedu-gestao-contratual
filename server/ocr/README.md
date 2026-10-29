@@ -51,3 +51,15 @@ Leituras concluídas ficam em `data/reading-cache.sqlite` e são reaproveitadas 
 - `npx tsx server/reading-improvement-audit.ts` audita campos e causas sem modificar a base.
 - `npx tsx server/recover-reading.ts --apply` cria backup verificado, tenta recuperar PDFs pela camada digital e identifica representantes em cláusulas existentes. `--ocr-partial` relê PDFs parciais pelo novo leitor. Leituras conferidas por humanos não são substituídas; perda de campos ou edição concorrente impede a substituição automática. O relatório fica em `data/reading-recovery-report.json`.
 - Consultas cadastrais externas e modelos de visão em nuvem não foram adicionados. Os documentos e o gabarito permanecem locais.
+
+### Política vigente em 28/10/2026
+
+Substitui os limites de 20 arquivos/2 minutos acima: reciclagem após 5 arquivos ou RSS observado de 256 MiB; encerramento ocioso em 15 s; novas leituras pesadas adiadas abaixo de 512 MiB livres. Uma trava de arquivo compartilhada serializa API e ferramentas locais. Mudança de versão não agenda releitura de extrações saudáveis. Recuperação automática limita-se a falha, parcial ou ausência de campos, preservando resultados anteriores em falhas transitórias.
+
+O relatório de benchmark registra queueMs, readMs, shutdownMs e totalMs por arquivo. Em OCR, coincidência com GLPI só permite confirmação automática de CPF/CNPJ válido com papel explícito, página e trecho do original. Outros campos OCR continuam sujeitos à conferência humana; a camada digital e revisões humanas mantêm sua própria evidência.
+
+### Recuperação por campo e PDFs longos
+
+PDFs aceitam até 200 páginas; cada tentativa conclui páginas com orçamento útil (35 s; até 70 s para blocos cadastrais), respeitando o prazo global. Páginas concluídas são reutilizadas. A fila permite continuar enquanto há progresso real e esgota após três tentativas consecutivas sem progresso. Contagem de páginas, posição e trecho são usados na evidência individual; concordância de OCR sem rótulo/associação suficiente não libera o campo.
+
+Cartões CNPJ em PDF podem receber OCR de faixas ampliadas, com confiança por campo quando há leituras concordantes. Um arquivo completo não continua em revisão genérica quando todos os campos solicitados que fornece já têm comprovação; parcialidade e decisões permanecem separadas. Medição operacional e causas restantes: data/resultado-conferencia-2026-10-28.md.

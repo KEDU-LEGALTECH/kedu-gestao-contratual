@@ -7,7 +7,7 @@ export function extractContractParties(text:string):ContractParty[] {
  const declarations=[...text.matchAll(pattern)],parties:ContractParty[]=[];
  for(let i=0;i<declarations.length;i++){
   const match=declarations[i],start=match.index!+match[0].length;
-  const block=text.slice(start,Math.min(declarations[i+1]?.index??text.length,start+1800));
+  const block=text.slice(start,Math.min(declarations[i+1]?.index??text.length,start+1800)).split(/\n\s*(?:DADOS (?:DE PAGAMENTO|BANC[ÁA]RIOS)|OBSERVA[ÇC][ÕO]ES|CL[ÁA]USULA|OBJETO DO CONTRATO)\s*[:\-]/i)[0];
   const ids=[...block.matchAll(/\bCNPJ(?:\/(?:MF|ME))?\s*(?:sob\s*(?:o\s*)?)?(?:n[º°o.]?\s*)?[:\s]*(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})(?!\d)/gi)].map(m=>mask(m[1]));
   const unique=[...new Set(ids)];if(unique.length!==1)continue;
   const named=/(?:^|\n)\s*(?:NOME|RAZ[ÃA]O SOCIAL|NOME EMPRESARIAL)\s*:\s*([^\n]+)/i.exec(block)?.[1];

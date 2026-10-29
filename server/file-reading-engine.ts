@@ -13,12 +13,13 @@ import {extractContractParties} from './contract-parties.js';
 import { preflight } from "./documents.js";
 import { readerVersion,validReadingRegion,cachedPdfPage,storePdfPage,type Reading,type ReadingRegion } from "./file-reading.js";
 import { prepareImage } from "./image-input.js";
-import {needsPdfOcr} from './pdf-reading-policy.js';
+import {needsPdfOcr,pdfPageBudget} from './pdf-reading-policy.js';
 import {recognizeWithPaddle,combineOcrFields,paddleConfigured,closePaddle} from './paddle-ocr.js';
 import {withinBudget} from './ocr-budget.js';
 import {readSpreadsheet} from './xlsx-reading.js';
+import {captureFieldOrigins,type FieldOrigin} from './identity-evidence.js';
 const require=createRequire(import.meta.url);
-const maxPages=30,maxText=500000;
+const maxPages=30,maxPdfPages=200,maxText=500000;
 function result(text:string,method:string,ocr=false,confidence?:number,pages=1):Reading {
  text=text.normalize("NFC").replace(/\x00/g,"");
  if(text.length>maxText)throw Error("Documento excede 500 mil caracteres; separe em partes.");
@@ -78,6 +79,22 @@ async function registrationRegions(worker:Awaited<ReturnType<typeof ocrSession>>
  }
  return {fields,verifiedFields,text:transcripts.join('\n\n')};
 }
+async function registrationPdfBlocks(worker:Awaited<ReturnType<typeof ocrSession>>,png:Buffer){
+ const meta=await sharp(png).metadata(),found:LocatedField[]=[],texts:string[]=[];
+ await worker.setParameters({tessedit_pageseg_mode:PSM.SINGLE_BLOCK});
+ try{for(const fraction of [.10,.24,.38,.52]){
+  const top=Math.floor(meta.height!*fraction),height=Math.min(meta.height!-top,Math.floor(meta.height!*.25));
+  const crop=await sharp(png).extract({left:Math.floor(meta.width!*.02),top,width:Math.floor(meta.width!*.96),height}).resize({width:3000}).grayscale().normalize().png().toBuffer();
+  const {data}=await worker.recognize(crop,{}, {text:true,blocks:true});texts.push(data.text);
+  found.push(...registrationFieldsFromLines(data.blocks?.flatMap(b=>b.paragraphs.flatMap(p=>p.lines))||[]));
+  for(const m of data.text.matchAll(/\b\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}\b/g))if(validCnpj(m[0]))found.push({key:'cnpj',value:m[0],confidence:data.confidence,excerpt:m[0]});
+ }}finally{await worker.setParameters({tessedit_pageseg_mode:PSM.AUTO});}
+ const fields:Record<string,string[]>={},verifiedFields:string[]=[],fieldConfidence:Record<string,number>={};
+ for(const f of found.filter(f=>f.confidence>=80))mergeExtractedFields(fields,{[f.key]:[f.value]});
+ for(const [key,values] of Object.entries(fields))if(values.length===1&&found.filter(f=>f.key===key&&f.confidence>=85&&normalizeValue(key,f.value)===normalizeValue(key,values[0])).length>=2)verifiedFields.push(key);
+ for(const key of verifiedFields)fieldConfidence[key]=found.filter(f=>f.key===key&&f.confidence>=85).map(f=>f.confidence).sort((a,b)=>b-a)[1];
+ return {fields,verifiedFields,fieldConfidence,text:texts.join('\n\n')};
+}
 async function enterpriseNameRegion(worker:Awaited<ReturnType<typeof ocrSession>>,bytes:Buffer){
  const png=await sharp(bytes,{limitInputPixels:24000000}).rotate().flatten({background:'white'}).resize({width:2800}).png().toBuffer();
  const m=await sharp(png).metadata();await worker.setParameters({tessedit_pageseg_mode:PSM.SPARSE_TEXT});
@@ -128,21 +145,23 @@ async function image(bytes:Buffer,name='') {
  if(paddleUsed)reading.method+=' + PaddleOCR / OpenCV';
  return {...reading,verifiedFields,ocrEngine:paddleUsed?'Tesseract + PaddleOCR PP-OCRv5':'Tesseract',preprocessing:[...operations],warnings:paddleConfigured()&&!paddleUsed?['PaddleOCR indisponível nesta tentativa; leitura alternativa preservada.']:[]};
 }
-async function pdf(bytes:Buffer,progress?:(reading:Reading)=>void,nativeOnly=false,layerOnly=false) {
+async function pdf(bytes:Buffer,progress?:(reading:Reading)=>void,nativeOnly=false,layerOnly=false,name='') {
  const {getDocument,OPS}=await import("pdfjs-dist/legacy/build/pdf.mjs");
  const root=dirname(require.resolve("pdfjs-dist/package.json"));
  const loading=getDocument({data:new Uint8Array(bytes),useSystemFonts:false,standardFontDataUrl:join(root,"standard_fonts")+"/",cMapUrl:join(root,"cmaps")+"/",cMapPacked:true,wasmUrl:join(root,"wasm")+"/",verbosity:0});
  let document:any,worker:Awaited<ReturnType<typeof ocrSession>>|undefined;
  try {
   document=await loading.promise;
-  if(document.numPages>maxPages)throw Error("PDF contém mais de 30 páginas. Separe o arquivo; nenhuma página foi ignorada na aprovação.");
+  if(document.numPages>maxPdfPages)throw Error("PDF contém mais de 200 páginas. Separe o arquivo; nenhuma página foi ignorada na aprovação.");
   const texts:string[]=[],digitalTexts:string[]=[],scores:number[]=[],verified:string[][]=[];
   const tableFields:Record<string,string[]>={},ocrFields:Record<string,string[]>={},digitalFields:Record<string,string[]>={};
+  const fieldOrigins:Record<string,FieldOrigin[]>={},fieldConfidence:Record<string,number>={};
+  const completedPages=new Set<number>();
   const pendingPages:number[]=[],unreadPages:number[]=[],warnings:string[]=[],complementary=new Set<number>();let usedOcr=false,paddleUsed=false;
   const originalHash=createHash('sha256').update(bytes).digest('hex');
   const snapshot=(partial=false):Reading=>{
    const reading=result(texts.join('\n\n'),usedOcr?'PDF com OCR':'Texto do PDF',usedOcr,scores.length?Math.min(...scores):undefined,document.numPages);
-   return {...reading,fields:mergeExtractedFields(mergeExtractedFields(reading.fields,tableFields),ocrFields),tableFields,digitalFields:structuredClone(digitalFields),verifiedFields:document.numPages===1&&verified.length===1?verified[0]:[],incomplete:partial||unreadPages.length>0,needsReview:partial||usedOcr||unreadPages.length>0,warnings:[...warnings,...(unreadPages.length?['Páginas com leitura inconclusiva: '+unreadPages.join(', ')+'.']:[])],ocrEngine:usedOcr?(paddleUsed?'PaddleOCR / OpenCV (Tesseract quando necessário)':'Tesseract'):undefined};
+   return {...reading,fields:mergeExtractedFields(mergeExtractedFields(reading.fields,tableFields),ocrFields),completedPages:[...completedPages].sort((a,b)=>a-b),pendingPages:Array.from({length:document.numPages},(_,i)=>i+1).filter(n=>!completedPages.has(n)),fieldOrigins:structuredClone(fieldOrigins),fieldConfidence:{...fieldConfidence},tableFields,digitalFields:structuredClone(digitalFields),verifiedFields:document.numPages===1&&verified.length===1?verified[0]:[],incomplete:partial||unreadPages.length>0,needsReview:partial||usedOcr||unreadPages.length>0,warnings:[...warnings,...(unreadPages.length?['Páginas com leitura inconclusiva: '+unreadPages.join(', ')+'.']:[])],ocrEngine:usedOcr?(paddleUsed?'PaddleOCR / OpenCV (Tesseract quando necessário)':'Tesseract'):undefined};
   };
   // Read EVERY digital page before spending the OCR budget. A scan on page 1
   // must not hide the selectable fields on later pages if the deadline expires.
@@ -156,6 +175,7 @@ async function pdf(bytes:Buffer,progress?:(reading:Reading)=>void,nativeOnly=fal
    mergeExtractedFields(digitalFields,fieldsFromLines(text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean)));
    mergeExtractedFields(digitalFields,tableFields);
    for(const party of extractContractParties(text))mergeExtractedFields(digitalFields,{cnpj:[party.cnpj],razaoSocial:[party.name]});
+   captureFieldOrigins(fieldOrigins,digitalFields,text,n);
    const operators=await page.getOperatorList();
    const hasImage=operators.fnArray.some((op:number)=>[OPS.paintImageXObject,OPS.paintInlineImageXObject,OPS.paintImageXObjectRepeat,OPS.paintInlineImageXObjectGroup,OPS.paintImageMaskXObject,OPS.paintImageMaskXObjectRepeat,OPS.paintImageMaskXObjectGroup].includes(op));
    const basePage=page.getViewport({scale:1});
@@ -169,6 +189,7 @@ async function pdf(bytes:Buffer,progress?:(reading:Reading)=>void,nativeOnly=fal
      if(text.replace(/\s+/g,' ').trim().length>=600&&!/[� ]/.test(text))complementary.add(n);
     }
    }
+   if(!needsOcr)completedPages.add(n);
    page.cleanup();
    if(texts.join('\n').length>maxText)throw Error('PDF excede o limite de texto; separe em partes.');
    progress?.({...snapshot(true),warnings:[`Camada digital: ${n} de ${document.numPages} páginas. OCR ainda não concluído.`]});
@@ -178,17 +199,20 @@ async function pdf(bytes:Buffer,progress?:(reading:Reading)=>void,nativeOnly=fal
   const required=pendingPages.filter(n=>!complementary.has(n)).length;
   const deadline=Date.now()+140000;let skipComplementary=false;
   for(let index=0;index<pendingPages.length;index++){
-   const n=pendingPages[index],budget=Math.floor(Math.min(35000,(deadline-Date.now())/Math.max(1,(index<required?required:pendingPages.length)-index)));
+   const n=pendingPages[index],registrationPage=/cart[aã]o|cnpj/i.test(name)||/cadastro nacional|comprovante de inscri|situa[çc][ãa]o cadastral/i.test(digitalTexts[pendingPages[index]-1]||''),budget=pdfPageBudget(deadline-Date.now(),registrationPage);
    const cached=cachedPdfPage(originalHash,n);
    if(cached&&!cached.problem&&!cached.incomplete){
+    Object.assign(fieldConfidence,cached.fieldConfidence||{});
+    captureFieldOrigins(fieldOrigins,cached.fields,cached.text,n);
     texts[n-1]+='\n'+cached.text;mergeExtractedFields(ocrFields,cached.fields);verified.push(cached.verifiedFields||[]);usedOcr=true;
     if(cached.confidence!==undefined)scores.push(cached.confidence);
     if(cached.ocrEngine?.includes('Paddle'))paddleUsed=true;
-    progress?.(snapshot(true));continue;
+    completedPages.add(n);progress?.(snapshot(true));continue;
    }
    if(complementary.has(n)&&skipComplementary){warnings.push(`Página ${n}: texto digital mantido; OCR complementar não executado.`);continue;}
    if(budget<2000){if(complementary.has(n))warnings.push(`Página ${n}: texto digital mantido; OCR complementar não executado por tempo.`);else unreadPages.push(n);continue;}
    const page=await document.getPage(n);
+   const pageStarted=Date.now();let blockFields:Record<string,string[]>={};
    let active=true;
    try {
     await withinBudget(async()=>{
@@ -215,7 +239,18 @@ async function pdf(bytes:Buffer,progress?:(reading:Reading)=>void,nativeOnly=fal
      const combined=combineOcrFields(fieldsFromLines(recognition.data.text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean)),recognition.data.verifiedFields,paddle);
      mergeExtractedFields(ocrFields,combined.fields);recognition.data.text+='\n'+combined.text;recognition.data.verifiedFields=combined.verifiedFields;paddleUsed=true;
     }
-    if(recognition.data.text.trim())storePdfPage(originalHash,n,{...result(recognition.data.text,'OCR de página PDF',true,recognition.data.confidence),verifiedFields:recognition.data.verifiedFields,ocrEngine:paddle?'PaddleOCR / OpenCV':'Tesseract'});
+    if(/cadastro nacional|comprovante de inscri|situa[çc][ãa]o cadastral/i.test(digitalTexts[n-1]+' '+recognition.data.text)&&!fieldsFromLines(recognition.data.text.split(/\r?\n/)).cnpj?.some(validCnpj)&&budget-(Date.now()-pageStarted)>12000){
+     worker??=await ocrSession();const blocks=await registrationPdfBlocks(worker,png);
+     if(!active)throw Error('Leitura cancelada.');Object.assign(fieldConfidence,blocks.fieldConfidence);blockFields=blocks.fields;mergeExtractedFields(ocrFields,blockFields);
+     recognition.data.text+='\n\nBLOCOS DO CARTAO CNPJ\n'+blocks.text;
+     recognition.data.verifiedFields=[...new Set([...recognition.data.verifiedFields,...blocks.verifiedFields])];
+     captureFieldOrigins(fieldOrigins,blockFields,recognition.data.text,n);
+    }
+    if(recognition.data.text.trim()){
+     captureFieldOrigins(fieldOrigins,fieldsFromLines(recognition.data.text.split(/\r?\n/)),recognition.data.text,n);
+     completedPages.add(n);
+     storePdfPage(originalHash,n,{...result(recognition.data.text,'OCR de página PDF',true,recognition.data.confidence),fields:mergeExtractedFields(fieldsFromLines(recognition.data.text.split(/\r?\n/)),blockFields),fieldConfidence:{...fieldConfidence},verifiedFields:recognition.data.verifiedFields,ocrEngine:paddle?'PaddleOCR / OpenCV':'Tesseract'});
+    }
     verified.push(recognition.data.verifiedFields);
     // Keep digital text when OCR cannot read a sparse page; an unreadable scanned page blocks.
     if(recognition.data.text.trim()){
@@ -292,7 +327,7 @@ export async function readDocumentRegion(bytes:Buffer,name:string,region:Reading
   const loading=getDocument({data:new Uint8Array(bytes),useSystemFonts:false,standardFontDataUrl:join(root,'standard_fonts')+'/',cMapUrl:join(root,'cmaps')+'/',cMapPacked:true,wasmUrl:join(root,'wasm')+'/',verbosity:0});
   try {
    const document=await loading.promise;
-   if(document.numPages>30||region.page>document.numPages)throw Error('Página indisponível. Use um PDF com até 30 páginas.');
+   if(document.numPages>maxPdfPages||region.page>document.numPages)throw Error('Página indisponível. Use um PDF com até 200 páginas.');
    const page=await document.getPage(region.page),base=page.getViewport({scale:1});
    const viewport=page.getViewport({scale:Math.min(3,3200/Math.max(base.width,base.height))});
    const canvas=createCanvas(Math.ceil(viewport.width),Math.ceil(viewport.height));
@@ -333,7 +368,7 @@ export async function readDocument(bytes:Buffer,name:string,progress?:(reading:R
  }
  if(extension===".pdf") {
   if(bytes.subarray(0,5).toString()!=="%PDF-")throw Error("O conteúdo recebido não corresponde a um PDF válido.");
-  return pdf(bytes,progress);
+  return pdf(bytes,progress,false,false,name);
  }
  if(/\.(png|jpe?g|webp|tiff?|bmp|gif)$/i.test(extension))return image(bytes,name);
  if([".odt",".xlsx",".pptx"].includes(extension))return office(bytes,name,progress);

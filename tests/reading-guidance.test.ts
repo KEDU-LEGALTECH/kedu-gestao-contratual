@@ -20,7 +20,7 @@ test('orientações distinguem valores ambíguos, fórmulas e leitura incompleta
 test('regiões inválidas e formatos incompatíveis não acionam OCR',async()=>{
  const valid={page:1,x:0,y:0,width:1,height:1,rotation:0};
  assert.equal(validReadingRegion(valid),true);
- for(const region of [{...valid,x:.8},{...valid,page:31},{...valid,rotation:45},{...valid,width:NaN},{...valid,height:0}])assert.equal(validReadingRegion(region),false);
+ for(const region of [{...valid,x:.8},{...valid,page:201},{...valid,rotation:45},{...valid,width:NaN},{...valid,height:0}])assert.equal(validReadingRegion(region),false);
  assert.match((await readProcessingFile(Buffer.from('doc'),'arquivo.docx',valid)).problem,/região válida/);
 });
 test('OCR de região lê imagem e página PDF sem modificar o original',async()=>{

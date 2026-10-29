@@ -64,12 +64,19 @@ test('razão social: sufixo societário, pontuação e aspas não indicam outra 
  assert.equal(sameRequestedValue('razaoSocial','SINERGYTECH PARTICIPAÇÕES LTDA.','SINERGYTECH PARTICIPACOES LTDA'),true);
  assert.equal(sameRequestedValue('razaoSocial','CREDENCIAL EVENTOS LTDA - ME','CREDENCIAL EVENTOS LTD'),true);
  assert.equal(sameRequestedValue('razaoSocial','CENTRO EDUCACIONAL "RENASCER"','CENTRO EDUCACIONAL RENASCER'),true);
+ for(const key of ['razaoSocial','nomeFantasia','titularConta']){
+  for(const name of ['ESCOLA RENASCER LTDA.','ESCOLA, RENASCER LTDA','"ESCOLA RENASCER LTDA','«ESCOLA RENASCER» LTDA','ESCOLA RENASCER LTDA.”'])assert.equal(sameRequestedValue(key,name,'ESCOLA RENASCER LTDA'),true,name);
+  assert.equal(sameRequestedValue(key,'ESCOLA D’ÁGUA LTDA','ESCOLA DAGUA LTDA'),true);
+  assert.equal(sameRequestedValue(key,'ESCOLA RENASCER 1 LTDA','ESCOLA RENASCER 2 LTDA'),false);
+ }
+ assert.equal(sameRequestedValue('razaoSocial','CENTRO EDUCACIONAL JOSE DE ALENCAR LTDA','ORGANIZAÇÃO EDUCACIONAL JOSÉ DE ALENCAR LTDA - COLÉGIO J.A. BABY'),false);
+ assert.equal(sameRequestedValue('cnpj','07.710.169/0001-84','10.344.629/0001-02'),false);
  assert.equal(sameRequestedValue('razaoSocial','RESTAURANTE SIRIGADO DO PEDRO','SIRIGADO DO PEDRO LTDA'),false);
  assert.equal(sameRequestedValue('agencia','01887','1887'),true);
 });
 
-test('valor lido por OCR idêntico ao pedido valida a leitura do arquivo; valor diferente não',()=>{
- const reading={text:'CNPJ 05.756.752/0001-09',method:'OCR de imagem',fields:{cnpj:['05.756.752/0001-09']}};
+test('CNPJ válido com rótulo, página e valor idêntico ao pedido valida a leitura; valor diferente não',()=>{
+ const reading={text:'CNPJ 05.756.752/0001-09',pages:1,method:'OCR de imagem',fields:{cnpj:['05.756.752/0001-09']}};
  assert.equal(automaticReadingCheck(reading,'registration',{cnpj:['05.756.752/0001-09']}),true);
  assert.equal(automaticReadingCheck(reading,'registration',{cnpj:['41.990.137/0001-18']}),false);
  assert.equal(automaticReadingCheck({...reading,fields:{cnpj:['05.756.752/0001-09'],cidade:['CALDAS NOVAS']}},'registration',{cnpj:['05.756.752/0001-09']}),false);
