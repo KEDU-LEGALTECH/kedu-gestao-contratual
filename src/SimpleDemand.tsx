@@ -6,6 +6,7 @@ import { SignedHistoryPanel } from "./GovernancePanel";
 import { fieldLabels } from "../shared/official-fields";
 import { ReceivedDocuments } from "./ReceivedDocuments";
 import { RequestComparison } from "./RequestComparison";
+import { ProcessingProgress } from './ProcessingProgress';
 const baseLabels:Record<string,string>={...fieldLabels,modalidade:"Modalidade de garantia",endereco:"Endereço",matriz:"Contrato matriz",motivo:"Descrição da solicitação"};
 const dateKeys=["inicio","fim","dataAssinaturaMatriz","dataFormalizacao"];
 export function SimpleDemand({detail,data,can,api,action,busy,onBack,onAdvanced,onModels}:any) {
@@ -40,11 +41,12 @@ export function SimpleDemand({detail,data,can,api,action,busy,onBack,onAdvanced,
    {message && <p role="alert" className="inline-warning">{message}</p>}
   </section>
   <nav className="review-jump-links" aria-label="Ir para a conferência"><a href="#documento-recebido" className="secondary">Ver documento preenchido</a>{!!job?.comparisons?.length && <a href="#conferencia-preenchimento" className="secondary">Ver preenchimento e correções</a>}</nav>
-  {!analyzing && can("files") && can("bank") && <RequestComparison rows={job?.comparisons}/>}
+  {detail.glpi_id&&<ProcessingProgress demands={[{id:detail.id}]} api={api} allowed={!!can('files')&&!!can('bank')} detail/>}
+  {!analyzing && can("files") && can("bank") && <RequestComparison did={detail.id} rows={job?.comparisons}/>}
   {job && can("files") && can("bank") && <ReceivedDocuments correctField={can("write")?(fileId:string,field:string,value:string,evidence:string,revision:number)=>action(()=>api(`/demands/${detail.id}/processing/files/${fileId}/fields/${field}/correct-reading`,{revision,value,evidence,confirmed:true}),"Transcrição conferida e gabarito registrados."):undefined} api={can("write")?api:undefined} confirmField={can("write")?(fileId:string,field:string,value:string,revision:number)=>action(()=>api(`/demands/${detail.id}/processing/files/${fileId}/fields/${field}/confirm`,{revision,value,confirmed:true}),"Leitura do campo registrada; pendências reavaliadas."):undefined} did={detail.id} files={job.files||[]} issues={issues} revision={job.revision} busy={busy} confirm={can("write")?(fileId:string,revision:number)=>action(()=>api(`/demands/${detail.id}/processing/files/${fileId}/confirm`,{revision,confirmed:true}),"Conferência da leitura registrada; pendências reavaliadas."):undefined}/>}
   {!analyzing && !!issues.length && <section className="panel simple-corrections">
    <h2>Leituras e pendências para resolver</h2>
-   <ul className="simple-issues">{issues.filter((i:any)=>!allKeys.includes(i.field)||!can("write")).map((i:any,n:number)=><li key={i.field+n}><strong>{i.label?.startsWith("file:")?i.source||"Documento":i.label}</strong><p>{i.message}</p>{i.found && <small>Encontrado: {i.found}</small>}{i.expected && <small>Solicitado: {i.expected}</small>}</li>)}</ul>
+   <ul className="simple-issues">{issues.filter((i:any)=>!allKeys.includes(i.field)||!can("write")).map((i:any,n:number)=><li key={i.field+n}><strong>{i.label?.startsWith("file:")?i.source||"Documento":i.label}</strong><p>{i.message}</p>{i.pendingReason&&<p><strong>{i.pendingReason.label} · Próxima ação:</strong> {i.pendingReason.action}</p>}{i.found && <small>Encontrado: {i.found}</small>}{i.expected && <small>Solicitado: {i.expected}</small>}</li>)}</ul>
    {filesProblem && !manual && allKeys.length>keys.length && <p className="muted">Confira primeiro o texto dos anexos. Se a leitura ficou inconclusiva, envie uma cópia mais legível para identificar os dados. <button type="button" className="text-button" onClick={()=>setManual(true)}>Ou completar os dados manualmente</button></p>}
    {can("write") && can("files") && can("bank") && <form key={job.revision} onSubmit={e=>{
     e.preventDefault();const f=new FormData(e.currentTarget),values:Record<string,string>={};

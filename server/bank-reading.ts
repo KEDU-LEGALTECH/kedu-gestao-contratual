@@ -48,6 +48,22 @@ export function bankFields(source:string):Fields {
  const result:Fields={};
  const add=(key:string,value:string|undefined)=>{const v=value?.replace(/\s+/g,' ').trim();if(v&&!/preencher|_{3,}|\{\{/i.test(v)&&!(result[key]||=[]).includes(v))result[key].push(v);};
  const text=source.replace(/[ \t]+/g,' ');
+ // Caixa's company-account PDF prints the actual account in the navigation
+ // header. The Pix payload also includes branch/operation digits: never parse
+ // that combined value as the account, or use the greeting as its holder.
+ if(/https:\/\/gerenciador\.caixa\.gov\.br\/empresa\//i.test(text)&&/Dados do Recebedor/i.test(text)&&!/\bPagador\b/i.test(text)){
+  const agencies=[...text.matchAll(/(?:^|\n)\s*Ag[êe]ncia\s*:\s*(\d{1,6})(?!\d)/gi)].map(m=>m[1]);
+  const accounts=[...text.matchAll(/(?:^|\n)\s*Conta\s*:\s*(\d{1,15}-[\dXx])(?![\d-])/gi)].map(m=>m[1]);
+  if(agencies.length&&accounts.length&&new Set(agencies).size===1&&new Set(accounts).size===1){
+   add('banco','Caixa Econômica Federal');add('agencia',agencies[0]);add('conta',accounts[0]);
+  }
+ }
+ // Cora business-account headers identify the institution explicitly. Keep the
+ // printed company display name separate from legal holder identification.
+ if(!/\b(?:pagador|recebedor|remetente|destinat[áa]rio)\b/i.test(text)&&/(?:^|\n)\s*Cora\s+SCF[Iil]\s*-\s*403\s*(?=\n|$)/i.test(text)){
+  const pairs=[...text.matchAll(/\bAg\.?\s*(\d{1,6}(?:-[\dXx])?)\s*[-·•|]?\s*c\/c\s*(\d{1,15}-[\dXx])(?!\d)/gi)];
+  if(pairs.length&&new Set(pairs.map(m=>m[1]+'|'+m[2])).size===1){add('banco','Cora');add('agencia',pairs[0][1]);add('conta',pairs[0][2]);}
+ }
  // Inline label block, possibly inside a contract paragraph.
  for(const block of text.matchAll(/\bBANCO\s*:/gi)){
   const part=text.slice(block.index,block.index+420).split(/\n\s*\n/)[0];
@@ -62,6 +78,9 @@ export function bankFields(source:string):Fields {
   if(number&&validDocument(number))add('documentoTitular',documentMask(digits(number)));
  }
  const lines=text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+ // A statement's repeated watermark can lose spaces in OCR. Require a statement,
+ // agency/account labels and the full bank name; "Brasil" alone is not evidence.
+ if(/extrato de conta corrente/i.test(text)&&/ag[êe]ncia\s*:?\s*\d/i.test(text)&&/conta\s*:?\s*\d/i.test(text)&&/BANCODOBRASIL|BANCO DO BRASIL/i.test(text))add('banco','Banco do Brasil');
  // Mobile business-account headers: an explicit bank brand and one Ag/Cc pair.
  // Do not adopt the greeting/user name as account holder, or mix transfer parties.
  if(!/\b(?:pagador|recebedor|remetente|destinat[áa]rio)\b/i.test(text)){

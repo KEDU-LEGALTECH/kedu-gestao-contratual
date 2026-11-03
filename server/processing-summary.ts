@@ -1,4 +1,4 @@
-type SummaryDemand={id:string;glpi_id?:string;school:string;type:string;status:string;issues:{label?:string;source?:string;message:string;found?:string;expected?:string}[]};
+type SummaryDemand={id:string;glpi_id?:string;school:string;type:string;status:string;issues:{label?:string;source?:string;message:string;found?:string;expected?:string;pendingReason?:{code:string;label:string;action:string}}[]};
 const line=(value:unknown)=>String(value??'').replace(/[\r\n]+/g,' ').replace(/([\\`*_[\]<>#])/g,'\\$1');
 export function processingSummaryReport(stage:string,demands:SummaryDemand[],date=new Date()) {
  const analysis=stage==='Aguardando análise';
@@ -12,6 +12,7 @@ export function processingSummaryReport(stage:string,demands:SummaryDemand[],dat
   lines.push(`## ${line(demand.school)} — GLPI #${line(demand.glpi_id||'não vinculado')}`,`${line(demand.id)} · ${line(demand.type)} · ${stage}`,'');
   for(const issue of demand.issues){
    lines.push(`- **${line(issue.label||'Pendência')}**${issue.source?` (${line(issue.source)})`:''}: ${line(issue.message)}`);
+   if(issue.pendingReason)lines.push(`  - Motivo: ${line(issue.pendingReason.label)}`,`  - Próxima ação: ${line(issue.pendingReason.action)}`);
    if(issue.found)lines.push(`  - Encontrado: ${line(issue.found)}`);
    if(issue.expected)lines.push(`  - Esperado / correção indicada: ${line(issue.expected)}`);
   }
@@ -19,5 +20,5 @@ export function processingSummaryReport(stage:string,demands:SummaryDemand[],dat
   lines.push('');
  }
  if(!rows.length)lines.push('Nenhuma demanda encontrada neste recorte.');
- return {filename,markdown:lines.join('\n'),count:rows.length};
+ return {filename,markdown:lines.join('\n'),count:rows.length,stage,generatedAt:date.toISOString(),demands:rows.map(({id,glpi_id,school,type,status,issues})=>({id,glpi_id,school,type,status,issues}))};
 }

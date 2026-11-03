@@ -1,4 +1,5 @@
 import {useEffect,useState} from 'react';
+import {summaryDocument} from './summary-document';
 export function ProcessingSummary({stage,demands,api}:any){
  const [report,setReport]=useState<any>(null),[error,setError]=useState(''),[loading,setLoading]=useState(false);
  const ids=demands.map((d:any)=>d.id).sort().join(',');
@@ -12,9 +13,14 @@ export function ProcessingSummary({stage,demands,api}:any){
   const url=URL.createObjectURL(new Blob([report.markdown],{type:'text/markdown;charset=utf-8'}));
   const link=document.createElement('a');link.href=url;link.download=report.filename;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
  };
+ const view=()=>{
+  const url=URL.createObjectURL(new Blob([summaryDocument(report)],{type:'text/html;charset=utf-8'}));
+  const link=document.createElement('a');link.href=url;link.target='_blank';link.rel='noopener noreferrer';link.click();
+  setTimeout(()=>URL.revokeObjectURL(url),60000);
+ };
  return <section className="panel" aria-label={'Resumo de '+stage}>
   <div className="panel-heading"><div><h2>Resumo — {stage.toLocaleLowerCase('pt-BR')}</h2><p>Demandas e pendências reunidas em um arquivo. Respeita os filtros da lista.</p></div>{report&&<button type="button" className="secondary" onClick={download}>Baixar resumo .md</button>}</div>
   {loading&&<p role="status">Gerando resumo atualizado…</p>}{error&&<p role="alert">{error}</p>}
-  {report&&<details open key={stage+ids}><summary>Ver resumo ({report.count} demandas)</summary><pre style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:480,overflow:'auto'}}>{report.markdown}</pre></details>}
+  {report&&<button type="button" className="primary" onClick={view} aria-label={`Ver resumo de ${report.count} demandas — abre em outra aba`}>Ver resumo ({report.count} demandas) ↗</button>}
  </section>;
 }

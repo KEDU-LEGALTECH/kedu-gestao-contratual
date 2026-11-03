@@ -1,6 +1,6 @@
 import {qualificationFields} from './qualification-reading.js';
 import {structuredIdentityFields} from './structured-identities.js';
-import {ownIdentity} from './field-plausibility.js';
+import {ownIdentity,plausibleFieldValue} from './field-plausibility.js';
 import {bankFields} from './bank-reading.js';
 import {validCnpj} from './registration-reading.js';
 import {distinctRequestedValues} from './request-expectations.js';
@@ -28,5 +28,5 @@ export function recoverTextFields(text:string,existing:Fields):Fields {
   if(names.length===1&&ids.length===1){found.razaoSocial=names;found.cnpj=ids;}
  }
  for(const [key,values] of Object.entries(structuredIdentityFields(text)))found[key]=[...new Set([...(found[key]||[]),...values])];
- return Object.fromEntries(Object.entries(found).filter(([key,values])=>values.length&&!existing[key]?.length));
+ return Object.fromEntries(Object.entries(found).filter(([key,values])=>values.length&&!existing[key]?.some(value=>plausibleFieldValue(key,value))));
 }

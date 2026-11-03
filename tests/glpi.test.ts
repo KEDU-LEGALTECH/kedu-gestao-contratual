@@ -295,3 +295,13 @@ test("Validação cruzada aponta taxa, CNPJ e razão social divergentes do chama
   assert.equal(issues.length, 3);
   assert.match(issues.join("\n"), /Taxa da demanda \(7,80%\) difere da taxa do chamado GLPI #900 \(7,7%\)/);
 });
+
+test('status de sincronização é limpo quando uma tentativa termina com falha',async()=>{
+ const {glpiStatus}=await import('../server/glpi-sync.js');
+ let rejectRead!:(e:Error)=>void;
+ const attempt=syncGlpi('u0',{mode:'demo',read:()=>new Promise((_resolve,reject)=>{rejectRead=reject;})});
+ assert.equal(glpiStatus().running,true);assert.ok(glpiStatus().startedAt);
+ rejectRead(Error('Falha simulada de rede'));
+ await assert.rejects(attempt,/Falha simulada/);
+ assert.equal(glpiStatus().running,false);assert.equal(glpiStatus().startedAt,null);
+});

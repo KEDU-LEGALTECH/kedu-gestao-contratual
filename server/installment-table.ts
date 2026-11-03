@@ -1,13 +1,16 @@
 import {normalizeValue,norm} from './processing-extract.js';
 
 /** Recognises explicit simulation rows; never treats every alternative as a contracted installment count. */
-export function installmentTableFields(text:string,requestedCount:string|undefined){
+export function installmentTableFields(text:string,requestedCount:string|undefined):Record<string,string[]>{
  const header=norm(text);
  if(!requestedCount || !/^\d+$/.test(requestedCount) || !header.includes('parcelamentos contratados') || !header.includes('remuneracao') || !header.includes('principal') || !header.includes('valor parcela'))return {} as Record<string,string[]>;
  const rows=text.split(/\r?\n/).flatMap(line=>{
   const m=/^\s*(\d{1,3}(?:[.,]\d{1,2})?\s*%)\s+(\d{1,3})\s+(R\$\s*(?:\d{1,3}(?:\.\d{3})*|\d+),\d{2})(?=\s|$)/.exec(line);
-  return m && m[2]===requestedCount?[{remuneracao:normalizeValue('remuneracao',m[1]),parcelas:m[2],valor:normalizeValue('valor',m[3])}]:[];
+  if(!m||m[2]!==requestedCount)return [];
+  const amounts=[...line.matchAll(/R\$\s*((?:\d{1,3}(?:\.\d{3})*|\d+),\d{2})/g)].map(v=>v[1]);
+  const valorParcela=header.includes('carencia')&&amounts.length>=3?normalizeValue('valorParcela',amounts[2]):undefined;
+  return [{remuneracao:normalizeValue('remuneracao',m[1]),parcelas:m[2],valor:normalizeValue('valor',m[3]),...(valorParcela?{valorParcela}:{})}];
  });
  if(!rows.length)return {};
- return Object.fromEntries(['remuneracao','parcelas','valor'].map(key=>[key,[...new Set(rows.map(r=>(r as any)[key]))]]));
+ return Object.fromEntries(['remuneracao','parcelas','valor','valorParcela'].map(key=>[key,[...new Set(rows.map(r=>(r as any)[key]).filter(Boolean))]]).filter(([,values])=>values.length));
 }

@@ -3,7 +3,7 @@ import multer from "multer";
 import { z } from "zod";
 import { all,one,run,db,id,now,audit } from "./db.js";
 import { access,permit,allocateAddendum,invalidate } from "./workflow.js";
-import { ensureProcessing,processContract,processingSource,saveProcessingResult,buildProcessingPlan } from "./contract-processing.js";
+import { ensureProcessing,processContract,processingSource,saveProcessingResult,buildProcessingPlan,processingFileProgress } from "./contract-processing.js";
 import { editableKeys,extractProcessingFile,normalizeValue } from "./processing-extract.js";
 import { sha256,officialValues } from "./official-templates.js";
 import { generate,review } from "./documents.js";
@@ -28,6 +28,20 @@ export function processingView(did:string) {
  return {status:"Analisando",revision:job.revision,ticket_hash:job.ticket_hash,issues:[],values:{},files:[],templates:[]};
 }
 export function registerProcessingRoutes(app:Express,process:(did:string,userId?:string|null,download?:any,force?:boolean)=>Promise<any>=processContract) {
+ app.get('/api/processing/progress',(req:any,res)=>{
+  permit(req.user,'files');permit(req.user,'bank');
+  const ids=new Set(z.string().max(100000).parse(req.query.ids).split(',').filter(Boolean));
+  const demands=[];
+  for(const d of all('SELECT * FROM demands')){
+   if(!ids.has(d.id))continue;
+   try{access(req.user,d);}catch(error:any){if(error.status===403)continue;throw error;}
+   demands.push(processingFileProgress(d.id));
+  }
+  const files=demands.flatMap(d=>d.files.map((f:any)=>({...f,demandId:d.demandId})));
+  const counts={queued:0,running:0,completed:0,failed:0,waiting:0};
+  for(const file of files)counts[file.state as keyof typeof counts]++;
+  res.setHeader('Cache-Control','no-store');res.json({counts,total:files.length,paused:demands.some(d=>d.paused),attachmentsUnavailable:demands.filter(d=>d.attachmentsUnavailable).length,files,updatedAt:now()});
+ });
  app.get('/api/processing/summary',(req:any,res)=>{
   permit(req.user,'files');permit(req.user,'bank');
   const stage=z.enum(['Aguardando análise','Aguardando correção']).parse(req.query.stage);

@@ -31,3 +31,14 @@ test('progresso real permite continuar PDF longo, mas repetir o mesmo progresso 
   assert.equal(q.claim(),undefined);
  }finally{db.close();}
 });
+
+test('trabalho concluído só reabre explicitamente para uma nova releitura direcionada',()=>{
+ const db=new DatabaseSync(':memory:');db.exec(readFileSync('migrations/017.sql','utf8'));db.exec(readFileSync('migrations/018.sql','utf8'));
+ try{
+  const q=new ReadingJobQueue(db);q.enqueue('a','hash');q.finish(q.claim()!,'done');
+  q.enqueue('a','hash');assert.equal(q.claim(),undefined);
+  q.enqueue('a','hash',true);const target=q.claim()!;
+  assert.equal(target.last_error,'targeted-fields');assert.equal(target.attempts,1);
+  q.finish(target,'done');q.enqueue('a','hash');assert.equal(q.claim(),undefined);
+ }finally{db.close();}
+});

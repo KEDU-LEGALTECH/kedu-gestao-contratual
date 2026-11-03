@@ -17,6 +17,7 @@ import {attachmentRole,fieldsForRole,automaticReadingCheck,unusedPersonalId} fro
 import {scopePartyReading,extractContractParties,selectContractParty} from './contract-parties.js';
 import {fieldExcerpt,readingGuidance,proposedChanges} from './reading-guidance.js';
 import {processingStatus} from './processing-status.js';
+import {pendingReason} from '../shared/pending-reason.js';
 import {missingFieldEvidence} from './document-evidence.js';
 import {validateReadings} from './reading-validation.js';
 import {ReadingJobQueue} from './reading-job-queue.js';
@@ -32,6 +33,10 @@ import {blankImage,blankImageMessage} from './blank-image.js';
 import {notApplicableReason,cessionClauseCheck,reportIdentity} from './comparison-profile.js';
 import {comparisonReviewReason} from './comparison-review-reason.js';
 import {matchesImportedAttachment} from './attachment-cache-proof.js';
+import {targetedReadingTargets,mergeTargetedReading} from './targeted-reading.js';
+import {comparisonSources} from './comparison-sources.js';
+import {fileProgress} from './file-progress.js';
+import {readDoclingPage,doclingConfig} from './docling-reader.js';
 // Tiny images without any text (logos, signatures, illustrations) are not unreadable documents.
 const logoImage=(f:any)=>!!f.problem&&/\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name)&&f.byteLength<80000&&/nenhum texto leg/i.test(f.problem);
 export function receivedDocumentTypes(did:string) {
@@ -43,10 +48,11 @@ export function receivedDocumentTypes(did:string) {
 export const processingStates=["Analisando","Aguardando análise","Aguardando correção","Sem erros"];
 type Issue={field:string;label:string;message:string;found?:string;expected?:string;source?:string};
 const running=new Set<string>();
+const activeFiles=new Map<string,{documentId:string;targeted?:boolean;page?:number}>();
 function fingerprint(did:string) {
  const d=one("SELECT school_id,contract_id,data_version FROM demands WHERE id=?",did);
  return sha256(Buffer.from(JSON.stringify([
-  'hybrid-local-ocr-v25-header-trade-name',
+  'hybrid-local-ocr-v25-header-trade-name-comparison-format-v2',
   d,
   all("SELECT v.id,v.status,s.template_hash,h.template_hash AS approved_hash,i.version_id AS inactive FROM template_sources s JOIN template_versions v ON v.id=s.version_id LEFT JOIN template_homologations h ON h.version_id=v.id LEFT JOIN inactive_template_versions i ON i.version_id=v.id ORDER BY v.id"),
   all("SELECT id,parent_id,sequence,status FROM contracts WHERE school_id=? ORDER BY id",d?.school_id),
@@ -154,7 +160,8 @@ export function buildProcessingPlan(did:string) {
  }
  if(!values.modalidade){const named=["Garantia Completa","Garantia Conjunta","Garantia Prevista"].filter(x=>norm(htmlToText(raw.content).join(" ")+" "+raw.title).includes(norm(x)));if(named.length===1){values.modalidade=named[0];origins.modalidade="Modalidade explicitamente citada no chamado GLPI";}}
  const comparable=new Set(editableKeys.filter(key=>!["motivo","matriz"].includes(key)));
- const evidenceFiles=(raw.documents||[]).filter((doc:any)=>{const f=files.find(f=>f.document_id===String(doc.id));return !f||!isLogo(f)&&!blankImage(f);}).map((doc:any)=>{const f=files.find(f=>f.document_id===String(doc.id));const e=f?JSON.parse(f.extracted):{};return {name:f?.name||doc.name||'Anexo',text:e.text||'',problem:f?.problem||(!f?'Anexo ainda não obtido':''),incomplete:!!e.incomplete};});
+ const evidenceFiles=(raw.documents||[]).filter((doc:any)=>{const f=files.find(f=>f.document_id===String(doc.id));return !f||!isLogo(f)&&!blankImage(f);}).map((doc:any)=>{const f=files.find(f=>f.document_id===String(doc.id));const e=f?JSON.parse(f.extracted):{};return {name:f?.name||doc.name||'Anexo',text:e.text||'',problem:f?.problem||(!f?'Anexo ainda não obtido':''),incomplete:!!e.incomplete,downloadFailed:!!f&&!f.byteLength&&!!f.problem,downloadPending:!f};});
+ if(raw.documentsAvailable===false&&!evidenceFiles.length)evidenceFiles.push({name:'Lista de anexos indisponível no GLPI',text:'',problem:'Não foi possível consultar os anexos',incomplete:false,downloadFailed:false,downloadPending:true});
  const profileFiles=files.filter(f=>!isLogo(f)).map(f=>{const e=JSON.parse(f.extracted);return {name:f.name,text:e.text||'',problem:f.problem,incomplete:!!e.incomplete,method:e.method};});
  const comparisons:any[]=Object.entries(request).filter(([key])=>comparable.has(key)).map(([key,expected])=>{
   const located=distinctRequestedValues(key,(candidates[key]||[]).map(c=>c.value));
@@ -272,7 +279,7 @@ export function buildProcessingPlan(did:string) {
   if(!issues.length){generated=generate(Buffer.from(version.bytes),derived);if(review(generated,derived,Buffer.from(version.bytes)).status!=="conforme"){generated=null;add("generation","A conferência do documento gerado encontrou divergência. O download permanece bloqueado.");}}
  }catch{add("generation","Não foi possível preencher o modelo com estes dados. Confira o modelo e os campos indicados.");}
  const typeIdentification={type:actualType||"Não identificado",source:analysis.suggestion.type?analysis.suggestion.basis:d.type!=="A classificar"?"Classificação registrada na demanda":documentTypes.length===1?"Título no início do documento ou nome do arquivo":"Conferência manual necessária",ticketTitle:raw.title};
- return {demand:d,ticket,job,values,origins,issues,comparisons,validationFindings,typeIdentification,template,templates,version,sequence,matrix,derived,generated,type:actualType,subtype:actualSubtype,
+ return {demand:d,ticket,job,values,origins,issues:issues.map(issue=>({...issue,pendingReason:pendingReason({...issue,...comparisons.find(c=>c.field===issue.field)})})),comparisons,validationFindings,typeIdentification,template,templates,version,sequence,matrix,derived,generated,type:actualType,subtype:actualSubtype,
   files:files.map(f=>{const scope=scopePartyReading(JSON.parse(f.extracted),request.cnpj?.length===1?request.cnpj[0]:undefined),e=scope.reading;return {
    parties:scope.parties,selectedParty:scope.selected,vision:e.vision,
    guidance:readingGuidance(e,attachmentRole(f.name,e.text||'')),changes:proposedChanges(e.text||''),
@@ -282,7 +289,11 @@ export function buildProcessingPlan(did:string) {
     const check=one('SELECT * FROM processing_field_reviews WHERE file_id=? AND field=?',f.id,key);
     const evidence=values.length===1?(digitalFieldOrigin(e,key,values[0])||identityEvidence(e,key,values[0],attachmentRole(f.name,e.text||''))):null;
     const assisted=values.length===1?assistedVisualField(e,key,values[0],attachmentRole(f.name,e.text||'')):null;
-    return {key,label:inputLabels[key]||key,values,expected:request[key]||[],assistedVisualReview:!!assisted,page:assisted?.page||evidence?.page||e.fieldOrigins?.[key]?.[0]?.page||(e.pages===1?1:undefined),excerpt:assisted?.excerpt||evidence?.excerpt||(scope.selected&&['cnpj','razaoSocial'].includes(key)?scope.selected.excerpt:fieldExcerpt(e.text||'',values)),confirmed:!!check&&check.extraction_hash===sha256(Buffer.from(f.extracted))&&values.length===1&&sameRequestedValue(key,check.value,values[0])};
+    const observations=values.map(value=>{
+     const origin=assistedVisualField(e,key,value,attachmentRole(f.name,e.text||''))||digitalFieldOrigin(e,key,value)||e.fieldOrigins?.[key]?.find((o:any)=>sameRequestedValue(key,o.value,value));
+     return {value,page:origin?.page||(e.pages===1?1:undefined),excerpt:origin?.excerpt||fieldExcerpt(e.text||'',[value])};
+    });
+    return {key,label:inputLabels[key]||key,values,observations,expected:request[key]||[],assistedVisualReview:!!assisted,page:assisted?.page||evidence?.page||e.fieldOrigins?.[key]?.[0]?.page||(e.pages===1?1:undefined),excerpt:assisted?.excerpt||evidence?.excerpt||(scope.selected&&['cnpj','razaoSocial'].includes(key)?scope.selected.excerpt:fieldExcerpt(e.text||'',values)),confirmed:!!check&&check.extraction_hash===sha256(Buffer.from(f.extracted))&&values.length===1&&sameRequestedValue(key,check.value,values[0])};
    }),
    available:!!f.byteLength,incomplete:!!e.incomplete,role:attachmentRole(f.name,e.text||''),
    readingValidatedAutomatically:automaticReadingCheck(e,attachmentRole(f.name,e.text||''),request),
@@ -292,22 +303,23 @@ export function buildProcessingPlan(did:string) {
 }
 export function saveProcessingResult(did:string) {
  const plan=buildProcessingPlan(did);if(!plan)return null;
- const result={values:plan.values,origins:plan.origins,issues:plan.issues,comparisons:plan.comparisons,validationFindings:plan.validationFindings,typeIdentification:plan.typeIdentification,template:plan.template,templates:plan.templates,files:plan.files,type:plan.type,subtype:plan.subtype,fingerprint:fingerprint(did)};
+ const result={values:plan.values,origins:plan.origins,issues:plan.issues,comparisons:plan.comparisons.map(row=>({...row,evidence:comparisonSources(row,plan.files)})),validationFindings:plan.validationFindings,typeIdentification:plan.typeIdentification,template:plan.template,templates:plan.templates,files:plan.files,type:plan.type,subtype:plan.subtype,fingerprint:fingerprint(did)};
  const status=processingStatus(plan.issues,plan.comparisons);
  run("UPDATE contract_processing SET status=?,result=?,updated=? WHERE demand_id=?",status,JSON.stringify(result),now(),did);
  return {status,revision:plan.job.revision,ticket_hash:plan.ticket.hash,...result};
 }
-export async function processContract(did:string,userId:string|null=null,download:(ticketId:string,documentId:string,signal:AbortSignal)=>Promise<{bytes:Buffer;name:string;mime:string}>=downloadGlpiAttachment,force=false) {
+export async function processContract(did:string,userId:string|null=null,download:(ticketId:string,documentId:string,signal:AbortSignal)=>Promise<{bytes:Buffer;name:string;mime:string}>=downloadGlpiAttachment,force=false,targetedOnly=false) {
  if(running.has(did))return;const job=ensureProcessing(did);if(!job)return;
  running.add(did);run("UPDATE contract_processing SET status='Analisando',updated=? WHERE demand_id=?",now(),did);
  const {demand,ticket}=processingSource(did);
  try {
   const raw=JSON.parse(ticket.payload);
-  for(const doc of (raw.documents||[]).slice(0,20)) {
+  for(const doc of (targetedOnly?[]:raw.documents||[]).slice(0,20)) {
    if(recoveryPaused()&&!force&&userId===null)break;
    const cached=filesFor(did,ticket.hash).find(f=>f.document_id===String(doc.id));
    if(cached?.byteLength&&!force&&extractionReviewed(cached))continue;
    if(!force&&!needsReadingRecovery(cached))continue;
+   activeFiles.set(did,{documentId:String(doc.id)});
    let file:any,extracted:any;
    try {
     const provenPrevious=!cached?.byteLength?all('SELECT * FROM processing_files WHERE demand_id=? AND document_id=? AND length(bytes)>0 ORDER BY rowid DESC',did,String(doc.id)).find(f=>matchesImportedAttachment(Buffer.from(f.bytes),doc.sha1)):null;
@@ -325,10 +337,37 @@ export async function processContract(did:string,userId:string|null=null,downloa
    catch(error){file??={name:doc.name,mime:doc.mime||"application/octet-stream",bytes:Buffer.alloc(0)};extracted={version:readerVersion,text:"",fields:{},problem:file.bytes.length?"O original está disponível, mas a leitura falhou. Confira o arquivo ou envie uma cópia acessível.":"Não foi possível baixar o anexo após as tentativas de recuperação. Confira a disponibilidade no GLPI.",failureDetail:failureDetail(error),method:'inconclusiva',needsReview:false};}
    if(one("SELECT hash FROM glpi_tickets WHERE external_id=?",demand.glpi_id)?.hash!==ticket.hash)return;
    // A crashed or unavailable reader never replaces a reading that already worked; it is retried later.
-   if(preservePreviousReading(cached?.extracted,extracted))continue;
+   if(preservePreviousReading(cached?.extracted,extracted)){activeFiles.delete(did);continue;}
    if(cached?.byteLength)run("UPDATE processing_files SET extracted=?,problem=? WHERE id=?",JSON.stringify(extracted),extracted.problem,cached.id);
    else run("INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(demand_id,document_id,ticket_hash) DO UPDATE SET name=excluded.name,mime=excluded.mime,bytes=excluded.bytes,extracted=excluded.extracted,problem=excluded.problem,created=excluded.created",id(),did,String(doc.id),ticket.hash,file.name,file.mime,file.bytes,JSON.stringify(extracted),extracted.problem,now());
    run("UPDATE contract_processing SET revision=revision+1 WHERE demand_id=?",did);invalidate(did);
+   activeFiles.delete(did);
+  }
+  // Reuse healthy originals and read at most two known pages, one at a time.
+  const pendingPlan=buildProcessingPlan(did);
+  let targetedPages=0;
+  for(const entry of targetedRecovery(did,ticket.hash,pendingPlan?.comparisons)){
+   for(const target of entry.targets){
+    if(targetedPages>=2||recoveryPaused()&&!force&&userId===null)break;
+    targetedPages++;
+    activeFiles.set(did,{documentId:entry.file.document_id,targeted:true,page:target.page});
+    const current=one('SELECT extracted,bytes FROM processing_files WHERE id=?',entry.file.id);
+    const before=JSON.parse(current.extracted);
+    const complementary=/\.pdf$/i.test(entry.file.name)&&process.env.DOCUMENT_DOCLING_ENABLED==='true'?await readDoclingPage(Buffer.from(current.bytes),target.page):null;
+    const useful=complementary?.ok&&target.fields.some(key=>complementary.fields[key]?.some(value=>plausibleFieldValue(key,value)));
+    const reread=useful?{...complementary,problem:'',needsReview:true}:await readProcessingFile(Buffer.from(current.bytes),entry.file.name,{page:target.page,x:0,y:0,width:1,height:1,rotation:0});
+    if(one('SELECT hash FROM glpi_tickets WHERE external_id=?',demand.glpi_id)?.hash!==ticket.hash)return;
+    // A confirmation or manual update made while OCR was running wins.
+    if(one('SELECT extracted FROM processing_files WHERE id=?',entry.file.id)?.extracted!==current.extracted)continue;
+    if(one('SELECT file_id FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?',entry.file.id,sha256(Buffer.from(current.extracted))))continue;
+    const merged=JSON.stringify(mergeTargetedReading(before,reread,target));
+    run('UPDATE processing_files SET extracted=? WHERE id=?',merged,entry.file.id);
+    // Confirmed fields were excluded from targets and their original values/evidence remain intact.
+    run('UPDATE processing_field_reviews SET extraction_hash=? WHERE file_id=? AND extraction_hash=?',sha256(Buffer.from(merged)),entry.file.id,sha256(Buffer.from(current.extracted)));
+    run('UPDATE contract_processing SET revision=revision+1 WHERE demand_id=?',did);invalidate(did);
+    activeFiles.delete(did);
+   }
+   if(targetedPages>=2)break;
   }
   // Auxiliary extraction never modifies local fields or human reviews. Explicit recheck runs
   // at most two documents, with persistent deduplication and no automatic retry storm.
@@ -346,13 +385,32 @@ export async function processContract(did:string,userId:string|null=null,downloa
   }
   if(one("SELECT hash FROM glpi_tickets WHERE external_id=?",demand.glpi_id)?.hash===ticket.hash){saveProcessingResult(did);audit(did,userId,"Leitura automática do GLPI e validação do preenchimento concluídas; sem escrita no helpdesk.");}
  }catch(error){lastProcessingError.set(did,failureDetail(error));run("UPDATE contract_processing SET status='Aguardando análise',result=?,updated=? WHERE demand_id=?",JSON.stringify({issues:[{field:"processing",label:"Leitura do chamado",message:"Não foi possível concluir a leitura. Tente novamente."}],values:{},files:[],templates:[]}),now(),did);}
- finally{running.delete(did);}
+ finally{running.delete(did);activeFiles.delete(did);}
 }
 let durableQueue:ReadingJobQueue|undefined,draining=false;
 const recoveryPaused=()=>one('SELECT value FROM settings WHERE key=?','documentReadingPaused')?.value==='true';
+export function processingFileProgress(did:string){
+ const {ticket}=processingSource(did);if(!ticket)return {demandId:did,files:[],paused:recoveryPaused()};
+ const raw=JSON.parse(ticket.payload),cached=filesFor(did,ticket.hash);
+ const queue=one('SELECT state,available_at FROM reading_jobs WHERE demand_id=? AND ticket_hash=?',did,ticket.hash);
+ const targets=new Set(targetedRecovery(did,ticket.hash).map(({file})=>file.document_id));
+ return {demandId:did,paused:recoveryPaused(),attachmentsUnavailable:raw.documentsAvailable===false,files:(raw.documents||[]).map((doc:any)=>fileProgress(doc,cached.find(f=>f.document_id===String(doc.id)),queue,activeFiles.get(did),targets.has(String(doc.id))))};
+}
+function targetedRecovery(did:string,hash:string,comparisons?:any[]){
+ const pending=comparisons||JSON.parse(one('SELECT result FROM contract_processing WHERE demand_id=?',did)?.result||'{}').comparisons||[];
+ return filesFor(did,hash).flatMap(file=>{
+  if(!file.byteLength||file.problem)return [];
+  const extractedHash=sha256(Buffer.from(file.extracted));
+  if(one('SELECT file_id FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?',file.id,extractedHash))return [];
+  const protectedFields=all('SELECT field FROM processing_field_reviews WHERE file_id=? AND extraction_hash=?',file.id,extractedHash).map(r=>r.field);
+  const reader=/\.pdf$/i.test(file.name)&&process.env.DOCUMENT_DOCLING_ENABLED==='true'&&doclingConfig().ready?'docling':'ocr';
+  const targets=targetedReadingTargets(file.name,JSON.parse(file.extracted),pending,protectedFields,reader);
+  return targets.length?[{file,targets}]:[];
+ });
+}
 function needsDemandRecovery(did:string,hash:string) {
  const cached=filesFor(did,hash),ticket=one('SELECT payload FROM glpi_tickets WHERE external_id=(SELECT glpi_id FROM demands WHERE id=?)',did);
- return (JSON.parse(ticket?.payload||'{}').documents||[]).some((doc:any)=>{
+ return targetedRecovery(did,hash).length>0||(JSON.parse(ticket?.payload||'{}').documents||[]).some((doc:any)=>{
   const file=cached.find(f=>f.document_id===String(doc.id));
   return needsReadingRecovery(file)&&!(file&&extractionReviewed(file))&&!(file&&logoImage(file)&&cached.some(other=>other.id!==file.id&&!other.problem));
  });
@@ -381,7 +439,8 @@ export function recoveryReason(did:string,hash:string,ignorePause=false){
   return [`${name}: lido sem texto nem campos reconhecidos`];
  });
  const outer=lastProcessingError.get(did);lastProcessingError.delete(did);
- return [outer&&'Erro no processamento: '+outer,...reasons].filter(Boolean).join(' | ')||'Recuperação pendente sem causa identificada';
+ const targets=targetedRecovery(did,hash).map(({file,targets})=>`${file.name}: releitura direcionada das páginas ${targets.map(t=>t.page).join(', ')}`);
+ return [outer&&'Erro no processamento: '+outer,...reasons,...targets].filter(Boolean).join(' | ')||'Recuperação pendente sem causa identificada';
 }
 function recoveryProgress(did:string,hash:string){return filesFor(did,hash).reduce((total,f)=>{const e=JSON.parse(f.extracted);return total+(f.byteLength?1:0)+(e.completedPages?.length||0)+Object.keys(e.fields||{}).length;},0);}
 async function drainReadingQueue() {
@@ -397,11 +456,12 @@ async function drainReadingQueue() {
    try {
     if(running.has(job.demand_id)){durableQueue!.finish(job,'retry','Leitura manual em andamento');continue;}
     const before=recoveryProgress(job.demand_id,job.ticket_hash);
-    await processContract(job.demand_id);
+    const targetedOnly=job.last_error==='targeted-fields';
+    await processContract(job.demand_id,null,downloadGlpiAttachment,false,targetedOnly);
     const after=recoveryProgress(job.demand_id,job.ticket_hash);
     const current=processingSource(job.demand_id);
     if(current.ticket?.hash!==job.ticket_hash)durableQueue!.finish(job,'superseded');
-    else if(needsDemandRecovery(job.demand_id,job.ticket_hash))durableQueue!.finish(job,'retry',recoveryReason(job.demand_id,job.ticket_hash),after>before?after:undefined);
+    else if(targetedOnly?targetedRecovery(job.demand_id,job.ticket_hash).length>0:needsDemandRecovery(job.demand_id,job.ticket_hash))durableQueue!.finish(job,'retry',targetedOnly?'targeted-fields':recoveryReason(job.demand_id,job.ticket_hash),after>before?after:undefined);
     else durableQueue!.finish(job,'done','',after>before?after:undefined);
    }catch(error){durableQueue!.finish(job,'retry','Tentativa interrompida; resultados anteriores preservados. '+failureDetail(error));}
   }
@@ -412,7 +472,7 @@ export function scheduleContractProcessing() {
  durableQueue??=new ReadingJobQueue(db);
  for(const d of all("SELECT d.id FROM demands d JOIN glpi_tickets t ON t.external_id=d.glpi_id WHERE t.mode='real' AND d.stage NOT IN('Concluído','Cancelado','Em assinatura')")){
   const job=ensureProcessing(d.id);if(!job||running.has(d.id))continue;
-  if(needsDemandRecovery(d.id,job.ticket_hash))durableQueue.enqueue(d.id,job.ticket_hash);
+  if(needsDemandRecovery(d.id,job.ticket_hash))durableQueue.enqueue(d.id,job.ticket_hash,targetedRecovery(d.id,job.ticket_hash).length>0);
   // Refresh comparisons without running OCR for already healthy originals.
   if(job.status==='Analisando')saveProcessingResult(d.id);
  }

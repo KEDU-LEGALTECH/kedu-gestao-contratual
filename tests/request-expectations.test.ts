@@ -25,6 +25,6 @@ test('Parcelamento explícito prevalece sobre título genérico de aditivo e men
 });
 test('Tabela de simulação usa apenas a linha solicitada e não confunde taxa do contrato com remuneração do parcelamento',()=>{
  const text='Taxa Kedu 11,3%\nParcelamentos contratados\nRemuneração Meses Principal Carência Valor Parcela\n4,50% 3 R$ 1.507,90 R$72,49 R$574,90\n4,50% 6 R$ 1.507,90 R$72,49 R$306,40';
- assert.deepEqual(installmentTableFields(text,'3'),{remuneracao:['4,50%'],parcelas:['3'],valor:['1507,90']});
+ assert.deepEqual(installmentTableFields(text,'3'),{remuneracao:['4,50%'],parcelas:['3'],valor:['1507,90'],valorParcela:['574,90']});
  assert.deepEqual(installmentTableFields(text,undefined),{});assert.deepEqual(installmentTableFields(text,'9'),{});
 });

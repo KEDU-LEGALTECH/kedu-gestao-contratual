@@ -2,9 +2,18 @@ const states:Record<string,string>={ac:'acre',al:'alagoas',ap:'amapa',am:'amazon
 // Bank names, brands and compensation codes that identify the same institution.
 const banks:[RegExp,string][]=[[/\b(?:nu ?bank|nu pagamentos|0?260)\b/,'260'],[/\b(?:santander|0?033)\b/,'033'],[/\b(?:caixa(?: economica)?|cef|104)\b/,'104'],[/\b(?:banco do brasil|bb|001)\b|^brasil$/,'001'],[/\b(?:itau|341)\b/,'341'],[/\b(?:bradesco|237)\b/,'237'],[/\b(?:cora|403)\b/,'403'],[/\b(?:inter|0?77)\b/,'077'],[/\b(?:sicoob|756)\b/,'756'],[/\b(?:sicredi|748)\b/,'748'],[/\b(?:c6|336)\b/,'336'],[/\b(?:pagbank|pagseguro|290)\b/,'290'],[/\b(?:mercado pago|323)\b/,'323'],[/\b(?:btg|208)\b/,'208'],[/\b(?:safra|422)\b/,'422'],[/\b(?:banrisul|041)\b/,'041'],[/\b(?:banco do nordeste|bnb|004)\b/,'004'],[/\b(?:stone|197)\b/,'197'],[/\b(?:asaas|461)\b/,'461']];
 export function canonicalFieldValue(key:string,value:string) {
- let v=value.normalize('NFKC').replace(/\p{Cf}/gu,'').normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().replace(/\s+/g,' ').trim();
- if(key==='banco'){const b=v.replace(/[.\-–—]/g,' ').replace(/\s+/g,' ');const known=banks.find(([pattern])=>pattern.test(b));if(known)return known[1];}
- if(['agencia','conta'].includes(key))return v.replace(/[.\s\-\u2010-\u2015]/g,'').replace(/[,:;]+$/,'').replace(key==='agencia'?/^0+(?=\d)/:/$^/,'');
+ let v=value.normalize('NFKC').replace(/\p{Cf}/gu,'').normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().replace(/[\u2010-\u2015\u2212]/g,'-').replace(/\s+/g,' ').trim();
+ // Surrounding quotation marks and sentence punctuation are presentation, not data.
+ v=v.replace(/[.,;]+$/,'').trim().replace(/^["'“”‘’«»‹›]+\s*|\s*["'“”‘’«»‹›]+$/g,'').trim().replace(/[.,;]+$/,'').trim();
+ if(key==='banco'){const b=v.replace(/[.\-–—]/g,' ').replace(/\s+/g,' ');const known=[...new Set(banks.filter(([pattern])=>pattern.test(b)).map(([,code])=>code))];if(known.length===1)return known[0];if(known.length>1)return 'bancos conflitantes: '+known.sort().join('/');}
+ // Restrict numeric equivalence to recognized separators. Never discard letters,
+ // extra digits or leading zeroes in an account number; retain an X check digit.
+ if(['agencia','conta'].includes(key)){
+  const numeric=v.replace(/[.,;:]+$/,'').trim();
+  if(/^[\d.\s/-]+[\dx]$/.test(numeric))return numeric.replace(/[.\s/-]/g,'').replace(key==='agencia'?/^0+(?=\d)/:/$^/,'');
+  return v;
+ }
+ v=v.replace(/[.,;]+$/,'').trim();
  if(['cnpj','representanteCpf','documentoTitular','cep'].includes(key)&&/^[\d.\/\s\-]+[.,;]?$/.test(v))return v.replace(/\D/g,'');
  if(key==='estado'){v=v.replace(/^estado d[eo] |^estado da /,'');return states[v]||v;}
  if(['remuneracao','garantia','repasse','repasseSegundo','cashback'].includes(key)){
@@ -15,7 +24,8 @@ export function canonicalFieldValue(key:string,value:string) {
  }
  if(['inicio','fim','dataFormalizacao','dataAssinaturaMatriz'].includes(key)){const m=/^(\d{2})\/(\d{2})\/(\d{4})$/.exec(v);if(m)return `${m[3]}-${m[2]}-${m[1]}`;}
  // Legal-form suffixes, quotes and punctuation do not identify a different company.
- if(['razaoSocial','nomeFantasia','titularConta'].includes(key))v=v.replace(/,\s*nome fantasia\b.*$/,'').replace(/["'“”‘’„‟‚‛«»‹›`´]/g,'').replace(/[.,]/g,' ').replace(/\s+-\s+/g,' ').replace(/\s+/g,' ').trim().replace(/(?:\s+(?:ltda|ltd|me|epp|eireli|s\/?a))+\s*$/,'').trim();
+ if(['razaoSocial','nomeFantasia','titularConta'].includes(key))v=v.replace(/,\s*nome fantasia\b.*$/,'').replace(/["'“”‘’„‟‚‛«»‹›`´]/g,'').replace(/[.,;:]/g,' ').replace(/\s*-\s*/g,' ').replace(/\s+/g,' ').trim().replace(/(?:\s+(?:ltda|ltd|me|epp|eireli|s\/?a))+\s*$/,'').trim();
+ if(['cidade','bairro'].includes(key))v=v.replace(/["'“”‘’«»]/g,'').replace(/[.,;:]/g,' ').replace(/\s+/g,' ').trim();
  if(['endereco','rua'].includes(key))v=v.replace(/^av(?:enida)?\.?\s+/,'avenida ').replace(/^r(?:ua)?\.?\s+/,'rua ').replace(/\s+[\-\u2010-\u2015]\s+|[,]+/g,' ').replace(/\s+/g,' ').trim();
  return v;
 }

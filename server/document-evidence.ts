@@ -1,4 +1,4 @@
-export type EvidenceFile={name:string;text?:string;problem?:string;incomplete?:boolean;kind?:string};
+export type EvidenceFile={name:string;text?:string;problem?:string;incomplete?:boolean;kind?:string;downloadFailed?:boolean;downloadPending?:boolean};
 export function documentSourceKind(file:EvidenceFile) {
  const norm=(value:string)=>value.normalize('NFD').replace(/\p{Diacritic}/gu,'').replace(/_/g,' ').toLowerCase();
  // Explicit filename/title wins over incidental mentions of another document.
@@ -40,10 +40,14 @@ export function missingFieldEvidence(field:string,files:EvidenceFile[]) {
  const sources=files.map(file=>({...file,kind:file.kind||documentSourceKind(file)}));
  const relevant=sources.filter(file=>origin.kinds.includes(file.kind));
  const uncertain=sources.some(file=>file.kind==='unknown');
- const reason=!sources.length||(!relevant.length&&!uncertain)?'not_sent':!relevant.length?'source_unidentified':relevant.some(file=>file.problem||file.incomplete)?'unreadable':'not_located';
+ const candidates=relevant.length?relevant:sources.filter(file=>file.kind==='unknown');
+ const reason=!sources.length||(!relevant.length&&!uncertain)?'not_sent':candidates.some(file=>file.downloadFailed)?'download_failed':candidates.some(file=>file.downloadPending)?'download_pending':!relevant.length?'source_unidentified':relevant.some(file=>file.incomplete)?'partial':relevant.some(file=>file.problem)?'read_failed':'not_located';
  const message=reason==='not_sent'?`Documento de origem não enviado/identificado entre os anexos: ${origin.label}.`:
  reason==='source_unidentified'?`Não foi possível identificar qual anexo contém este campo. Fonte esperada: ${origin.label}.`:
- reason==='unreadable'?`O documento de origem foi enviado, mas a leitura falhou ou ficou parcial. Fonte esperada: ${origin.label}.`:
+ reason==='download_failed'?`O anexo consta no chamado, mas não foi possível baixar seu conteúdo. Fonte esperada: ${origin.label}.`:
+ reason==='download_pending'?`O anexo consta no chamado, mas seu conteúdo ainda não foi obtido. Fonte esperada: ${origin.label}.`:
+ reason==='partial'?`A leitura do documento de origem ficou parcial; há páginas ou trechos ainda não lidos. Fonte esperada: ${origin.label}.`:
+ reason==='read_failed'?`O original foi obtido, mas não foi possível concluir sua leitura. Fonte esperada: ${origin.label}.`:
  `O documento de origem foi enviado, mas este campo não foi localizado. Confira o trecho no original: ${origin.label}.`;
  return {reason,expectedDocument:origin.label,sourceDocuments:relevant.map(file=>file.name),message};
 }

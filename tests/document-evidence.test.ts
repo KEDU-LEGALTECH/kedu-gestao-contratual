@@ -15,7 +15,7 @@ test('absence, inaccessible source, unidentified attachment and missing value re
  assert.equal(missingFieldEvidence('representanteCpf',[]).reason,'not_sent');
  assert.equal(missingFieldEvidence('representanteCpf',[{name:'Comprovante bancário.pdf'}]).reason,'not_sent');
  assert.equal(missingFieldEvidence('representanteCpf',[{name:'foto.png',problem:'falha'}]).reason,'source_unidentified');
- assert.equal(missingFieldEvidence('representanteCpf',[{name:'Contrato social.pdf',incomplete:true}]).reason,'unreadable');
+ assert.equal(missingFieldEvidence('representanteCpf',[{name:'Contrato social.pdf',incomplete:true}]).reason,'partial');
  assert.equal(missingFieldEvidence('representanteCpf',[{name:'Contrato social.docx',text:'Conteúdo legível'}]).reason,'not_located');
  assert.equal(documentSourceKind({name:'procuração.pdf'}),'proxy');
 });

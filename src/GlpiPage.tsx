@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { RefreshCw, TriangleAlert, Link2, FileText, Inbox, Download } from "lucide-react";
 import { organizationAllowed } from "../shared/organization-policy";
 import {fieldLabels,officialInputs} from '../shared/official-fields';
-import {glpiStatusLabel,glpiPriorityLabel,isGlpiPending,glpiPriorityRank} from "../shared/glpi-ticket-meta";
+import {glpiStatusLabel,glpiPriorityLabel,isGlpiPending,isGlpiSolved,glpiPriorityRank} from "../shared/glpi-ticket-meta";
 type Props = {
   data: any;
   can: (p: string) => boolean;
@@ -27,42 +27,54 @@ const inWeek = () => new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 
 /** Read-only GLPI queue: a person confirms school, type and contract before a demand exists. */
 export function GlpiPage({ data, can, action, api, busy, open }: Props) {
   const [search,setSearch]=useState('');
-  const [queue,setQueue]=useState<"regular"|"pending">("regular");
+  const [queue,setQueue]=useState<"regular"|"pending"|"solved">("regular");
+  const [syncing,setSyncing]=useState(false),[statusError,setStatusError]=useState('');
+  const refreshing=useRef(false);
   const [status, setStatus] = useState<any>(null),
     [tickets, setTickets] = useState<any[]>([]),
     [selected, setSelected] = useState(""),
     [error, setError] = useState("");
   async function refresh() {
+    if(refreshing.current)return;
+    refreshing.current=true;
     setError("");
     try {
-      const [s, t] = await Promise.all([api("/glpi/status"), api("/glpi/tickets")]);
-      setStatus(s);
-      setTickets(t);
-    } catch (e: any) {
-      setError(e.message);
-    }
+      const [s,t]=await Promise.allSettled([api('/glpi/status'),api('/glpi/tickets')]);
+      if(s.status==='fulfilled'){setStatus(s.value);setStatusError('');}
+      else setStatusError(s.reason?.message||'Não foi possível consultar o estado da integração.');
+      if(t.status==='fulfilled')setTickets(t.value);
+      else setError(t.reason?.message||'Não foi possível atualizar os chamados.');
+    } finally {refreshing.current=false;}
   }
   useEffect(() => {
     refresh();
+    const timer=setInterval(()=>{void refresh();},15000);
+    return ()=>clearInterval(timer);
   }, [data]);
+  const isSyncing=syncing||(!statusError&&status?.running===true);
+  async function synchronize(){
+    if(isSyncing)return;
+    setSyncing(true);
+    await action(async()=>{try{await api('/sync',{});}finally{setSyncing(false);await refresh();}},'Sincronização concluída. Dados locais preservados.');
+  }
   const ticket = tickets.find((t) => t.external_id === selected);
   const normalize=(value:string)=>value.normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase();
-  const visible=tickets.filter(t=>isGlpiPending(t.status)===(queue==="pending")&&normalize([t.external_id,t.title,t.analysis.fields.razaoSocial?.value,t.analysis.fields.cnpj?.value].join(' ')).includes(normalize(search.trim()))).sort((a,b)=>glpiPriorityRank(b.priority)-glpiPriorityRank(a.priority)||b.external_id.localeCompare(a.external_id,undefined,{numeric:true}));
+  const visible=tickets.filter(t=>(queue==="pending"?isGlpiPending(t.status):queue==="solved"?isGlpiSolved(t.status):!isGlpiPending(t.status)&&!isGlpiSolved(t.status))&&normalize([t.external_id,t.title,t.analysis.fields.razaoSocial?.value,t.analysis.fields.cnpj?.value].join(' ')).includes(normalize(search.trim()))).sort((a,b)=>glpiPriorityRank(b.priority)-glpiPriorityRank(a.priority)||b.external_id.localeCompare(a.external_id,undefined,{numeric:true}));
   return (
     <>
       <section className="panel glpi-sync-panel">
         <div className="panel-heading">
           <h2>Integração GLPI (somente leitura)</h2>
           <span className={"badge " + (status?.mode === "real" && !status?.problems.length ? "ok" : "warn")}>
-            {status?.mode === "real" ? "Modo real" : "Demonstração"}
+            {!status ? statusError?'Status indisponível':'Verificando integração…' : status.mode==='real'?'Modo real':'Demonstração'}
           </span>
         </div>
         <div className="glpi-sync-toolbar">
           <div>
             <strong>Sincronização automática</strong>
-            <p className="muted">{!status ? 'Carregando agendamento…' : status.dailyTimes?.length ? `Todos os dias às ${status.dailyTimes.join(', ')} · Brasília` : status.intervalMinutes ? `A cada ${status.intervalMinutes} minutos` : 'Desativada — sincronize manualmente'}</p>
+            <p className="muted">{!status ? statusError?'Não foi possível consultar o agendamento.':'Carregando agendamento…' : status.dailyTimes?.length ? `Todos os dias às ${status.dailyTimes.join(', ')} · Brasília` : status.intervalMinutes ? `A cada ${status.intervalMinutes} minutos` : 'Desativada — sincronize manualmente'}</p>
           </div>
-          {can("sync") && <button className="primary" disabled={busy} aria-busy={busy} onClick={() => action(() => api("/sync", {}), "Sincronização concluída. Dados locais preservados.")}><RefreshCw size={16} aria-hidden="true" />{busy ? 'Sincronizando…' : 'Sincronizar agora'}</button>}
+          {can("sync") && <button className="primary" disabled={busy||isSyncing} aria-busy={isSyncing} onClick={synchronize}><RefreshCw size={16} aria-hidden="true" />{isSyncing?'Sincronizando…':'Sincronizar agora'}</button>}
         </div>
         <p className="muted glpi-sync-note">Importa chamados e documentos. As informações do GLPI são preservadas.</p>
         {status?.problems?.length > 0 && (
@@ -72,6 +84,7 @@ export function GlpiPage({ data, can, action, api, busy, open }: Props) {
           </div>
         )}
         {error && <p className="inline-warning">{error}</p>}
+        {statusError&&<p className="inline-warning" role="status">{statusError} <button type="button" className="secondary" onClick={()=>{void refresh();}}>Tentar novamente</button></p>}
         <details className="glpi-sync-details">
           <summary>Histórico de sincronização</summary>
           {(data.sync || []).slice(0, 5).map((s: any) => (
@@ -91,12 +104,13 @@ export function GlpiPage({ data, can, action, api, busy, open }: Props) {
       <div className="detail-grid">
         <section className="panel">
           <div className="panel-heading">
-            <h2>{queue==="pending"?"Chamados pendentes no GLPI":"Demais chamados"}</h2>
+            <h2>{queue==="pending"?"Chamados pendentes no GLPI":queue==="solved"?"Chamados solucionados":"Demais chamados"}</h2>
             <span className="counter">{visible.length}</span>
           </div>
           <div className="glpi-queue-tabs" role="group" aria-label="Separar chamados por status do GLPI">
-            <button className={queue==="regular"?"primary":"secondary"} aria-pressed={queue==="regular"} onClick={()=>{setQueue("regular");setSelected("");}}>Demais chamados ({tickets.filter(t=>!isGlpiPending(t.status)).length})</button>
+            <button className={queue==="regular"?"primary":"secondary"} aria-pressed={queue==="regular"} onClick={()=>{setQueue("regular");setSelected("");}}>Demais chamados ({tickets.filter(t=>!isGlpiPending(t.status)&&!isGlpiSolved(t.status)).length})</button>
             <button className={queue==="pending"?"primary":"secondary"} aria-pressed={queue==="pending"} onClick={()=>{setQueue("pending");setSelected("");}}>Pendentes no GLPI ({tickets.filter(t=>isGlpiPending(t.status)).length})</button>
+            <button className={queue==="solved"?"primary":"secondary"} aria-pressed={queue==="solved"} onClick={()=>{setQueue("solved");setSelected("");}}>Solucionados ({tickets.filter(t=>isGlpiSolved(t.status)).length})</button>
           </div>
           <label>Buscar chamado<input type="search" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Número GLPI, organização ou CNPJ"/></label>
           <p className="muted">Selecione um chamado para ver o pedido e os documentos. A conferência do preenchimento fica na demanda vinculada.</p>
@@ -121,7 +135,7 @@ export function GlpiPage({ data, can, action, api, busy, open }: Props) {
           {!visible.length && (
             <div className="empty">
               <Inbox />
-              <h3>{queue==="pending"?"Nenhum chamado pendente importado":"Nenhum chamado nesta lista"}</h3>
+              <h3>{queue==="pending"?"Nenhum chamado pendente importado":queue==="solved"?"Nenhum chamado solucionado importado":"Nenhum chamado nesta lista"}</h3>
               <p>Execute a sincronização para ler os chamados dos grupos autorizados.</p>
             </div>
           )}

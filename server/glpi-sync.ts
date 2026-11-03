@@ -9,7 +9,7 @@ import { scheduleContractProcessing } from "./contract-processing.js";
 import {dailySyncTimes,latestDueSlot,scheduleTimezone} from './glpi-schedule.js';
 
 export function ticketSource(): TicketSource {
-  return process.env.GLPI_MODE === "real" ? new RealGlpiSource(glpiConfig(),fetch,all("SELECT external_id FROM glpi_tickets WHERE mode='real' AND status IN ('1','2','3','4')").map(t=>t.external_id)) : new DemoTicketSource();
+  return process.env.GLPI_MODE === "real" ? new RealGlpiSource(glpiConfig(),fetch,all("SELECT external_id FROM glpi_tickets WHERE mode='real' AND status IN ('1','2','3','4','5')").map(t=>t.external_id)) : new DemoTicketSource();
 }
 export function glpiStatus() {
   const config = glpiConfig();
@@ -23,6 +23,8 @@ export function glpiStatus() {
     dailyTimes: dailySyncTimes(),
     scheduleTimezone,
     readOnly: true,
+    running,
+    startedAt: syncStartedAt,
   };
 }
 function context() {
@@ -32,12 +34,14 @@ function context() {
   };
 }
 let running = false;
+let syncStartedAt:string|null=null;
 /** Imports tickets into a staging table. Idempotent by ticket id + content hash.
  * External changes never overwrite local demands, data or approvals: they are recorded as a new
  * immutable version and flagged for human review. */
 export async function syncGlpi(userId: string | null, source = ticketSource(), timeoutMs = 600000) {
   if (running) throw Error("Já existe uma sincronização em andamento.");
   running = true;
+  syncStartedAt=now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const summary = { read: 0, created: 0, changed: 0, unchanged: 0, linkedChanged: 0, demandsCreated: 0, schools: { created: 0, matched: 0, skipped: 0, conflicts: 0 } };
@@ -106,6 +110,7 @@ export async function syncGlpi(userId: string | null, source = ticketSource(), t
   } finally {
     clearTimeout(timer);
     running = false;
+    syncStartedAt=null;
   }
 }
 export function scheduleMinutes() {

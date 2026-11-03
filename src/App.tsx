@@ -32,6 +32,7 @@ import { AttachmentCheck } from "./AttachmentCheck";
 import { SimpleDemand } from "./SimpleDemand";
 import { Reports } from "./Reports";
 import { ProcessingSummary } from './ProcessingSummary';
+import { ProcessingProgress } from './ProcessingProgress';
 import { GovernancePanel, SignedHistoryPanel } from "./GovernancePanel";
 import { requiredDataFields, validateData } from "../shared/data-validation";
 import { bankFields } from "../shared/request-policy";
@@ -41,7 +42,7 @@ import { OfficialPanel } from "./OfficialPanel";
 import { GlpiPage } from "./GlpiPage";
 import { OfficialTemplates } from "./OfficialTemplates";
 import { TemplateViewer } from "./TemplateViewer";
-import {glpiStatusLabel,glpiPriorityLabel,demandPriorityRank,matchesDemandQueue,type DemandQueue} from "../shared/glpi-ticket-meta";
+import {glpiStatusLabel,glpiPriorityLabel,demandPriorityRank,matchesDemandQueue,isGlpiSolved,type DemandQueue} from "../shared/glpi-ticket-meta";
 import { officialInputs } from "../shared/official-fields";
 import { organizationAllowed } from "../shared/organization-policy";
 import { Organizations } from "./Organizations";
@@ -135,6 +136,7 @@ const date = (s: string) =>
     : "—";
 async function api(path: string, body?: any, method?: string) {
   const r = await fetch("/api" + path, {
+    signal: ['/glpi/status','/glpi/tickets'].includes(path)||path.startsWith('/processing/progress?')?AbortSignal.timeout(20000):path==='/sync'?AbortSignal.timeout(615000):undefined,
     method: method || (body ? "POST" : "GET"),
     headers:
       body instanceof FormData ? {} : { "Content-Type": "application/json" },
@@ -437,8 +439,9 @@ export function App() {
                 </button>
                 <small>
                   {d.id} <span>• GLPI #{d.glpi_id || "Manual"}</span>
-                  {d.glpiOrigin && <span> • {glpiStatusLabel(d.glpiOrigin.status)} no GLPI</span>}
+                  {d.glpiOrigin && !isGlpiSolved(d.glpiOrigin.status) && <span> • {glpiStatusLabel(d.glpiOrigin.status)} no GLPI</span>}
                 </small>
+                {d.glpiOrigin && isGlpiSolved(d.glpiOrigin.status) && <span className="badge glpi-solved-badge" title="O chamado foi solucionado no GLPI; esta demanda ainda pode ter pendências de análise ou correção.">✓ Chamado solucionado no GLPI</span>}
               </td>
               <td>
                 {d.type}
@@ -1569,7 +1572,7 @@ export function App() {
                 <>
                   <section className="panel filters">
                     <div className="glpi-queue-tabs" role="group" aria-label="Separar demandas pelo status do GLPI">
-                      {([ ["all","Todas"],["open","Em andamento"],["pending","Pendentes no GLPI"] ] as const).map(([key,label])=><button key={key} type="button" className={demandQueue===key?"primary":"secondary"} aria-pressed={demandQueue===key} onClick={()=>setDemandQueue(key)}>{label} ({data.demands.filter((d:any)=>matchesDemandQueue(d,key)).length})</button>)}
+                      {([ ["all","Todas"],["open","Em andamento"],["pending","Pendentes no GLPI"],["solved","Solucionados"] ] as const).map(([key,label])=><button key={key} type="button" className={demandQueue===key?"primary":"secondary"} aria-pressed={demandQueue===key} onClick={()=>setDemandQueue(key)}>{label} ({data.demands.filter((d:any)=>matchesDemandQueue(d,key)).length})</button>)}
                     </div>
                     <div className="filter-top">
                       <div className="search">
@@ -1667,6 +1670,7 @@ export function App() {
                     </div>
                     </details>
                   </section>
+                  <ProcessingProgress demands={filtered} api={api} allowed={!!can('files')&&!!can('bank')}/>
                   {['Aguardando análise','Aguardando correção'].includes(stage)&&can('files')&&can('bank')&&<ProcessingSummary stage={stage} demands={filtered} api={api}/>}
                   <section className="panel">{table(filtered)}</section>
                   <p className="muted">
