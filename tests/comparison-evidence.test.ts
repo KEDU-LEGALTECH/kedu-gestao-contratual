@@ -1,7 +1,13 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {withDocumentAddress,hasDigitalField} from '../server/comparison-evidence.js';
+import {withDocumentAddress,hasDigitalField,qualifiedNameNeedsReview} from '../server/comparison-evidence.js';
 import {sameFieldValue} from '../shared/value-comparison.js';
+
+test('qualificação entre parênteses exige associação de empresa, sem aprovar ou acusar erro pelo nome curto',()=>{
+ assert.equal(qualifiedNameNeedsReview('razaoSocial',['ESCOLA TESTE (ASSOCIAÇÃO EDUCADORA)'],['Escola Teste']),true);
+ assert.equal(qualifiedNameNeedsReview('razaoSocial',['OUTRA ESCOLA'],['Escola Teste']),false);
+ assert.equal(qualifiedNameNeedsReview('razaoSocial',['ESCOLA TESTE'],['Escola Teste']),false);
+});
 test('marcador NUM não cria divergência de endereço, mas número diferente continua divergente',()=>{
  assert.equal(sameFieldValue('endereco','R SILVER, 314','RUA SILVER NUM 314'),true);
  assert.equal(sameFieldValue('endereco','R SILVER, 315','RUA SILVER NUM 314'),false);
@@ -19,4 +25,12 @@ test('campo digital preserva certeza individual em PDF parcial sem aprovar OCR o
  assert.equal(hasDigitalField(r,'cnpj','11.444.777/0001-61'),false);
  assert.equal(hasDigitalField({...r,method:'OCR de imagem'},'cnpj','31.259.972/0001-29'),false);
  assert.equal(hasDigitalField({...r,formulaCount:1},'cnpj','31.259.972/0001-29'),false);
+});
+
+test('nome do cabeçalho NOME (CNPJ) sem forma jurídica não comprova razão social diferente',async()=>{
+ const {headerTradeName}=await import('../server/comparison-evidence.js');
+ const text='ANEXO l - Demonstrativo de kedu investe e Deduções \nCOLEGIO ERON (61.724.963/0001-22) \nDetalhamento';
+ assert.equal(headerTradeName(text,'COLEGIO ERON'),true);
+ assert.equal(headerTradeName('ESCOLA ALFA LTDA (61.724.963/0001-22)','ESCOLA ALFA LTDA'),false);
+ assert.equal(headerTradeName('Contratante: COLEGIO ERON, CNPJ 61.724.963/0001-22','COLEGIO ERON'),false);
 });

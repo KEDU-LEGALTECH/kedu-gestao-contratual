@@ -9,6 +9,7 @@ export function FieldReadingReview({file,revision,confirm,correct,busy}:any) {
   {(file.fieldReviews||[]).map((field:any)=><section className="reading-confirmation" key={field.key}>
    <h3>{field.label}</h3><small>{file.name}{field.page?` · Página ${field.page}`:''}</small><p>Encontrado: <strong>{field.values.join(' / ')}</strong></p>
    {!!field.expected?.length&&<p>Solicitado no GLPI: {field.expected.join(' / ')}</p>}
+   {field.assistedVisualReview&&<p className="positive">Campo conferido visualmente no original no piloto local. Essa evidência é separada da confirmação do usuário.</p>}
    {field.excerpt?<blockquote style={{whiteSpace:'pre-wrap'}}>{field.excerpt}</blockquote>:<p className="muted">Trecho não localizado. Confira o arquivo original.</p>}
    {field.confirmed?<p className="positive">Leitura conferida nesta versão.</p>:confirm&&file.available&&!file.incomplete&&field.values.length===1?<><label><input type="checkbox" checked={!!checked[field.key]} onChange={e=>setChecked({...checked,[field.key]:e.target.checked})}/> Conferi este campo no original</label><button type="button" className="secondary" disabled={busy||!checked[field.key]} onClick={()=>confirm(file.id,field.key,field.values[0],revision)}>Confirmar leitura deste campo</button></>:<p className="muted">Valores ambíguos ou leitura incompleta precisam de correção ou nova cópia.</p>}
   </section>)}

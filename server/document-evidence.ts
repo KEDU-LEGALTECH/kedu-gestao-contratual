@@ -8,9 +8,13 @@ export function documentSourceKind(file:EvidenceFile) {
   if(/procuracao|outorgante[\s\S]{0,100}outorgad/.test(text))return 'proxy';
   if(/cartao.*cnpj|cadastro nacional da pessoa juridica|comprovante de inscricao e de situacao cadastral/.test(text))return 'registration';
   if(/contrato|instrumento.*(?:garantia|recebiveis)|aditivo/.test(text))return 'contract';
-  if(/comprovante bancario|dados bancarios|pix.*gerenciador|comprovante.*(?:pix|transferencia)|titularidade.*conta/.test(text))return 'bank';
+  if(/comprovante bancario|dados bancarios|pix.*gerenciador|comprovante.*(?:pix|transferencia)|titularidade.*conta/.test(text)||(/recebedor/.test(text)&&/pagador/.test(text)&&/instituicao/.test(text)))return 'bank';
   if(/proposta|simulacao|parcelamentos contratados/.test(text))return 'proposal';
  }
+ // Generic WhatsApp filenames do not identify a bank screenshot. Require the
+ // account-screen context and both explicit agency/account labels, not a name.
+ const screen=norm(file.text||'');
+ if(/\.(?:png|jpe?g|webp)$/i.test(file.name)&&/\b(?:acessar conta|saldo|conta corrente)\b/.test(screen)&&/\bag\.?\s*:?\s*\d{1,6}(?:-[\dx])?\s*[-·•«| ]*cc\.?\s*:?\s*\d{2,15}/i.test(screen))return 'bank';
  if(/\.xlsx$/i.test(file.name))return 'proposal';
  return 'unknown';
 }

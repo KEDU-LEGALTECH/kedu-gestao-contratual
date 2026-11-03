@@ -13,7 +13,7 @@ import { invalidate } from "./workflow.js";
 import {requestExpectations,requestCompanyReferences,sameRequestedValue,distinctRequestedValues} from './request-expectations.js';
 import {installmentTableFields} from './installment-table.js';
 import {identifyDocumentHeading,receivedDocumentKind} from '../shared/document-heading.js';
-import {attachmentRole,fieldsForRole,automaticReadingCheck} from './reading-policy.js';
+import {attachmentRole,fieldsForRole,automaticReadingCheck,unusedPersonalId} from './reading-policy.js';
 import {scopePartyReading,extractContractParties,selectContractParty} from './contract-parties.js';
 import {fieldExcerpt,readingGuidance,proposedChanges} from './reading-guidance.js';
 import {processingStatus} from './processing-status.js';
@@ -22,11 +22,16 @@ import {validateReadings} from './reading-validation.js';
 import {ReadingJobQueue} from './reading-job-queue.js';
 import {needsReadingRecovery,preservePreviousReading} from './reading-recovery-policy.js';
 import {identityEvidence} from './identity-evidence.js';
-import {withDocumentAddress,hasDigitalField} from './comparison-evidence.js';
+import {withDocumentAddress,hasDigitalField,qualifiedNameNeedsReview,digitalFieldOrigin,headerTradeName} from './comparison-evidence.js';
 import {recoverTextFields} from './text-recovery.js';
+import {assistedVisualField,assistedVisualAbsence} from './assisted-visual-evidence.js';
 import {readWithVision,visionConfig,visionSignature,shouldReadVision} from './vision-reading.js';
 import {plausibleFieldValue,ownIdentity} from './field-plausibility.js';
+import {guidedConfirmation} from './guided-confirmation.js';
+import {blankImage,blankImageMessage} from './blank-image.js';
 import {notApplicableReason,cessionClauseCheck,reportIdentity} from './comparison-profile.js';
+import {comparisonReviewReason} from './comparison-review-reason.js';
+import {matchesImportedAttachment} from './attachment-cache-proof.js';
 // Tiny images without any text (logos, signatures, illustrations) are not unreadable documents.
 const logoImage=(f:any)=>!!f.problem&&/\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name)&&f.byteLength<80000&&/nenhum texto leg/i.test(f.problem);
 export function receivedDocumentTypes(did:string) {
@@ -41,7 +46,7 @@ const running=new Set<string>();
 function fingerprint(did:string) {
  const d=one("SELECT school_id,contract_id,data_version FROM demands WHERE id=?",did);
  return sha256(Buffer.from(JSON.stringify([
-  'hybrid-local-ocr-v18-vision-suggestions',
+  'hybrid-local-ocr-v25-header-trade-name',
   d,
   all("SELECT v.id,v.status,s.template_hash,h.template_hash AS approved_hash,i.version_id AS inactive FROM template_sources s JOIN template_versions v ON v.id=s.version_id LEFT JOIN template_homologations h ON h.version_id=v.id LEFT JOIN inactive_template_versions i ON i.version_id=v.id ORDER BY v.id"),
   all("SELECT id,parent_id,sequence,status FROM contracts WHERE school_id=? ORDER BY id",d?.school_id),
@@ -62,7 +67,7 @@ export function ensureProcessing(did:string) {
  return one("SELECT * FROM contract_processing WHERE demand_id=?",did);
 }
 function filesFor(did:string,hash:string) {
- const files=all("SELECT id,demand_id,document_id,ticket_hash,name,mime,extracted,problem,created,length(bytes) AS byteLength FROM processing_files WHERE demand_id=? ORDER BY rowid DESC",did).filter(f=>f.ticket_hash===hash || f.ticket_hash.startsWith(hash+":correction:"));
+ const files=all("SELECT id,demand_id,document_id,ticket_hash,name,mime,extracted,problem,created,length(bytes) AS byteLength,substr(bytes,1,24) AS head FROM processing_files WHERE demand_id=? ORDER BY rowid DESC",did).filter(f=>f.ticket_hash===hash || f.ticket_hash.startsWith(hash+":correction:"));
  return files.filter((f,i)=>files.findIndex(x=>x.document_id===f.document_id)===i);
 }
 function extractionReviewed(file:any) {
@@ -81,7 +86,7 @@ export function buildProcessingPlan(did:string) {
  // A textless small image is a logo only when another attachment carries the document itself.
  const isLogo=(f:any)=>logoImage(f)&&files.some((other:any)=>other!==f&&!other.problem);
  for(const f of files) {
-  if(f.problem){if(!isLogo(f))add("file:"+f.document_id,f.problem,{source:f.name});continue;}
+  if(f.problem){if(!isLogo(f))add("file:"+f.document_id,blankImage(f)?blankImageMessage:f.problem,{source:f.name});continue;}
   const saved=JSON.parse(f.extracted);
   const fields={...saved.fields,...recoverTextFields(saved.text||'',saved.fields||{})};
   const enriched={...saved,fields:Object.fromEntries(Object.entries(fields).map(([key,vs])=>[key,(vs as string[]).map(v=>normalizeValue(key,v)).filter(Boolean)]))};
@@ -149,21 +154,29 @@ export function buildProcessingPlan(did:string) {
  }
  if(!values.modalidade){const named=["Garantia Completa","Garantia Conjunta","Garantia Prevista"].filter(x=>norm(htmlToText(raw.content).join(" ")+" "+raw.title).includes(norm(x)));if(named.length===1){values.modalidade=named[0];origins.modalidade="Modalidade explicitamente citada no chamado GLPI";}}
  const comparable=new Set(editableKeys.filter(key=>!["motivo","matriz"].includes(key)));
- const evidenceFiles=(raw.documents||[]).filter((doc:any)=>{const f=files.find(f=>f.document_id===String(doc.id));return !f||!isLogo(f);}).map((doc:any)=>{const f=files.find(f=>f.document_id===String(doc.id));const e=f?JSON.parse(f.extracted):{};return {name:f?.name||doc.name||'Anexo',text:e.text||'',problem:f?.problem||(!f?'Anexo ainda não obtido':''),incomplete:!!e.incomplete};});
+ const evidenceFiles=(raw.documents||[]).filter((doc:any)=>{const f=files.find(f=>f.document_id===String(doc.id));return !f||!isLogo(f)&&!blankImage(f);}).map((doc:any)=>{const f=files.find(f=>f.document_id===String(doc.id));const e=f?JSON.parse(f.extracted):{};return {name:f?.name||doc.name||'Anexo',text:e.text||'',problem:f?.problem||(!f?'Anexo ainda não obtido':''),incomplete:!!e.incomplete};});
  const profileFiles=files.filter(f=>!isLogo(f)).map(f=>{const e=JSON.parse(f.extracted);return {name:f.name,text:e.text||'',problem:f.problem,incomplete:!!e.incomplete,method:e.method};});
  const comparisons:any[]=Object.entries(request).filter(([key])=>comparable.has(key)).map(([key,expected])=>{
-  const found=distinctRequestedValues(key,(candidates[key]||[]).map(c=>c.value));
+  const located=distinctRequestedValues(key,(candidates[key]||[]).map(c=>c.value));
+  // No extractor captured the field, but the exact requested value is printed in an attachment.
+  const guided=!located.length&&expected.length===1?guidedConfirmation(key,expected[0],files):undefined;
+  const found=guided?[guided.value]:located;
   const companies=key==='cnpj'&&expected.length>1?requestCompanyReferences(raw.content):[];
   const invalidReference=expected.length===1&&['cnpj','representanteCpf','documentoTitular'].includes(key)&&!plausibleFieldValue(key,expected[0]);
   const corrected=expected.length===1 && Object.hasOwn(overrides,key) && sameRequestedValue(key,String(overrides[key]),expected[0]);
   const matches=expected.length===1 && found.length>0 && found.every(v=>sameRequestedValue(key,v,expected[0]));
+  const tradeName=key==='razaoSocial'&&!matches&&!guided&&!!candidates[key]?.length&&candidates[key].every(c=>headerTradeName(JSON.parse(files.find(f=>f.id===c.fileId)!.extracted).text,c.value));
   // Several values where one equals the request (branches, partners, witnesses) need a check, not a correction.
   const partlyMatches=!matches && expected.length===1 && found.length>1 && found.some(v=>sameRequestedValue(key,v,expected[0]));
   const previousVersion=!found.length&&(raw.documents||[]).some((doc:any)=>!files.some(f=>f.document_id===String(doc.id))&&one('SELECT id FROM processing_files WHERE demand_id=? AND document_id=? LIMIT 1',did,String(doc.id)));
-  const evidence=previousVersion?{...missingFieldEvidence(key,evidenceFiles),reason:'awaiting_version',message:'O chamado foi atualizado. A leitura disponível pertence à versão anterior; aguardando obter e conferir os anexos da versão atual.'}:missingFieldEvidence(key,evidenceFiles);
+  const visuallyAbsent=!found.length&&files.length>0&&files.every(f=>!f.problem&&assistedVisualAbsence(JSON.parse(f.extracted),key));
+  const evidence=previousVersion?{...missingFieldEvidence(key,evidenceFiles),reason:'awaiting_version',message:'O chamado foi atualizado. A leitura disponível pertence à versão anterior; aguardando obter e conferir os anexos da versão atual.'}:visuallyAbsent?{...missingFieldEvidence(key,evidenceFiles),reason:'not_printed',message:'Os anexos foram conferidos visualmente e este dado não está informado. Solicite um documento que o contenha ou esclareça o pedido; não se trata de falha de OCR.'}:missingFieldEvidence(key,evidenceFiles);
   const notApplicable=!found.length&&!corrected&&expected.length===1?notApplicableReason(demandType,key,profileFiles):'';
   if(!found.length && !corrected && !notApplicable && !issues.some(i=>i.field===key))add(key,evidence.message,{expected:expected.join("; "),source:evidence.expectedDocument});
-  const trustedMatch=matches&&(candidates[key]||[]).some(c=>{
+  // Certainty concerns the extracted value, independently of agreement with GLPI.
+  // One proven mismatch must not become inconclusive because a duplicate OCR
+  // attachment supplies the same value but has lower reading confidence.
+  const trustedReading=found.length===1&&(candidates[key]||[]).some(c=>{
    const file=files.find(f=>f.id===c.fileId)!;
    const reading=JSON.parse(file.extracted),role=attachmentRole(file.name,reading.text||'');
    if(file.problem)return false;
@@ -176,7 +189,7 @@ export function buildProcessingPlan(did:string) {
    if(checked&&sameRequestedValue(key,checked.value,c.value))return true;
    return !reading.needsReview||automaticReadingCheck({...reading,fields:{[key]:[c.value]}},role,request);
   });
-  const needsFieldReview=!trustedMatch&&(candidates[key]||[]).some(c=>{
+  const needsFieldReview=tradeName||!!guided&&!guided.associated||qualifiedNameNeedsReview(key,found,expected)||!trustedReading&&(candidates[key]||[]).some(c=>{
    const pending=issues.filter(i=>i.field.startsWith('review:')&&i.field.endsWith(c.fileId));
    if(!pending.length)return false;
    // Structural, partial and legal reviews remain independent of OCR certainty.
@@ -187,16 +200,23 @@ export function buildProcessingPlan(did:string) {
    if(!reading.incomplete&&confirmed&&sameRequestedValue(key,confirmed.value,c.value))return false;
    return !automaticReadingCheck({...reading,fields:{[key]:[c.value]}},role,request);
   });
-  return {field:key,matchesReference:matches,partlyMatches,expectedEntities:companies,message:companies.length>1?'O chamado menciona mais de uma empresa. Os CNPJs foram separados; confira cada arquivo com a empresa correspondente. O CNPJ do titular bancário não comprova, sozinho, o CNPJ do contrato social.':invalidReference?'O documento informado no GLPI tem quantidade de dígitos ou dígitos verificadores inválidos. Confirme a referência no chamado antes de solicitar alteração do arquivo.':undefined,missingReason:!found.length?evidence.reason:undefined,expectedDocument:evidence.expectedDocument,sourceDocuments:evidence.sourceDocuments,readingPending:needsFieldReview||partlyMatches,label:analysis.suggestion.type==="Parcelamento" && key==="valor"?"Valor parcelado":analysis.suggestion.type==="Parcelamento" && key==="parcelas"?"Quantidade de parcelas":inputLabels[key]||key,expected:expected.join("; "),found:found.join("; "),source:[...new Set((candidates[key]||[]).map(c=>c.source))].join("; "),used:values[key]||"",note:notApplicable||undefined,status:invalidReference||expected.length>1?"ambiguous":corrected?"corrected":notApplicable?"not_applicable":!found.length?"missing":needsFieldReview||partlyMatches?"review":!matches?"different":"matches"};
+  return {field:key,reviewReason:needsFieldReview||partlyMatches?comparisonReviewReason({tradeName,guided:!!guided&&!guided.associated,qualifiedName:qualifiedNameNeedsReview(key,found,expected),conflictingValues:partlyMatches,readings:(candidates[key]||[]).map(c=>JSON.parse(files.find(f=>f.id===c.fileId)!.extracted)),field:key}):undefined,matchesReference:matches,partlyMatches,expectedEntities:companies,message:companies.length>1?'O chamado menciona mais de uma empresa. Os CNPJs foram separados; confira cada arquivo com a empresa correspondente. O CNPJ do titular bancário não comprova, sozinho, o CNPJ do contrato social.':invalidReference?'O documento informado no GLPI tem quantidade de dígitos ou dígitos verificadores inválidos. Confirme a referência no chamado antes de solicitar alteração do arquivo.':undefined,missingReason:!found.length?evidence.reason:undefined,expectedDocument:evidence.expectedDocument,sourceDocuments:evidence.sourceDocuments,readingPending:needsFieldReview||partlyMatches,label:analysis.suggestion.type==="Parcelamento" && key==="valor"?"Valor parcelado":analysis.suggestion.type==="Parcelamento" && key==="parcelas"?"Quantidade de parcelas":inputLabels[key]||key,expected:expected.join("; "),found:found.join("; "),source:guided?guided.source+(guided.associated?" (valor localizado junto ao rótulo do campo)":" (valor do chamado localizado no texto)"):[...new Set((candidates[key]||[]).map(c=>c.source))].join("; "),used:values[key]||"",note:notApplicable||undefined,status:invalidReference||expected.length>1?"ambiguous":corrected?"corrected":notApplicable?"not_applicable":!found.length?"missing":needsFieldReview||partlyMatches?"review":!matches?"different":"matches"};
  });
  // Confidence belongs to the requested fields. Unused OCR fields must not keep an otherwise
  // completely read file pending after every requested field it supplies has independent proof.
  for(const f of files){
   const index=issues.findIndex(i=>i.field==='review:'+f.id);if(index<0||f.problem)continue;
   const e=JSON.parse(f.extracted),role=attachmentRole(f.name,e.text||'');
+  // Unrequested calculations do not invalidate an identity read from literal
+  // workbook cells. Financial/calculated fields never qualify for this rule.
+  const literalRelated=comparisons.filter(c=>request[c.field]?.length&&(candidates[c.field]||[]).some(v=>v.fileId===f.id));
+  if(/^XLSX(?: com OCR)?$/.test(e.method||'')&&e.literalIdentityFields&&literalRelated.length&&literalRelated.every(c=>c.status==='matches'&&!c.readingPending&&['cnpj','razaoSocial','nomeFantasia'].includes(c.field)&&e.literalIdentityFields[c.field]?.length===1)){
+   issues.splice(index,1);continue;
+  }
   if(e.incomplete||!Number.isInteger(e.pages)||e.pages<1||(e.formulaCount||0)>0||['counterproposal','simulation','report'].includes(role))continue;
   if(issues.some(i=>i.field.startsWith('review:')&&i.field.endsWith(f.id)&&i.field!=='review:'+f.id))continue;
   const related=comparisons.filter(c=>request[c.field]?.length&&(candidates[c.field]||[]).some(v=>v.fileId===f.id));
+  if(!related.length&&unusedPersonalId(e,f.name,request,comparisons)){issues.splice(index,1);continue;}
   if(related.length&&related.every(c=>c.status==='matches'&&!c.readingPending))issues.splice(index,1);
  }
  const cession=cessionClauseCheck(demandType,profileFiles);
@@ -260,8 +280,9 @@ export function buildProcessingPlan(did:string) {
     const vs=candidates[key]||[];
     const values=distinctRequestedValues(key,vs.filter(c=>c.fileId===f.id).map(c=>c.value));
     const check=one('SELECT * FROM processing_field_reviews WHERE file_id=? AND field=?',f.id,key);
-    const evidence=values.length===1?identityEvidence(e,key,values[0],attachmentRole(f.name,e.text||'')):null;
-    return {key,label:inputLabels[key]||key,values,expected:request[key]||[],page:evidence?.page||e.fieldOrigins?.[key]?.[0]?.page||(e.pages===1?1:undefined),excerpt:evidence?.excerpt||(scope.selected&&['cnpj','razaoSocial'].includes(key)?scope.selected.excerpt:fieldExcerpt(e.text||'',values)),confirmed:!!check&&check.extraction_hash===sha256(Buffer.from(f.extracted))&&values.length===1&&sameRequestedValue(key,check.value,values[0])};
+    const evidence=values.length===1?(digitalFieldOrigin(e,key,values[0])||identityEvidence(e,key,values[0],attachmentRole(f.name,e.text||''))):null;
+    const assisted=values.length===1?assistedVisualField(e,key,values[0],attachmentRole(f.name,e.text||'')):null;
+    return {key,label:inputLabels[key]||key,values,expected:request[key]||[],assistedVisualReview:!!assisted,page:assisted?.page||evidence?.page||e.fieldOrigins?.[key]?.[0]?.page||(e.pages===1?1:undefined),excerpt:assisted?.excerpt||evidence?.excerpt||(scope.selected&&['cnpj','razaoSocial'].includes(key)?scope.selected.excerpt:fieldExcerpt(e.text||'',values)),confirmed:!!check&&check.extraction_hash===sha256(Buffer.from(f.extracted))&&values.length===1&&sameRequestedValue(key,check.value,values[0])};
    }),
    available:!!f.byteLength,incomplete:!!e.incomplete,role:attachmentRole(f.name,e.text||''),
    readingValidatedAutomatically:automaticReadingCheck(e,attachmentRole(f.name,e.text||''),request),
@@ -289,17 +310,19 @@ export async function processContract(did:string,userId:string|null=null,downloa
    if(!force&&!needsReadingRecovery(cached))continue;
    let file:any,extracted:any;
    try {
+    const provenPrevious=!cached?.byteLength?all('SELECT * FROM processing_files WHERE demand_id=? AND document_id=? AND length(bytes)>0 ORDER BY rowid DESC',did,String(doc.id)).find(f=>matchesImportedAttachment(Buffer.from(f.bytes),doc.sha1)):null;
     if(cached?.byteLength)file={name:cached.name,mime:cached.mime,bytes:Buffer.from(one('SELECT bytes FROM processing_files WHERE id=?',cached.id).bytes)};
+    else if(provenPrevious)file={name:doc.name||provenPrevious.name,mime:provenPrevious.mime,bytes:Buffer.from(provenPrevious.bytes)};
     else for(let attempt=0;attempt<3;attempt++){
      try {file=await download(demand.glpi_id,String(doc.id),AbortSignal.timeout(30000));if(!file.bytes.length)throw Error('Arquivo vazio.');break;}
      catch(error:any){if(attempt===2 || [400,401,403,404].includes(error?.status))throw error;}
     }
-    const previous=!cached?.byteLength?one('SELECT extracted,problem,bytes FROM processing_files WHERE demand_id=? AND document_id=? AND length(bytes)>0 ORDER BY rowid DESC LIMIT 1',did,String(doc.id)):null;
+    const previous=provenPrevious||(!cached?.byteLength?one('SELECT extracted,problem,bytes FROM processing_files WHERE demand_id=? AND document_id=? AND length(bytes)>0 ORDER BY rowid DESC LIMIT 1',did,String(doc.id)):null);
     // A changed ticket can retain the exact same attachment. Verify current GLPI bytes before reuse.
     if(previous&&!previous.problem&&sha256(Buffer.from(previous.bytes))===sha256(file.bytes)&&!needsReadingRecovery({byteLength:file.bytes.length,extracted:previous.extracted}))extracted=JSON.parse(previous.extracted);
     else extracted=await readProcessingFile(file.bytes,file.name);
    }
-   catch{file??={name:doc.name,mime:doc.mime||"application/octet-stream",bytes:Buffer.alloc(0)};extracted={version:readerVersion,text:"",fields:{},problem:file.bytes.length?"O original está disponível, mas a leitura falhou. Confira o arquivo ou envie uma cópia acessível.":"Não foi possível baixar o anexo após as tentativas de recuperação. Confira a disponibilidade no GLPI.",method:'inconclusiva',needsReview:false};}
+   catch(error){file??={name:doc.name,mime:doc.mime||"application/octet-stream",bytes:Buffer.alloc(0)};extracted={version:readerVersion,text:"",fields:{},problem:file.bytes.length?"O original está disponível, mas a leitura falhou. Confira o arquivo ou envie uma cópia acessível.":"Não foi possível baixar o anexo após as tentativas de recuperação. Confira a disponibilidade no GLPI.",failureDetail:failureDetail(error),method:'inconclusiva',needsReview:false};}
    if(one("SELECT hash FROM glpi_tickets WHERE external_id=?",demand.glpi_id)?.hash!==ticket.hash)return;
    // A crashed or unavailable reader never replaces a reading that already worked; it is retried later.
    if(preservePreviousReading(cached?.extracted,extracted))continue;
@@ -322,7 +345,7 @@ export async function processContract(did:string,userId:string|null=null,downloa
    }
   }
   if(one("SELECT hash FROM glpi_tickets WHERE external_id=?",demand.glpi_id)?.hash===ticket.hash){saveProcessingResult(did);audit(did,userId,"Leitura automática do GLPI e validação do preenchimento concluídas; sem escrita no helpdesk.");}
- }catch{run("UPDATE contract_processing SET status='Aguardando análise',result=?,updated=? WHERE demand_id=?",JSON.stringify({issues:[{field:"processing",label:"Leitura do chamado",message:"Não foi possível concluir a leitura. Tente novamente."}],values:{},files:[],templates:[]}),now(),did);}
+ }catch(error){lastProcessingError.set(did,failureDetail(error));run("UPDATE contract_processing SET status='Aguardando análise',result=?,updated=? WHERE demand_id=?",JSON.stringify({issues:[{field:"processing",label:"Leitura do chamado",message:"Não foi possível concluir a leitura. Tente novamente."}],values:{},files:[],templates:[]}),now(),did);}
  finally{running.delete(did);}
 }
 let durableQueue:ReadingJobQueue|undefined,draining=false;
@@ -333,6 +356,32 @@ function needsDemandRecovery(did:string,hash:string) {
   const file=cached.find(f=>f.document_id===String(doc.id));
   return needsReadingRecovery(file)&&!(file&&extractionReviewed(file))&&!(file&&logoImage(file)&&cached.some(other=>other.id!==file.id&&!other.problem));
  });
+}
+/** Short operator-facing cause; GLPI client messages are already sanitized (no tokens or URLs). */
+function failureDetail(error:any){
+ const status=Number.isInteger(error?.status)?` (HTTP ${error.status})`:'';
+ const message=String(error?.name==='TimeoutError'?'Tempo limite excedido':error?.message||error||'Erro sem mensagem').replace(/https?:\/\/\S+/g,'[url]').replace(/\s+/g,' ').trim();
+ return (message+status).slice(0,200);
+}
+const lastProcessingError=new Map<string,string>();
+/** Why each document of the demand still needs recovery, recorded on the reading job. */
+export function recoveryReason(did:string,hash:string,ignorePause=false){
+ if(!ignorePause&&recoveryPaused())return 'Leitura automática pausada (documentReadingPaused).';
+ const cached=filesFor(did,hash),ticket=one('SELECT payload FROM glpi_tickets WHERE external_id=(SELECT glpi_id FROM demands WHERE id=?)',did);
+ const reasons=(JSON.parse(ticket?.payload||'{}').documents||[]).flatMap((doc:any)=>{
+  const file=cached.find(f=>f.document_id===String(doc.id));
+  if(!needsReadingRecovery(file)||file&&extractionReviewed(file)||file&&logoImage(file)&&cached.some(other=>other.id!==file.id&&!other.problem))return [];
+  const name=String(file?.name||doc.name||doc.id).slice(0,60);
+  if(!file)return [`${name}: anexo ainda não baixado`];
+  let e:any={};try{e=JSON.parse(file.extracted);}catch{return [`${name}: leitura salva corrompida`];}
+  if(!file.byteLength)return [`${name}: download falhou${e.failureDetail?' — '+e.failureDetail:''}`];
+  if(file.problem||e.problem)return [`${name}: leitura falhou${e.failureDetail?' — '+e.failureDetail:' — '+String(file.problem||e.problem).slice(0,80)}`];
+  if(e.transient)return [`${name}: falha temporária do leitor`];
+  if(e.incomplete)return [`${name}: leitura parcial (${e.completedPages?.length||0}/${e.pages||'?'} páginas)`];
+  return [`${name}: lido sem texto nem campos reconhecidos`];
+ });
+ const outer=lastProcessingError.get(did);lastProcessingError.delete(did);
+ return [outer&&'Erro no processamento: '+outer,...reasons].filter(Boolean).join(' | ')||'Recuperação pendente sem causa identificada';
 }
 function recoveryProgress(did:string,hash:string){return filesFor(did,hash).reduce((total,f)=>{const e=JSON.parse(f.extracted);return total+(f.byteLength?1:0)+(e.completedPages?.length||0)+Object.keys(e.fields||{}).length;},0);}
 async function drainReadingQueue() {
@@ -352,8 +401,9 @@ async function drainReadingQueue() {
     const after=recoveryProgress(job.demand_id,job.ticket_hash);
     const current=processingSource(job.demand_id);
     if(current.ticket?.hash!==job.ticket_hash)durableQueue!.finish(job,'superseded');
-    else durableQueue!.finish(job,needsDemandRecovery(job.demand_id,job.ticket_hash)?'retry':'done','',after>before?after:undefined);
-   }catch{durableQueue!.finish(job,'retry','Tentativa interrompida; resultados anteriores preservados');}
+    else if(needsDemandRecovery(job.demand_id,job.ticket_hash))durableQueue!.finish(job,'retry',recoveryReason(job.demand_id,job.ticket_hash),after>before?after:undefined);
+    else durableQueue!.finish(job,'done','',after>before?after:undefined);
+   }catch(error){durableQueue!.finish(job,'retry','Tentativa interrompida; resultados anteriores preservados. '+failureDetail(error));}
   }
  }finally{draining=false;}
 }

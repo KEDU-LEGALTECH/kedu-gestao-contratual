@@ -4,6 +4,12 @@ import {editableKeys} from './processing-extract.js';
 import {documentSourceKind} from './document-evidence.js';
 import {identityEvidence,type FieldOrigin} from './identity-evidence.js';
 import {verifiedFieldEvidence} from './verified-field-evidence.js';
+import {assistedVisualField} from './assisted-visual-evidence.js';
+/** A fully read personal ID is not an unresolved contract field when no representative
+ * information was requested and every requested comparison has already been verified. */
+export function unusedPersonalId(reading:any,name:string,request:Record<string,string[]>,comparisons:{status:string;readingPending?:boolean}[]){
+ return !reading.problem&&!reading.incomplete&&!reading.formulaCount&&reading.pages>=1&&Object.keys(reading.fields||{}).length===0&&/\b(?:CNH|RG)\b|identidade/i.test(name)&&/carteira nacional de habilita|carteira de identidade|registro geral|documento de identifica/i.test(reading.text||'')&&!request.representanteNome?.length&&!request.representanteCpf?.length&&comparisons.length>0&&comparisons.every(c=>['matches','corrected','not_applicable'].includes(c.status)&&!c.readingPending);
+}
 /** Keep explicitly labelled fields omitted by the preferred OCR pass, without replacing conflicts. */
 export function complementaryOcrFields(preferred:Record<string,string[]>,other:Record<string,string[]>,confidence:number) {
  if(confidence<85)return {};
@@ -27,7 +33,7 @@ export function interruptedReading<T extends {text:string;needsReview:boolean;wa
  return {...partial,needsReview:true,incomplete:true,warnings:[...(partial.warnings||[]),message]};
 }
 /** Verifies extraction only; never grants legal approval or ignores missing data. */
-export function automaticReadingCheck(reading:{text:string;fields:Record<string,string[]>;method?:string;problem?:string;incomplete?:boolean;confidence?:number;fieldConfidence?:Record<string,number>;formulaCount?:number;verifiedFields?:string[];digitalFields?:Record<string,string[]>;pages?:number;fieldOrigins?:Record<string,FieldOrigin[]>},role:string,reference:Record<string,string[]>) {
+export function automaticReadingCheck(reading:{text:string;fields:Record<string,string[]>;method?:string;problem?:string;incomplete?:boolean;confidence?:number;fieldConfidence?:Record<string,number>;formulaCount?:number;verifiedFields?:string[];digitalFields?:Record<string,string[]>;pages?:number;fieldOrigins?:Record<string,FieldOrigin[]>;assistedVisualEvidence?:unknown[];originalHash?:string;sourceFileId?:string},role:string,reference:Record<string,string[]>) {
  if(!reading.text.trim()||reading.problem||reading.incomplete||['simulation','counterproposal','report'].includes(role))return false;
  if((reading.formulaCount||0)>0)return false;
  if(reading.method==='XLSX')return reading.formulaCount===0;
@@ -40,5 +46,5 @@ export function automaticReadingCheck(reading:{text:string;fields:Record<string,
  const expected=fieldsForRole(role,Object.fromEntries(Object.entries(reference).filter(([key])=>editableKeys.includes(key)&&!['motivo','matriz'].includes(key))));
  const keys=Object.keys(fields);
  // Matching GLPI alone never confirms names, addresses, city, CEP or accounts.
- return /OCR/.test(reading.method||'')&&keys.length>0&&keys.every(key=>fields[key].length===1&&(verifiedFieldEvidence(reading,key,fields[key][0],role)||(expected[key]?.length===1&&sameRequestedValue(key,fields[key][0],expected[key][0])&&!!identityEvidence(reading,key,fields[key][0],role))));
+ return keys.length>0&&keys.every(key=>fields[key].length===1&&(!!assistedVisualField(reading,key,fields[key][0],role)||(/OCR/.test(reading.method||'')&&(verifiedFieldEvidence(reading,key,fields[key][0],role)||(expected[key]?.length===1&&sameRequestedValue(key,fields[key][0],expected[key][0])&&!!identityEvidence(reading,key,fields[key][0],role))))));
 }

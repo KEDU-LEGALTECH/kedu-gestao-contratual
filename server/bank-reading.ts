@@ -5,6 +5,34 @@ const digits=(s:string)=>s.replace(/\D/g,'');
 const documentMask=(d:string)=>d.length===14?`${d.slice(0,2)}.${d.slice(2,5)}.${d.slice(5,8)}/${d.slice(8,12)}-${d.slice(12)}`:`${d.slice(0,3)}.${d.slice(3,6)}.${d.slice(6,9)}-${d.slice(9)}`;
 const validDocument=(value:string)=>{const d=digits(value);return d.length===14?validCnpj(d):d.length===11&&validCpf(d);};
 const holder=(value:string)=>{const v=value.replace(/\s+/g,' ').replace(/[\s,;.:-]+$/,'').trim();return /\p{L}{2}/u.test(v)&&v.length<=120&&!/^(?:cpf|cnpj|conta|ag[êe]ncia|banco)\b/i.test(v)?v:'';};
+/** Sicoob cheque header: Comp / Banco / Cooperativa / C1 / Conta.
+ * The serial number, cheque number and payer data are never account values. */
+export function sicoobChequeFields(source:string):Fields{
+ if(!/\bSICOOB\b/i.test(source)||!/Banco\s+Cooperativa\s+C1\s+Conta/i.test(source)||!/Pague por este|Cheque a quantia/i.test(source))return {};
+ const rows=[...source.matchAll(/\b\d{3}\s+(756)\s+(\d{4})\s+\d\s+(\d{4,15}-[\dXx])(?=\s|$)/g)];
+ const pairs=[...new Set(rows.map(m=>m[2]+'|'+m[3]))];if(pairs.length!==1)return {};
+ const [agency,account]=pairs[0].split('|');const fields:Fields={banco:['756'],agencia:[agency],conta:[account]};
+ const names=[...new Set([...source.matchAll(/(?:^|\n)SICOOB[^\n]{0,50}?\b((?:COL[ÉE]GIO|ESCOLA|INSTITUTO|CENTRO EDUCACIONAL|ASSOCIA[ÇC][ÃA]O) [^\n]{3,100}?\b(?:LTDA|EIRELI|ME))\s*(?=\n|$)/gi)].map(m=>holder(m[1])).filter(Boolean))];
+ const ids=[...new Set([...source.matchAll(/\bCNPJ[.:\s]*(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})(?!\d)/gi)].map(m=>m[1]).filter(validDocument))];
+ if(names.length===1&&ids.length===1){fields.titularConta=names;fields.documentoTitular=ids;}
+ return fields;
+}
+/** A transfer receipt explicitly separates the receiver from the payer. */
+export function receiverBankFields(source:string):Fields|null {
+ const sections=[...source.matchAll(/(?:^|\n)\s*Recebedor\s*:?\s*\n([\s\S]{10,650}?)(?=\n\s*Pagador\s*:?\s*\n)/gi)];
+ if(!sections.length)return null;
+ const fields:Fields={};const add=(key:string,value:string)=>{if(value&&!(fields[key]||=[]).includes(value))fields[key].push(value);};
+ for(const section of sections){const text=section[1],name=holder(text.split('\n')[0]);
+  const document=/(?:^|\n)\s*(?:CPF|CNPJ)\s*:?\s*\n\s*([\d.\/-]+)\s*(?=\n|$)/i.exec(text)?.[1];
+  const agency=/(?:^|\n)\s*Ag[êe]ncia\s*:?\s*\n\s*(\d{1,6}(?:-[\dXx])?)\s*(?=\n|$)/i.exec(text)?.[1];
+  const account=/(?:^|\n)\s*Conta\s*[:|]?\s*\n\s*(\d{1,15}(?:-[\dXx])?)\s*(?=\n|$)/i.exec(text)?.[1];
+  const bank=/(?:^|\n)\s*Institui[çc][ãa]o\s*:?\s*\n\s*([^\n]+)/i.exec(text)?.[1];
+  if(!name||!document||!validDocument(document)||!agency||!account||!bank)continue;
+  add('titularConta',name);add('documentoTitular',documentMask(digits(document)));add('agencia',agency);add('conta',account);add('banco',bank.trim());
+ }
+ // Conflicting receiver sections are not collapsed to the convenient alternative.
+ return Object.keys(fields).length&&Object.values(fields).every(v=>v.length===1)?fields:null;
+}
 export function bankAccountSection(text:string){
  const match=/(?:^|\n)\s*Dados banc[áa]rios(?:[ \t]+Copiar todos)?[ \t]*:?[ \t]*\n/i.exec(text);if(!match)return '';
  return text.slice(match.index+match[0].length).split(/\n\s*(?:Chaves Pix|Dados pessoais|Hist[óo]rico|Observa[çc][õo]es|Assinatura)\b/i)[0].split(/\r?\n/).slice(0,30).join('\n');
@@ -15,6 +43,8 @@ export function bankAccountSection(text:string){
  * account statements and payment-account declarations. Only explicit labels are read.
  */
 export function bankFields(source:string):Fields {
+ const receiver=receiverBankFields(source);if(receiver)return receiver;
+ const cheque=sicoobChequeFields(source);if(Object.keys(cheque).length)return cheque;
  const result:Fields={};
  const add=(key:string,value:string|undefined)=>{const v=value?.replace(/\s+/g,' ').trim();if(v&&!/preencher|_{3,}|\{\{/i.test(v)&&!(result[key]||=[]).includes(v))result[key].push(v);};
  const text=source.replace(/[ \t]+/g,' ');
@@ -32,6 +62,24 @@ export function bankFields(source:string):Fields {
   if(number&&validDocument(number))add('documentoTitular',documentMask(digits(number)));
  }
  const lines=text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+ // Mobile business-account headers: an explicit bank brand and one Ag/Cc pair.
+ // Do not adopt the greeting/user name as account holder, or mix transfer parties.
+ if(!/\b(?:pagador|recebedor|remetente|destinat[áa]rio)\b/i.test(text)){
+  const pairs=[...text.matchAll(/\bAg\.?\s*:?\s*(\d{1,6}(?:-[\dXx])?)\s*(?:[-·•«|]\s*)*Cc\.?\s*:?\s*(\d{1,15}(?:-[\dXx])?)(?!\d)/gi)];
+  if(pairs.length&&new Set(pairs.map(m=>m[1]+'|'+m[2])).size===1){
+   add('agencia',pairs[0][1]);add('conta',pairs[0][2]);
+   if(/\b(?:Acessar conta|Saldo)\b/i.test(text)){
+    const names=pairs.map(m=>{
+     const lead=text.slice(0,m.index),lineStart=lead.lastIndexOf('\n'),prefix=lead.slice(lineStart+1);
+     const before=/^[\s()O0•«·-]{0,10}$/.test(prefix)?(lead.slice(0,lineStart).split(/\r?\n/).filter(l=>l.trim()).at(-1)||'').replace(/^[^\p{L}]+/u,'').trim():'';
+     return /\b(?:LTDA|ME|EPP|EIRELI|S\/?A)\.?$/i.test(before)&&!/[?:]/.test(before)?holder(before):'';
+    }).filter(Boolean);
+    if(names.length===pairs.length&&new Set(names.map(n=>n.toUpperCase())).size===1)add('titularConta',names[0]);
+   }
+   const brands=[...text.matchAll(/(?:^|\n)[^\p{L}\n]{0,8}(Santander|Ita[úu]|Bradesco|Nubank|Banco do Brasil)(?:\s+Empresas)?\s*(?:\d)?\s*(?=\n|$)/giu)].map(m=>m[1]);
+   if(new Set(brands.map(b=>b.toLowerCase())).size===1)add('banco',brands[0]);
+  }
+ }
  // Screenshots put CNPJ under Dados bancários, separately from the Pix key above it.
  const section=bankAccountSection(text).split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
  const mixedParties=section.some(line=>/\b(?:pagador|remetente|destinat[áa]rio|benefici[áa]rio|conta de origem)\b/i.test(line));

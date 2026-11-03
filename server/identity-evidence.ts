@@ -3,7 +3,7 @@ import {validCnpj} from './registration-reading.js';
 import {validCpf} from './reading-validation.js';
 import {structuredIdentityFields} from './structured-identities.js';
 import {extractContractParties} from './contract-parties.js';
-import {bankFields,bankAccountSection} from './bank-reading.js';
+import {bankFields,bankAccountSection,sicoobChequeFields} from './bank-reading.js';
 export type FieldOrigin={value:string;page:number;excerpt:string};
 type IdentityReading={text:string;pages?:number;fieldOrigins?:Record<string,FieldOrigin[]>};
 export function captureFieldOrigins(target:Record<string,FieldOrigin[]>,fields:Record<string,string[]>,text:string,page:number) {
@@ -40,7 +40,9 @@ export function identityEvidence(reading:IdentityReading,key:string,value:string
  }else{
   const ids=[...new Set([...reading.text.matchAll(/(?:CPF\s*\/\s*CNPJ DO TITULAR|CPF DO TITULAR|CNPJ DO TITULAR|DOCUMENTO DO TITULAR)\s*:?\s*(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}|\d{3}\.?\d{3}\.?\d{3}-?\d{2})(?!\d)/gi)].map(m=>compact(m[1])))];
   if(ids.length!==1||ids[0]!==digits){
-   const section=bankAccountSection(reading.text),documents=bankFields(section?'Dados bancários\n'+section:'').documentoTitular||[];
+   const accountSection=bankAccountSection(reading.text),cheque=sicoobChequeFields(reading.text);
+   const section=accountSection||(role==='bank'&&cheque.documentoTitular?.length===1?reading.text:'');
+   const documents=accountSection?bankFields('Dados bancários\n'+section).documentoTitular||[]:cheque.documentoTitular||[];
    if(!['bank','document'].includes(role)||documents.length!==1||compact(documents[0])!==digits)return null;
    evidenceText=section;
   }

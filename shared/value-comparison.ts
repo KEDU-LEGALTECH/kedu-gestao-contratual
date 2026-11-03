@@ -25,7 +25,7 @@ function addressParts(value:string) {
  const m=/^((?:rua|r|avenida|av|travessa|tv|rodovia|estrada|alameda|al|praca|pc|quadra|largo)\.?\s+[^,:\-–—\d]+)(?:[,\s]*(?:-\s*)?(?:n[o°º]?\.?\s*)?(\d{1,6}[a-z]?|s\/?n)\b)?/.exec(v);
  if(!m)return null;
  const street=m[1].replace(/\s+bairro\b.*$/,'').replace(/[\s,]+(?:n[o°º]?\.?)?\s*$/,'').replace(/^(?:r|rua)\.?\s+/,'rua ').replace(/^(?:av|avenida)\.?\s+/,'avenida ').replace(/^(?:tv|travessa)\.?\s+/,'travessa ').replace(/^(?:al|alameda)\.?\s+/,'alameda ').replace(/^(?:pc|praca)\.?\s+/,'praca ').replace(/\b(?:d[aeo]s?)\b/g,' ').replace(/\s+/g,' ').trim();
- return {street,number:m[2]?.replace('/','')};
+ return {street,number:m[2]?.replace('/','').replace(/^0+(?=\d)/,'')};
 }
 export const sameFieldValue=(key:string,a:string,b:string)=>{
  if(canonicalFieldValue(key,a)===canonicalFieldValue(key,b))return true;

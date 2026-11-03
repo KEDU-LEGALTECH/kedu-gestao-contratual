@@ -16,14 +16,16 @@ import { prepareImage } from "./image-input.js";
 import {needsPdfOcr,pdfPageBudget} from './pdf-reading-policy.js';
 import {recognizeWithPaddle,combineOcrFields,paddleConfigured,closePaddle} from './paddle-ocr.js';
 import {withinBudget} from './ocr-budget.js';
-import {readSpreadsheet} from './xlsx-reading.js';
+import {readSpreadsheet,literalSpreadsheetIdentity} from './xlsx-reading.js';
+import {recoverTextFields} from './text-recovery.js';
 import {captureFieldOrigins,type FieldOrigin} from './identity-evidence.js';
 const require=createRequire(import.meta.url);
 const maxPages=30,maxPdfPages=200,maxText=500000;
 function result(text:string,method:string,ocr=false,confidence?:number,pages=1):Reading {
  text=text.normalize("NFC").replace(/\x00/g,"");
  if(text.length>maxText)throw Error("Documento excede 500 mil caracteres; separe em partes.");
- return {version:readerVersion,text,fields:fieldsFromLines(text.split(/\r?\n/).map(x=>x.trim()).filter(Boolean)),method,confidence,pages,needsReview:ocr && !!text.trim(),problem:text.trim()?"":"Nenhum texto legível foi reconhecido. Confira se o arquivo está em branco, desfocado ou cortado."};
+ const fields=fieldsFromLines(text.split(/\r?\n/).map(x=>x.trim()).filter(Boolean));
+ return {version:readerVersion,text,fields:{...fields,...recoverTextFields(text,fields)},method,confidence,pages,needsReview:ocr && !!text.trim(),problem:text.trim()?"":"Nenhum texto legível foi reconhecido. Confira se o arquivo está em branco, desfocado ou cortado."};
 }
 async function ocrSession() {
  const language=require("@tesseract.js-data/por");
@@ -172,7 +174,8 @@ async function pdf(bytes:Buffer,progress?:(reading:Reading)=>void,nativeOnly=fal
    digitalTexts.push(text);
    mergeExtractedFields(tableFields,fieldsFromRows(positionedRows(content.items as any[])));
    texts.push(text);
-   mergeExtractedFields(digitalFields,fieldsFromLines(text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean)));
+   const nativeFields=fieldsFromLines(text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean));
+   mergeExtractedFields(digitalFields,{...nativeFields,...recoverTextFields(text,nativeFields)});
    mergeExtractedFields(digitalFields,tableFields);
    for(const party of extractContractParties(text))mergeExtractedFields(digitalFields,{cnpj:[party.cnpj],razaoSocial:[party.name]});
    captureFieldOrigins(fieldOrigins,digitalFields,text,n);
@@ -316,7 +319,8 @@ async function office(bytes:Buffer,name:string,progress?:(reading:Reading)=>void
   else{mergeExtractedFields(native.fields,read.fields);native.text+='\n\nIMAGEM INCORPORADA: '+entry.name+'\n'+read.text;native.problem='';}
   if(native.text.length>maxText)throw Error('Arquivo excede o limite de texto. Divida o documento.');
  }
- return {...native,digitalFields,...(sheet&&Object.keys(sheet.calculatedFields).length?{calculatedFields:sheet.calculatedFields}:{}),needsReview:native.needsReview||usedOcr,method:native.method+(usedOcr?' com OCR':'')};
+ const literal=sheet?literalSpreadsheetIdentity(zip):undefined;
+ return {...native,digitalFields,...(literal?{literalIdentityFields:literal.fields,literalIdentityOrigins:literal.origins}:{}),...(sheet&&Object.keys(sheet.calculatedFields).length?{calculatedFields:sheet.calculatedFields}:{}),needsReview:native.needsReview||usedOcr,method:native.method+(usedOcr?' com OCR':'')};
 }
 export async function readDocumentRegion(bytes:Buffer,name:string,region:ReadingRegion):Promise<Reading> {
  if(!validReadingRegion(region)||bytes.length>20*1024*1024)throw Error('Região inválida ou arquivo maior que 20 MB.');

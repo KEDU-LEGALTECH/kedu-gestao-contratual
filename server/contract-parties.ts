@@ -1,3 +1,4 @@
+import {receiverBankFields} from './bank-reading.js';
 export type ContractParty={role:string;name:string;cnpj:string;excerpt:string};
 const canon=(s:string)=>s.normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().replace(/[^a-z0-9]/g,'');
 const mask=(s:string)=>{const d=s.replace(/\D/g,'');return `${d.slice(0,2)}.${d.slice(2,5)}.${d.slice(5,8)}/${d.slice(8,12)}-${d.slice(12)}`;};
@@ -29,6 +30,7 @@ export function selectContractParty(parties:ContractParty[],expectedCnpj?:string
  return counterpart.length===1?counterpart[0]:null;
 }
 export function scopePartyReading<T extends {text:string;fields:Record<string,string[]>}>(reading:T,expectedCnpj?:string):{reading:Omit<T,'fields'>&{text:string;fields:Record<string,string[]>};parties:ContractParty[];selected:ContractParty|null} {
+ const receiver=receiverBankFields(reading.text);if(receiver)reading={...reading,fields:{...reading.fields,...receiver}};
  const parties=extractContractParties(reading.text),selected=selectContractParty(parties,expectedCnpj);
  if(!parties.length)return {reading,parties,selected};
  const fields={...reading.fields};delete fields.cnpj;delete fields.razaoSocial;

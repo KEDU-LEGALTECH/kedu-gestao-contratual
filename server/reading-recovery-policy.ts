@@ -5,7 +5,10 @@ export function needsReadingRecovery(file:CachedFile|undefined) {
  try{
   const r=JSON.parse(file.extracted);
   if(r.decorative===true||r.method==='Imagem decorativa')return false;
-  return !!(file.problem||r.problem||r.incomplete||r.transient)||Object.keys(r.fields||{}).length===0;
+  if(file.problem||r.problem||r.incomplete||r.transient)return true;
+  // A complete reading with text but no recognized field gives the same result when
+  // repeated; it goes to review instead of consuming retries. Only empty text is retried.
+  return Object.keys(r.fields||{}).length===0&&!String(r.text||'').trim();
  }catch{return true;}
 }
 /** A temporary engine failure must not destroy any usable previous extraction. */

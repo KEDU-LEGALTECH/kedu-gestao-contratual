@@ -5,10 +5,12 @@ import {bankFields} from './bank-reading.js';
 import {validCnpj} from './registration-reading.js';
 import {distinctRequestedValues} from './request-expectations.js';
 import {fullStateName} from '../shared/state-name.js';
+import {contextualLayoutFields} from './contextual-layout-fields.js';
 type Fields=Record<string,string[]>;
 /** Fields recoverable from an already extracted text without OCR; existing fields are never replaced. */
 export function recoverTextFields(text:string,existing:Fields):Fields {
- const found:Fields={...bankFields(text),...qualificationFields(text,cnpj=>ownIdentity('cnpj',cnpj))};
+ const found:Fields={};
+ for(const part of [contextualLayoutFields(text),bankFields(text),qualificationFields(text,cnpj=>ownIdentity('cnpj',cnpj))])for(const [key,values] of Object.entries(part))found[key]=distinctRequestedValues(key,[...(found[key]||[]),...values]);
  const socialNames=distinctRequestedValues('razaoSocial',[...text.matchAll(/a\s+sociedade\s+(?:girar[áa]|adotar[áa])\s+sob\s+(?:o\s+)?nome\s+empresarial\s*[“"]([^”"\n]{5,180})[”"]/gi)].map(m=>m[1].trim()));
  if(socialNames.length===1)found.razaoSocial=socialNames;
  const seats=[...text.matchAll(/a\s+sociedade\s+ter[áa]\s+sua\s+sede\s+(?:na|no|em)\s+([\s\S]{8,240}?\bCEP\s*:?\s*\d{2}\.?\d{3}-?\d{3})/gi)].map(m=>m[1].replace(/\s+/g,' ').trim());

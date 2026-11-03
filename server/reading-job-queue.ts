@@ -24,6 +24,6 @@ export class ReadingJobQueue {
   const advanced=progress!==undefined&&progress>(job.progress||0),attempts=advanced?0:job.attempts;
   const state=outcome==='retry'&&attempts>=3?'exhausted':outcome;
   const at=this.time(),due=at+10*60000*2**Math.max(0,attempts-1);
-  this.db.prepare("UPDATE reading_jobs SET state=?,attempts=?,progress=max(progress,?),available_at=?,owner=NULL,updated=?,last_error=? WHERE demand_id=? AND ticket_hash=? AND owner=? AND state='running'").run(state,attempts,progress||0,due,at,reason.slice(0,300),job.demand_id,job.ticket_hash,this.owner);
+  this.db.prepare("UPDATE reading_jobs SET state=?,attempts=?,progress=max(progress,?),available_at=?,owner=NULL,updated=?,last_error=? WHERE demand_id=? AND ticket_hash=? AND owner=? AND state='running'").run(state,attempts,progress||0,due,at,reason.slice(0,1000),job.demand_id,job.ticket_hash,this.owner);
  }
 }

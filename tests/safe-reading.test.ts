@@ -6,8 +6,9 @@ import {captureFieldOrigins,identityEvidence} from '../server/identity-evidence.
 test('version alone never schedules successful readings; faults, partials and empty fields do',()=>{
  const extracted=JSON.stringify({version:1,text:'CNPJ legível',fields:{cnpj:['11.444.777/0001-61']}});
  assert.equal(needsReadingRecovery({byteLength:100,problem:'',extracted}),false);
- for(const delta of [{incomplete:true},{problem:'falha'},{transient:true},{fields:{}}])assert.equal(needsReadingRecovery({byteLength:100,extracted:JSON.stringify({...JSON.parse(extracted),...delta})}),true);
+ for(const delta of [{incomplete:true},{problem:'falha'},{transient:true},{fields:{},text:''}])assert.equal(needsReadingRecovery({byteLength:100,extracted:JSON.stringify({...JSON.parse(extracted),...delta})}),true);
  assert.equal(needsReadingRecovery(undefined),true);
+ assert.equal(needsReadingRecovery({byteLength:100,extracted:JSON.stringify({...JSON.parse(extracted),fields:{},text:'Contrato sem dados rotulados'})}),false);
  assert.equal(preservePreviousReading(extracted,{transient:true}),true);
  assert.equal(preservePreviousReading(extracted,{problem:'Arquivo inválido'}),false);
 });

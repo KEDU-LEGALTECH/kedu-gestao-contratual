@@ -1,6 +1,8 @@
 import type PizZip from "pizzip";
 import { DOMParser } from "@xmldom/xmldom";
 import { fieldsFromLines,fieldsFromRows,fieldKeyForLabel,mergeExtractedFields,norm } from "./processing-extract.js";
+import {validCnpj} from './registration-reading.js';
+import {sameFieldValue,distinctFieldValues} from '../shared/value-comparison.js';
 export const formulaPlaceholder="[DADO CALCULADO: conferir na planilha original]";
 type Cell={column:number;value:string;calculated?:string};
 type Sheet={name:string;hidden:boolean;rows:Cell[][]};
@@ -100,4 +102,28 @@ export function readSpreadsheet(zip:PizZip) {
  }).filter(Boolean).join("\n\n");
  const calculatedFields=Object.fromEntries(Object.entries(calculated).map(([key,values])=>[key,values.filter(value=>!(fields[key]||[]).some(v=>norm(v)===norm(value)))]).filter(([,values])=>values.length));
  return {text,fields,calculatedFields,formulaCount,hiddenSheets:sheets.filter(sheet=>sheet.hidden&&sheet.rows.length).map(sheet=>sheet.name)};
+}
+
+/** Identity from literal visible cells only. Formula caches and hidden sheets
+ * cannot confirm identity, even when their value equals the requested one. */
+export function literalSpreadsheetIdentity(zip:PizZip){
+ const {sheets}=readSheets(zip);const values:Record<string,string[]>={},origins:Record<string,{value:string;sheet:string;excerpt:string}[]>={};
+ const add=(key:string,value:string,sheet:string,excerpt:string)=>{if(!(values[key]||=[]).includes(value))values[key].push(value);(origins[key]||=[]).push({value,sheet,excerpt});};
+ for(const sheet of sheets.filter(s=>!s.hidden)){
+  const rows=sheet.rows.map(row=>row.filter(cell=>cell.value!==formulaPlaceholder&&!cell.calculated));
+  const parsed=sheetFields(rows.map(row=>row.map(cell=>cell.value)),rows.map(row=>row.map(cell=>cell.column)));
+  for(const key of ['cnpj','razaoSocial','nomeFantasia'])for(const value of parsed[key]||[])if(key!=='cnpj'||validCnpj(value)){
+   const source=rows.find(row=>row.some(c=>sameFieldValue(key,c.value,value))||row.map(c=>c.value).join(' | ').includes(value));
+   if(source)add(key,value,sheet.name,source.map(c=>c.value).join(' | '));
+  }
+  for(let i=1;i<rows.length;i++){
+   if(rows[i].length!==1||!validCnpj(rows[i][0].value))continue;
+   const previous=rows[i-1];if(previous.length!==1||!/:\s*[\p{L}]+\/\d{4}$/u.test(previous[0].value))continue;
+   const name=previous[0].value.replace(/\s*:\s*[\p{L}]+\/\d{4}$/u,'').trim();
+   add('cnpj',rows[i][0].value,sheet.name,previous[0].value+'\n'+rows[i][0].value);
+   if(/\p{L}{3}/u.test(name))add('razaoSocial',name,sheet.name,previous[0].value+'\n'+rows[i][0].value);
+  }
+ }
+ const fields=Object.fromEntries(Object.entries(values).map(([key,vs])=>[key,distinctFieldValues(key,vs)] as const).filter(([,v])=>v.length===1));
+ return {fields,origins:Object.fromEntries(Object.keys(fields).map(key=>[key,origins[key]]))};
 }

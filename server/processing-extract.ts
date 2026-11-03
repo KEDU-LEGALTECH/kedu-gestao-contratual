@@ -19,7 +19,7 @@ const aliases:Record<string,string[]>={
  dataFormalizacao:["DATA DE FORMALIZAÇÃO"],dataAssinaturaMatriz:["DATA DE ASSINATURA DA MATRIZ","DATA DE ASSINATURA DO CONTRATO MATRIZ"],
  representanteNome:["REPRESENTANTE LEGAL","NOME DO REPRESENTANTE"],representanteCpf:["CPF DO REPRESENTANTE"],
  titularConta:["TITULAR DA CONTA","TITULARIDADE","NOME DO TITULAR"],documentoTitular:["CPF/CNPJ DO TITULAR","CNPJ/CPF","CNPJ DO TITULAR","CPF DO TITULAR"],modalidade:["MODALIDADE","MODALIDADE DE GARANTIA"],
- agencia:["AGÊNCIA","AG."],conta:["CONTA CORRENTE","C/C","CC."],
+ agencia:["AGÊNCIA","AG.","AG"],conta:["CONTA CORRENTE","C/C","CC.","CC"],
  remuneracao:["TAXA","TAXA KEDU","Taxa de remuneração","REMUNERAÇÃO","REMUNERAÇÃO KEDU","REMUNERAÇÃO KEDU (%)"],
  alunos:["ALUNADO","QUANTIDADE DE ALUNOS"],
 };
@@ -47,6 +47,7 @@ export function fieldsFromRows(rows:string[][]) {
 }
 export function normalizeValue(key:string,value:string) {
  let s=value.trim().replace(/^[:\s]+/,"");
+ if(key==='banco')s=s.split(/\s+(?:Ocorrer[áa]\s+em|O\s+pagamento\s+ser[áa]|Datas\s+e\s+Porcentagens)\b/i)[0].trim();
  if(key==='cidade')s=s.split(/\s+(?:UF|ESTADO|INSCRI[ÇC][ÃA]O MUNICIPAL|CEP)\s*:/i)[0].trim();
  if(['banco','agencia','conta'].includes(key))s=s.replace(/[.,:;]+\s*$/,'').trim();
  if(!s || /^[_\s.\-–—]+$/.test(s) || /\{[^}]+\}|\[(?:DADO|NOME|PREENCHER)|PENDENTE|⟨/i.test(s))return "";

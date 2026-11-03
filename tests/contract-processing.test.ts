@@ -11,7 +11,7 @@ process.env.NODE_ENV="test";process.env.DEMO_SEED="false";process.env.GLPI_MODE=
 const {one,all,run,now}=await import("../server/db.js");
 const {registerOfficialCatalog,sha256}=await import("../server/official-templates.js");
 const {demoTemplate,paragraphs}=await import("../server/documents.js");
-const {processContract,saveProcessingResult,buildProcessingPlan,ensureProcessing,processingSummary}=await import("../server/contract-processing.js");
+const {processContract,saveProcessingResult,buildProcessingPlan,ensureProcessing,processingSummary,recoveryReason}=await import("../server/contract-processing.js");
 const {registerProcessingRoutes,processingView}=await import("../server/processing-routes.js");
 const {inputLabels}=await import("../server/processing-extract.js");
 run("INSERT INTO users VALUES('u','Teste','u@test.local','Administrador','unused')");
@@ -400,4 +400,56 @@ test("Modelo de garantia não é usado para contrato educacional, mesmo quando e
  const result=completed("education");assert.equal(result.status,"Sem erros");assert.equal(result.templates.length,0);
  const f=new FormData();f.set("revision",String(result.revision));f.set("values","{}");f.set("template_id",template.id);
  const response=await fetch(base+"/education/processing/correct",{method:"POST",body:f});assert.equal(response.status,200);assert.equal((await response.json()).status,"Sem erros");
+});
+
+test('duplicata OCR incerta não rebaixa divergência comprovada por campo digital',async()=>{
+ const raw=fixture('proven-mismatch-duplicate');raw.content+='<p>CIDADE: Fortaleza</p>';
+ run('UPDATE glpi_tickets SET payload=? WHERE external_id=?',JSON.stringify(raw),'proven-mismatch-duplicate');
+ await processContract('proven-mismatch-duplicate','u',mock({...data,cidade:'Recife'}));
+ run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)','uncertain-city-copy','proven-mismatch-duplicate','8','hash-proven-mismatch-duplicate','copia.png','image/png',Buffer.from('original'),JSON.stringify({version:4,text:'Cidade: Recife',fields:{cidade:['Recife']},needsReview:true,method:'OCR de imagem',pages:1,confidence:40}),'',now());
+ const result=saveProcessingResult('proven-mismatch-duplicate')!;
+ const city=result.comparisons.find(c=>c.field==='cidade')!;
+ assert.equal(city.status,'different');assert.equal(city.readingPending,false);
+ assert.equal(result.status,'Aguardando correção');
+});
+
+test('ocorrência do valor do GLPI sem associação a campo não gera confirmação automática',()=>{
+ fixture('guided-without-field');ensureProcessing('guided-without-field');
+ run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)','guided-without-field-file','guided-without-field','7','hash-guided-without-field','Contrato.pdf','application/pdf',Buffer.from('original'),JSON.stringify({version:4,text:'Comentário: Escola teste',fields:{},needsReview:false,method:'Texto do PDF',pages:1,digitalFields:{}}),'',now());
+ const result=saveProcessingResult('guided-without-field')!;
+ const name=result.comparisons.find(c=>c.field==='razaoSocial')!;
+ assert.equal(name.status,'review');assert.equal(name.readingPending,true);
+ assert.equal(name.reviewReason?.code,'value_unassociated');
+});
+
+test('fórmulas não solicitadas não bloqueiam CNPJ comprovado em célula literal',()=>{
+ const raw=fixture('literal-sheet-identity');raw.content='<p>CNPJ: 11.444.777/0001-61</p>';
+ run('UPDATE glpi_tickets SET payload=? WHERE external_id=?',JSON.stringify(raw),'literal-sheet-identity');ensureProcessing('literal-sheet-identity');
+ run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)','literal-sheet-file','literal-sheet-identity','7','hash-literal-sheet-identity','Dados.xlsx','application/octet-stream',Buffer.from('original'),JSON.stringify({version:4,text:'CNPJ: 11.444.777/0001-61',fields:{cnpj:['11.444.777/0001-61']},digitalFields:{cnpj:['11.444.777/0001-61']},literalIdentityFields:{cnpj:['11.444.777/0001-61']},formulaCount:500,needsReview:true,method:'XLSX',pages:1}),'',now());
+ const result=saveProcessingResult('literal-sheet-identity')!;
+ assert.equal(result.comparisons.find(c=>c.field==='cnpj')!.status,'matches');
+ assert.equal(result.issues.some(i=>i.field==='review:literal-sheet-file'),false);
+ assert.equal(result.status,'Sem erros');
+});
+
+test('tarefa de leitura registra o motivo da recuperação pendente',async()=>{
+ fixture('reason-denied');
+ await processContract('reason-denied','u',async()=>{throw Object.assign(Error('O GLPI não disponibilizou o arquivo para download (HTTP 403).'),{status:403});});
+ const reason=recoveryReason('reason-denied','hash-reason-denied',true);
+ assert.match(reason,/Contrato\.docx: download falhou — O GLPI não disponibilizou o arquivo.*\(HTTP 403\)/);
+ fixture('reason-empty');ensureProcessing('reason-empty');
+ run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)','reason-empty-file','reason-empty','7','hash-reason-empty','Contrato.docx','application/octet-stream',Buffer.from('original'),JSON.stringify({version:4,text:'',fields:{},method:'DOCX',pages:1}),'',now());
+ assert.equal(recoveryReason('reason-empty','hash-reason-empty',true),'Contrato.docx: lido sem texto nem campos reconhecidos');
+ fixture('reason-missing');
+ assert.equal(recoveryReason('reason-missing','hash-reason-missing',true),'Contrato.docx: anexo ainda não baixado');
+});
+
+test('checksum importado do documento reutiliza bytes locais idênticos sem novo download',async()=>{
+ const raw=fixture('checksum-reuse');await processContract('checksum-reuse','u',mock());
+ const f=one('SELECT * FROM processing_files WHERE demand_id=?','checksum-reuse');
+ const {createHash}=await import('node:crypto');(raw.documents[0] as any).sha1=createHash('sha1').update(Buffer.from(f.bytes)).digest('hex');
+ run('UPDATE glpi_tickets SET hash=?,payload=? WHERE external_id=?','hash-checksum-current',JSON.stringify(raw),'checksum-reuse');
+ let downloads=0;await processContract('checksum-reuse','u',async()=>{downloads++;throw Error('Não deveria baixar bytes iguais');});
+ assert.equal(downloads,0);
+ assert.ok(one('SELECT id FROM processing_files WHERE demand_id=? AND ticket_hash=?','checksum-reuse','hash-checksum-current'));
 });
