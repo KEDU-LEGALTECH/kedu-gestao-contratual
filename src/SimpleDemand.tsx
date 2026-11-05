@@ -1,3 +1,4 @@
+import { GlpiConversation } from "./GlpiConversation";
 import { useEffect,useState } from "react";
 import {receivedDocumentKind} from '../shared/document-heading';
 import { Download,RefreshCw,ArrowLeft,CheckCircle2,AlertCircle } from "lucide-react";
@@ -40,7 +41,7 @@ export function SimpleDemand({detail,data,can,api,action,busy,onBack,onAdvanced,
    {ready && <small className="muted">A validação verifica preenchimento e consistência. Não verifica autenticidade das assinaturas.</small>}
    {message && <p role="alert" className="inline-warning">{message}</p>}
   </section>
-  <nav className="review-jump-links" aria-label="Ir para a conferência"><a href="#documento-recebido" className="secondary">Ver documento preenchido</a>{!!job?.comparisons?.length && <a href="#conferencia-preenchimento" className="secondary">Ver preenchimento e correções</a>}</nav>
+  <nav className="review-jump-links" aria-label="Ir para a conferência">{detail.glpiIntake && <a href="#conversa-glpi" className="secondary">Ver conversa do GLPI</a>}<a href="#documento-recebido" className="secondary">Ver documento preenchido</a>{!!job?.comparisons?.length && <a href="#conferencia-preenchimento" className="secondary">Ver preenchimento e correções</a>}</nav>
   {detail.glpi_id&&<ProcessingProgress demands={[{id:detail.id}]} api={api} allowed={!!can('files')&&!!can('bank')} detail/>}
   {!analyzing && can("files") && can("bank") && <RequestComparison did={detail.id} rows={job?.comparisons} issues={job?.issues}/>}
   {job && can("files") && can("bank") && <ReceivedDocuments correctField={can("write")?(fileId:string,field:string,value:string,evidence:string,revision:number)=>action(()=>api(`/demands/${detail.id}/processing/files/${fileId}/fields/${field}/correct-reading`,{revision,value,evidence,confirmed:true}),"Transcrição conferida e gabarito registrados."):undefined} api={can("write")?api:undefined} confirmField={can("write")?(fileId:string,field:string,value:string,revision:number)=>action(()=>api(`/demands/${detail.id}/processing/files/${fileId}/fields/${field}/confirm`,{revision,value,confirmed:true}),"Leitura do campo registrada; pendências reavaliadas."):undefined} did={detail.id} files={job.files||[]} issues={issues} revision={job.revision} busy={busy} confirm={can("write")?(fileId:string,revision:number)=>action(()=>api(`/demands/${detail.id}/processing/files/${fileId}/confirm`,{revision,confirmed:true}),"Conferência da leitura registrada; pendências reavaliadas."):undefined}/>}
@@ -59,7 +60,22 @@ export function SimpleDemand({detail,data,can,api,action,busy,onBack,onAdvanced,
     {(keys.length>0 || filesProblem || issues.some((i:any)=>i.field==="template")) && <button className="primary" disabled={busy}>Salvar correções e validar</button>}
    </form>}
   </section>}
-  <details className="panel simple-source"><summary>Solicitação original e documentos</summary><p className="source-text">{detail.glpiIntake?.text || detail.data.motivo || "Demanda registrada manualmente."}</p>{(job?.files||[]).map((f:any)=><div className="document" key={f.id}><div><strong>{f.name}</strong><small>{f.corrected?"Cópia corrigida no portal":"Original importado do GLPI"}</small></div><a className="secondary" href={`/api/demands/${detail.id}/processing/files/${f.id}`}>Baixar original</a>{f.text && <details><summary>Ver texto</summary><pre className="contract-text-preview">{f.text}</pre></details>}</div>)}</details>
+  {detail.glpiIntake && <section className="panel simple-source" id="conversa-glpi">
+   <h2>Conversa do GLPI</h2>
+   <GlpiConversation messages={detail.glpiIntake.conversation} documents={detail.glpiIntake.documents}
+    fallback={detail.glpiIntake.text} partial={detail.glpiIntake.documentsAvailable === false} approvalsPartial={detail.glpiIntake.approvalCoverage === "partial"}
+    attachmentUrl={can("files") && can("bank") ? documentId => {
+     const cached = job?.files?.find((file:any) => String(file.document_id) === documentId && file.available && !file.corrected);
+     return cached ? `/api/demands/${detail.id}/processing/files/${cached.id}` :
+      `/api/glpi/tickets/${encodeURIComponent(detail.glpi_id)}/documents/${encodeURIComponent(documentId)}/download`;
+    } : undefined}
+    imageUrl={can("files") && can("bank") ? documentId => {
+     const cached = job?.files?.find((file:any) => String(file.document_id) === documentId && file.available && !file.corrected);
+     return cached && /\.(png|jpe?g|webp|gif|tiff?|bmp)$/i.test(cached.name) ? `/api/demands/${detail.id}/processing/files/${cached.id}/view` : undefined;
+    } : undefined} />
+  </section>}
+  {!detail.glpiIntake && <details className="panel simple-source"><summary>Solicitação original</summary><p className="source-text">{detail.data.motivo || "Demanda registrada manualmente."}</p></details>}
+
   <details className="simple-admin"><summary>Detalhes administrativos e histórico</summary><p className="muted">Controles adicionais de cadastro, governança e auditoria.</p><button className="secondary" onClick={onAdvanced}>Abrir detalhes administrativos</button></details>
  </>;
 }

@@ -1,6 +1,30 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {requestExpectations} from '../server/request-expectations.js';
+import {conversationEntries,conversationExpectations,requestExpectations} from '../server/request-expectations.js';
+
+test('A conversa mantém cada anexo na mensagem de origem e omite notas privadas',()=>{
+ const entries=conversationEntries({
+  content:'<p>Pedido inicial</p>',
+  followups:[{id:'1',content:'<p>Segue o contrato</p>'},{id:'2',content:'Nota interna',private:true}],
+  documentLinks:{initial:['10'],'1':['20'],'2':['30']},
+  messageAuthors:{'1':'Pessoa solicitante'},
+ });
+ assert.deepEqual(entries.map(({id,documents,author})=>({id,documents,author})),[
+  {id:'initial',documents:['10'],author:undefined},
+  {id:'1',documents:['20'],author:'Pessoa solicitante'},
+ ]);
+});
+
+test('A conversa complementa o formulário e mantém referências conflitantes',()=>{
+ const fields=conversationExpectations({
+  content:'<p>Banco: Itaú</p>',
+  followups:[{content:'<p>Banco: Bradesco</p><p>Agência: 1234</p>'},
+   {content:'<p>Conta: 9999</p>',private:true}],
+ });
+ assert.deepEqual(fields.banco,['Itaú','Bradesco']);
+ assert.deepEqual(fields.agencia,['1234']);
+ assert.equal(fields.conta,undefined);
+});
 import {analyzeTicket} from '../server/glpi-analysis.js';
 import {installmentTableFields} from '../server/installment-table.js';
 import {sameRequestedValue} from '../server/request-expectations.js';

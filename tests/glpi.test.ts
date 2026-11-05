@@ -12,6 +12,7 @@ const { one, all, run } = await import("../server/db.js");
 const { GlpiClient, RealGlpiSource, glpiConfig, configProblems } = await import("../server/glpi.js");
 const { analyzeTicket, htmlToText, validCnpj } = await import("../server/glpi-analysis.js");
 const { syncGlpi } = await import("../server/glpi-sync.js");
+const { ticketSource } = await import("../server/glpi-sync.js");
 
 /** Minimal GLPI 10 apirest.php double: documented headers, range/Content-Range, sub-items. */
 const APP = "app-token-de-teste",
@@ -21,6 +22,7 @@ const calls: { method: string; path: string; headers: IncomingMessage["headers"]
 let killed = 0,
   delay = 0,
   failInit = false;
+let timelineFailure = false;
 const groupTickets = Array.from({ length: 7 }, (_, i) => ({
   id: 100 + i,
   tickets_id: 2026101200 + i,
@@ -80,6 +82,8 @@ const glpi = createServer(async (req, res) => {
     return page(items);
   }
   if (path === "Group/22/Group_Ticket") return page([]);
+  if (timelineFailure && /^Ticket\/2026101201\/(ITILFollowup|Document_Item)$/.test(path))
+    return send(res, 503, ["ERROR_UNAVAILABLE", "falha temporária"]);
   let m = /^Ticket\/(\d+)$/.exec(path);
   if (m)
     return send(res, 200, {
@@ -280,6 +284,43 @@ test("Falha de leitura fica registrada no histórico de sincronização", async 
   const log = one("SELECT * FROM sync_logs ORDER BY created DESC, rowid DESC LIMIT 1");
   assert.equal(log.status, "Falha");
   assert.match(log.message, /ERROR_SESSION_TOKEN_INVALID/);
+});
+
+test("Sincronização recupera anexos e mensagens perdidos de versão imutável", async () => {
+  const externalId = "2026101201";
+  const known = {
+    externalId, title: "Chamado", status: "2", updated: "2026-10-16 11:00:00",
+    created: "", category: "", groups: ["JURIDICO CONTRATOS"], content: "",
+    followups: [{ id: "9", date: "2026-10-16 10:00:00", content: "Histórico preservado", private: false }],
+    documents: [{ id: "501", name: "Contrato.pdf", mime: "application/pdf", sha1: "" }],
+    documentLinks: { "9": ["501"] }, documentsAvailable: false,
+  };
+  const empty = { ...known, followups: [], documents: [], documentLinks: {} };
+  run("INSERT INTO glpi_tickets VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+    externalId, "real", known.title, "2", "empty-hash", JSON.stringify(empty), "{}", "novo", null, "2026-10-16", "2026-10-16", null);
+  run("INSERT INTO glpi_ticket_versions VALUES(?,?,?,?,?)", "known-version", externalId, "known-hash", JSON.stringify(known), "2026-10-16");
+  const settings = {
+    GLPI_MODE: "real", GLPI_URL: config().url, GLPI_APP_TOKEN: APP, GLPI_USER_TOKEN: USER,
+    GLPI_GROUP_IDS: "", GLPI_GROUPS: "JURIDICO CONTRATOS", GLPI_RETRIES: "0",
+    GLPI_INCLUDE_PENDING: "false", GLPI_INCLUDE_OPEN: "false",
+  };
+  const previous = Object.entries(settings).map(([key, value]) => [key, process.env[key], value] as const);
+  for (const [key, , value] of previous) process.env[key] = value;
+  timelineFailure = true;
+  try {
+    await syncGlpi("u0", ticketSource());
+    const stored = one("SELECT payload,hash FROM glpi_tickets WHERE external_id=?", externalId);
+    const restored = JSON.parse(stored.payload);
+    assert.equal(restored.timelineCoverage, "partial");
+    assert.equal(restored.documents[0].id, "501");
+    assert.equal(restored.followups[0].content, "Histórico preservado");
+    assert.deepEqual(restored.documentLinks["9"], ["501"]);
+    assert.notEqual(stored.hash, "empty-hash");
+  } finally {
+    timelineFailure = false;
+    for (const [key, value] of previous)
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
 });
 
 test("Validação cruzada aponta taxa, CNPJ e razão social divergentes do chamado", async () => {

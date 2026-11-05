@@ -548,7 +548,7 @@ app.get("/api/demands/:id", (req: any, res) => {
     glpiIntake: (() => {
       const intake = intakeForDemand(d.id);
       if (!intake || permissions[req.user.role].includes("bank")) return intake;
-      return { ...intake, text: "Conteúdo restrito ao perfil autorizado.", documents: [], analysis: { suggestion: intake.analysis.suggestion, pendencies: ["Conferência por pessoa autorizada pendente"] } };
+      return { ...intake, text: "Conteúdo restrito ao perfil autorizado.", conversation: [], documents: [], analysis: { suggestion: intake.analysis.suggestion, pendencies: ["Conferência por pessoa autorizada pendente"] } };
     })(),
     data: safeData(req.user, JSON.parse(d.data)),
     subtype: details(d).subtype || "",

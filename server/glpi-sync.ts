@@ -1,7 +1,7 @@
 import { db, one, all, run, id, now, audit } from "./db.js";
 import { DemoTicketSource, RealGlpiSource, glpiConfig, configProblems, ticketHash, type TicketSource, type RawTicket } from "./glpi.js";
-import { analyzeTicket,htmlToText } from "./glpi-analysis.js";
-import {requestExpectations} from './request-expectations.js';
+import { analyzeTicket } from "./glpi-analysis.js";
+import {conversationExpectations,conversationText,conversationEntries} from './request-expectations.js';
 import { importGlpiSchools } from "./glpi-schools.js";
 import { organizations } from "./organizations.js";
 import { receiveGlpiDemands } from "./glpi-intake.js";
@@ -9,7 +9,29 @@ import { scheduleContractProcessing } from "./contract-processing.js";
 import {dailySyncTimes,latestDueSlot,scheduleTimezone} from './glpi-schedule.js';
 
 export function ticketSource(): TicketSource {
-  return process.env.GLPI_MODE === "real" ? new RealGlpiSource(glpiConfig(),fetch,all("SELECT external_id FROM glpi_tickets WHERE mode='real' AND status IN ('1','2','3','4','5')").map(t=>t.external_id)) : new DemoTicketSource();
+  if (process.env.GLPI_MODE !== "real") return new DemoTicketSource();
+  const previous = new Map<string, RawTicket>();
+  const rows = all("SELECT external_id,payload FROM glpi_tickets WHERE mode='real'");
+  for (const row of rows) {
+    try {
+      const current: RawTicket = JSON.parse(row.payload);
+      if (current.documentsAvailable === false && !current.documents.length && !current.followups.length) {
+        const known = one(`SELECT payload FROM glpi_ticket_versions WHERE external_id=?
+          AND (json_array_length(payload, '$.documents') > 0 OR json_array_length(payload, '$.followups') > 0)
+          ORDER BY seen DESC, rowid DESC LIMIT 1`, row.external_id);
+        if (known) {
+          const historical: RawTicket = JSON.parse(known.payload);
+          current.documents = historical.documents;
+          current.followups = historical.followups;
+          current.documentLinks = historical.documentLinks;
+          current.messageAuthors = historical.messageAuthors;
+        }
+      }
+      previous.set(row.external_id, current);
+    }
+    catch { /* Reimport a ticket whose local payload cannot be read. */ }
+  }
+  return new RealGlpiSource(glpiConfig(), fetch, rows.map(t => t.external_id), previous);
 }
 export function glpiStatus() {
   const config = glpiConfig();
@@ -56,6 +78,9 @@ export async function syncGlpi(userId: string | null, source = ticketSource(), t
       throw Error(message);
     }
     summary.read = tickets.length;
+    const returned = new Set(tickets.map(ticket => ticket.externalId));
+    const failures = [...new Set(source.failures)].filter(ticketId => !returned.has(ticketId));
+    const reused = source.reused ?? 0;
     const ctx = context();
     db.exec("BEGIN IMMEDIATE");
     try {
@@ -72,8 +97,9 @@ export async function syncGlpi(userId: string | null, source = ticketSource(), t
           );
           run("INSERT INTO glpi_ticket_versions VALUES(?,?,?,?,?)", id(), ticket.externalId, hash, payload, stamp);
           summary.created++;
-        } else if (existing.hash === hash) {
-          run("UPDATE glpi_tickets SET last_seen=? WHERE external_id=?", stamp, ticket.externalId);
+        } else if (existing.hash === hash || existing.hash === ticketHash({...ticket, documentsAvailable: !ticket.documentsAvailable})) {
+          // Coverage corrections alone are not a new document version and must not reset the reading queue.
+          run("UPDATE glpi_tickets SET payload=?,analysis=?,last_seen=? WHERE external_id=?", payload, analysis, stamp, ticket.externalId);
           summary.unchanged++;
         } else {
           const state = existing.demand_id ? "alterado após vínculo" : "alterado";
@@ -94,9 +120,11 @@ export async function syncGlpi(userId: string | null, source = ticketSource(), t
       run(
         "INSERT INTO sync_logs VALUES(?,?,?,?,?)",
         id(),
-        "Concluído",
+        failures.length ? "Parcial" : "Concluído",
         summary.created,
-        `${source.mode === "real" ? "GLPI (somente leitura)" : "Demonstração"}: ${summary.read} lidos, ${summary.created} novos, ${summary.changed} alterados (${summary.linkedChanged} já vinculados), ${summary.unchanged} sem alteração. Escolas: ${summary.schools.created} novas, ${summary.schools.conflicts} divergências de nome, ${summary.schools.skipped} chamados sem cadastro automático. Cadastros existentes preservados.`,
+        `${source.mode === "real" ? "GLPI (somente leitura)" : "Demonstração"}: ${summary.read} lidos, ${summary.created} novos, ${summary.changed} alterados (${summary.linkedChanged} já vinculados), ${summary.unchanged} sem alteração. Escolas: ${summary.schools.created} novas, ${summary.schools.conflicts} divergências de nome, ${summary.schools.skipped} chamados sem cadastro automático. Cadastros existentes preservados.` +
+          (source.mode === "real" ? ` Linhas do tempo reaproveitadas: ${reused}. Aprovações com cobertura parcial: ${tickets.filter(t => t.approvalCoverage === "partial").length}.` : "") +
+          (failures.length ? ` Chamados não atualizados: ${failures.length} (${failures.slice(0, 12).join(", ")}${failures.length > 12 ? ", …" : ""}).` : ""),
         now(),
       );
       db.exec("COMMIT");
@@ -106,7 +134,7 @@ export async function syncGlpi(userId: string | null, source = ticketSource(), t
     }
     audit(null, userId, `Sincronização GLPI ${source.mode}: ${summary.created} novos, ${summary.changed} alterados`);
     if(source.mode==="real")scheduleContractProcessing();
-    return summary;
+    return { ...summary, reused, failedTickets: failures };
   } finally {
     clearTimeout(timer);
     running = false;
@@ -162,10 +190,12 @@ export function listTickets() {
       priority: payload.priority || "",
       // Re-analysed with the current registry (schools/matrices may have been registered since).
       analysis,
-      reference:requestExpectations(payload.content,analysis.fields),
-      requestText:htmlToText(payload.content).join("\n"),
+      reference:conversationExpectations(payload,analysis.fields),
+      requestText:conversationText(payload),
+      conversation:conversationEntries(payload),
       documents: payload.documents,
       documentsAvailable: payload.documentsAvailable,
+      approvalCoverage: payload.approvalCoverage,
       followups: payload.followups.length,
       category: payload.category,
       groups: payload.groups,

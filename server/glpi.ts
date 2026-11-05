@@ -32,11 +32,45 @@ export type RawTicket = {
   content: string;
   followups: { id: string; date: string; content: string; private: boolean }[];
   documents: { id: string; name: string; mime: string; sha1: string }[];
+  documentLinks?: Record<string, string[]>;
+  messageAuthors?: Record<string, string>;
   documentsAvailable: boolean;
+  approvalCoverage?: "not_required" | "complete" | "partial";
+  timelineCoverage?: "complete" | "partial";
 };
+function preserveTimeline(current: RawTicket, previous: RawTicket, approvalsOnly: boolean) {
+  const approval = (id: string) => id.startsWith("TicketValidation:");
+  const messages = new Map(previous.followups.filter(entry => !approvalsOnly || approval(entry.id)).map(entry => [entry.id, entry]));
+  for (const entry of current.followups) messages.set(entry.id, entry);
+  const links = { ...current.documentLinks };
+  const documents = new Map(current.documents.map(doc => [doc.id, doc]));
+  const authors = { ...current.messageAuthors };
+  const retained = new Set<string>();
+  const nowPrivate = new Set<string>();
+  for (const [entry, ids] of Object.entries(previous.documentLinks ?? {})) {
+    if (approvalsOnly && !approval(entry)) continue;
+    if (messages.get(entry)?.private) {
+      ids.forEach(id => nowPrivate.add(id));
+      continue;
+    }
+    links[entry] = [...new Set([...(links[entry] ?? []), ...ids])];
+    ids.forEach(id => retained.add(id));
+  }
+  for (const doc of previous.documents) {
+    if (nowPrivate.has(doc.id) && !retained.has(doc.id)) continue;
+    if ((!approvalsOnly || retained.has(doc.id)) && (!documents.has(doc.id) || (!documents.get(doc.id)?.mime && !documents.get(doc.id)?.sha1)))
+      documents.set(doc.id, doc);
+  }
+  for (const [entry, author] of Object.entries(previous.messageAuthors ?? {}))
+    if ((!approvalsOnly || approval(entry)) && !authors[entry]) authors[entry] = author;
+  return { ...current, documents: [...documents.values()], documentLinks: links, messageAuthors: authors,
+    followups: [...messages.values()].sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id)) };
+}
 export interface TicketSource {
   mode: "demo" | "real";
   read(signal: AbortSignal): Promise<RawTicket[]>;
+  failures?: string[];
+  reused?: number;
 }
 
 export function glpiConfig(env = process.env): GlpiConfig {
@@ -89,6 +123,7 @@ export class GlpiError extends Error {
   constructor(
     message: string,
     public retriable = false,
+    public status?: number,
   ) {
     super(message);
   }
@@ -116,7 +151,7 @@ export class GlpiClient {
   async get(path: string, params: Record<string, string> = {}, signal?: AbortSignal) {
     // Restrict both the HTTP verb and the resource, even if a future caller passes a new path.
     // Session creation/termination changes only this integration's API session.
-    const allowed = /^(?:initSession|killSession|getMyProfiles|getActiveProfile|getMyEntities|getActiveEntities|listSearchOptions\/Ticket|search\/Ticket|Group(?:\/\d+(?:\/Group_Ticket)?)?|Ticket\/\d+(?:\/(?:ITILFollowup|Document_Item|Group_Ticket))?|Document\/\d+)$/;
+    const allowed = /^(?:initSession|killSession|getMyProfiles|getActiveProfile|getMyEntities|getActiveEntities|listSearchOptions\/Ticket|search\/Ticket|Group(?:\/\d+(?:\/Group_Ticket)?)?|Ticket\/\d+(?:\/(?:ITILFollowup|ITILSolution|TicketTask|TicketValidation|Document_Item|Group_Ticket))?|(?:ITILFollowup|ITILSolution|TicketTask|TicketValidation)\/\d+\/Document_Item|Document\/\d+)$/;
     if (!allowed.test(path))
       throw new GlpiError("Recurso bloqueado: a integração GLPI permite apenas as consultas de leitura previstas.");
     const url = new URL(this.config.url + "/" + path.replace(/^\/+/, ""));
@@ -143,7 +178,7 @@ export class GlpiClient {
         try {
           body = text ? JSON.parse(text) : null;
         } catch {
-          throw new GlpiError("Resposta do GLPI não é JSON (" + res.status + ").", res.status >= 500);
+          throw new GlpiError("Resposta do GLPI não é JSON (" + res.status + ").", res.status >= 500, res.status);
         }
         if (res.status === 200 || res.status === 206)
           return { body, range: res.headers.get("Content-Range") || "" };
@@ -153,7 +188,7 @@ export class GlpiClient {
         throw new GlpiError(
           "GLPI respondeu " + res.status + " " + this.sanitize(code) +
             (Array.isArray(body) && body[1] ? ": " + this.sanitize(body[1]) : ""),
-          retriable,
+          retriable, res.status,
         );
       } catch (error: any) {
         last = error;
@@ -218,7 +253,7 @@ export class GlpiClient {
   async close() {
     if (!this.session) return;
     try {
-      await this.get("killSession");
+      await this.get("killSession", {}, AbortSignal.timeout(2000));
     } catch {
       /* The session expires on the GLPI side; closing failures never hide the import result. */
     } finally {
@@ -228,27 +263,106 @@ export class GlpiClient {
   /** Reads every page of a list endpoint using range + Content-Range ("0-49/200"). */
   async list(path: string, params: Record<string, string>, max: number, signal?: AbortSignal) {
     const items: any[] = [];
-    for (let start = 0; items.length < max; start += this.config.pageSize) {
+    for (let start = 0; items.length < max; ) {
       const end = Math.min(start + this.config.pageSize, max) - 1;
       const { body, range } = await this.get(path, { ...params, range: `${start}-${end}` }, signal);
-      const page = Array.isArray(body) ? body : [];
+      if (!Array.isArray(body)) throw new GlpiError("Lista inválida na consulta GLPI " + path + ".");
+      const page = body;
       items.push(...page);
       const total = Number(/\/(\d+)$/.exec(range)?.[1]);
-      if (!page.length || page.length < end - start + 1 || (Number.isFinite(total) && start + page.length >= total)) break;
+      if (!page.length || (Number.isFinite(total) ? start + page.length >= total : page.length < end - start + 1)) break;
+      start += page.length;
       if (start > 100_000) throw new GlpiError("Paginação do GLPI não terminou.");
     }
     return items.slice(0, max);
   }
 }
 
+const timelineTypes = ["ITILFollowup", "TicketTask", "ITILSolution", "TicketValidation"] as const;
+
+/** Enumerate attachments only through the ticket and its accessible timeline entries. */
+export async function readTicketTimeline(client: GlpiClient, ticketId: string, signal: AbortSignal, globalValidation?: unknown) {
+  const documentIds = new Set<string>();
+  const documentLinks: Record<string, string[]> = {};
+  const messageAuthors: Record<string, string> = {};
+  const followups: RawTicket["followups"] = [];
+  let complete = true;
+  const skipApprovals = String(globalValidation) === "1";
+  let approvalsPartial = false;
+  const list = async (path: string, approval: boolean) => {
+    try {
+      return await client.list(path, path.endsWith("/Document_Item") ? {} : {expand_dropdowns: "true"}, Infinity, signal);
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (approval) approvalsPartial = true;
+      if (!(approval && error instanceof GlpiError && error.status === 403)) complete = false;
+      return [];
+    }
+  };
+  const collect = async (path: string, messageId: string, approval = false) => {
+    for (const link of await list(path, approval)) {
+      const id = String(link.documents_id);
+      if (!/^\d+$/.test(id)) continue;
+      documentIds.add(id);
+      const linked = documentLinks[messageId] ??= [];
+      if (!linked.includes(id)) linked.push(id);
+    }
+  };
+  await collect(`Ticket/${ticketId}/Document_Item`, "initial");
+  for (const type of timelineTypes) {
+    const approval = type === "TicketValidation";
+    if (approval && skipApprovals) continue;
+    for (const entry of await list(`Ticket/${ticketId}/${type}`, approval)) {
+      const id = String(entry.id);
+      if (!/^\d+$/.test(id)) continue;
+      const content = String(entry.content || "");
+      const messageId = type === "ITILFollowup" ? id : type + ":" + id;
+      if (Number(entry.is_private) !== 1) await collect(`${type}/${id}/Document_Item`, messageId, approval);
+      const author = typeof entry.users_id === "string" ? entry.users_id.trim() : "";
+      if (author && !/^\d+$/.test(author)) messageAuthors[messageId] = author;
+      if (content || documentLinks[messageId]?.length) followups.push({
+        id: messageId,
+        date: String(entry.date || entry.date_creation || ""),
+        content,
+        private: Number(entry.is_private) === 1,
+      });
+    }
+  }
+  followups.sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+  const approvalCoverage: NonNullable<RawTicket["approvalCoverage"]> = skipApprovals ? "not_required" : approvalsPartial ? "partial" : "complete";
+  return {documentIds, documentLinks, messageAuthors, followups, complete, approvalCoverage};
+}
+
 export class RealGlpiSource implements TicketSource {
   mode = "real" as const;
+  failures: string[] = [];
+  reused = 0;
   constructor(
     private config: GlpiConfig,
     private fetchImpl: typeof fetch = fetch,
-    private previousPending: string[] = [],
+    private previouslyImported: string[] = [],
+    private previousTickets: ReadonlyMap<string, RawTicket> = new Map(),
   ) {}
+  async readOne(id: string, signal: AbortSignal): Promise<RawTicket> {
+    if (!/^\d+$/.test(id)) throw new GlpiError("Número de chamado inválido.");
+    const problems = configProblems(this.config);
+    if (problems.length) throw new GlpiError(problems.join("; "));
+    const client = new GlpiClient(this.config, this.fetchImpl);
+    await client.open(signal);
+    try {
+      const groups = await this.groups(client, signal);
+      const actors = await client.list(`Ticket/${id}/Group_Ticket`, {}, Infinity, signal);
+      const authorized = groups.filter(group => actors.some(actor =>
+        Number(actor.groups_id) === group.id && this.config.actorTypes.includes(Number(actor.type))));
+      if (!authorized.length) throw new GlpiError("Chamado fora dos grupos autorizados.");
+      return await this.ticket(client, id, authorized.map(group => group.name), signal);
+    } finally {
+      await client.close();
+    }
+  }
   async read(signal: AbortSignal) {
+    this.failures = [];
+    this.reused = 0;
     const problems = configProblems(this.config);
     if (problems.length) throw new GlpiError("Configuração do GLPI incompleta: " + problems.join("; ") + ".");
     const client = new GlpiClient(this.config, this.fetchImpl);
@@ -273,20 +387,39 @@ export class RealGlpiSource implements TicketSource {
           if(!selected.includes(open.id))selected.push(open.id);
         }
       }
-      // Refresh previously pending records too: leaving status 4 must remove
-      // an older ticket from the pending tab even when it is outside recent IDs.
-      if(this.config.includePending || this.config.includeOpen || this.previousPending.length)for(const id of this.previousPending){
-        if(selected.includes(id)||!/^\d+$/.test(id))continue;
-        const links=await client.list(`Ticket/${id}/Group_Ticket`,{},1000,signal);
-        const allowed=groups.filter(g=>links.some(l=>Number(l.groups_id)===g.id && String(l.tickets_id)===id && this.config.actorTypes.includes(Number(l.type)))).map(g=>g.name);
-        if(allowed.length){ids.set(id,new Set(allowed));selected.push(id);}
-      }
+      // Refresh imported tickets outside the recent window, including reopened tickets.
+      for(const id of this.previouslyImported)
+        if(!selected.includes(id)&&/^\d+$/.test(id))selected.push(id);
       const tickets: RawTicket[] = [];
-      for (const id of selected) tickets.push(await this.ticket(client, id, [...ids.get(id)!], signal));
+      let cursor = 0;
+      await Promise.all(Array.from({length: Math.min(4, selected.length)}, async () => {
+        while (!signal.aborted && cursor < selected.length) {
+          const id = selected[cursor++];
+          try {
+            const ticketSignal = AbortSignal.any([signal, AbortSignal.timeout(90000)]);
+            const allowed = ids.get(id) ?? new Set(await this.authorizedGroups(client, groups, id, ticketSignal));
+            if (allowed.size) tickets.push(await this.ticket(client, id, [...allowed], ticketSignal, this.previousTickets.get(id)));
+          } catch {
+            this.failures.push(id);
+          }
+        }
+      }));
+      if (signal.aborted) this.failures.push(...selected.slice(cursor));
+      if (!tickets.length && this.failures.length) {
+        signal.throwIfAborted();
+        throw new GlpiError(`Não foi possível atualizar os chamados GLPI (${this.failures.length} falha(s)).`);
+      }
+      const order = new Map(selected.map((id, i) => [id, i]));
+      tickets.sort((a, b) => order.get(a.externalId)! - order.get(b.externalId)!);
       return tickets;
     } finally {
       await client.close();
     }
+  }
+  private async authorizedGroups(client: GlpiClient, groups: {id:number;name:string}[], id: string, signal: AbortSignal) {
+    const links = await client.list(`Ticket/${id}/Group_Ticket`, {}, Infinity, signal);
+    return groups.filter(g => links.some(l => Number(l.groups_id) === g.id && String(l.tickets_id) === id &&
+      this.config.actorTypes.includes(Number(l.type)))).map(g => g.name);
   }
   private async statusIds(client:GlpiClient,groups:{id:number;name:string}[],signal:AbortSignal,statusValue="4"){
     const {body:options}=await client.get("listSearchOptions/Ticket",{},signal);
@@ -315,8 +448,13 @@ export class RealGlpiSource implements TicketSource {
         const id=String(row[idField]??"");
         if(!/^\d+$/.test(id)||String(row[status])!==statusValue)throw new GlpiError("O GLPI não respeitou o filtro de status dos chamados.");
         if(seen.has(id))throw new GlpiError("Paginação repetida na pesquisa de status.");seen.add(id);
-        const links=await client.list(`Ticket/${id}/Group_Ticket`,{},1000,signal);
-        const allowed=groups.filter(g=>links.some(l=>Number(l.groups_id)===g.id && String(l.tickets_id)===id && this.config.actorTypes.includes(Number(l.type)))).map(g=>g.name);
+        let allowed: string[];
+        try { allowed = await this.authorizedGroups(client, groups, id, signal); }
+        catch (error) {
+          if (signal.aborted) throw error;
+          this.failures.push(id);
+          continue;
+        }
         if(allowed.length)found.push({id,groups:allowed});
         const limit=statusValue==="4"?(this.config.maxPending||200):(this.config.maxOpen||2000);
         if(found.length>limit)throw new GlpiError(`Limite de chamados do status ${statusValue} atingido. Aumente ${statusValue==="4"?"GLPI_MAX_PENDING":"GLPI_MAX_OPEN"} antes de sincronizar para não omitir chamados.`);
@@ -378,46 +516,55 @@ export class RealGlpiSource implements TicketSource {
     }
     return out;
   }
-  private async ticket(client: GlpiClient, id: string, groups: string[], signal: AbortSignal): Promise<RawTicket> {
+  private async ticket(client: GlpiClient, id: string, groups: string[], signal: AbortSignal, previous?: RawTicket): Promise<RawTicket> {
     const { body: t } = await client.get(`Ticket/${id}`, { expand_dropdowns: "true" }, signal);
-    const followups = await client.list(`Ticket/${id}/ITILFollowup`, {}, 200, signal);
-    let documents: RawTicket["documents"] = [],
-      documentsAvailable = true;
-    try {
-      const links = await client.list(`Ticket/${id}/Document_Item`, {}, 100, signal);
-      for (const link of links) {
-        const { body: doc } = await client.get(`Document/${Number(link.documents_id)}`, {}, signal);
+    if (!t || String(t.id) !== id) throw new GlpiError("Resposta inválida para o chamado GLPI " + id);
+    const updated = String(t.date_mod || "");
+    if (previous?.timelineCoverage === "complete" && updated && previous.updated === updated) {
+      this.reused++;
+      return { ...previous, groups, status: String(t.status ?? ""), priority: String(t.priority ?? "") };
+    }
+    const timeline = await readTicketTimeline(client, id, signal, t.global_validation);
+    const documents: RawTicket["documents"] = [];
+    let documentsAvailable = timeline.complete;
+    for (const documentId of timeline.documentIds) {
+      try {
+        const {body: doc} = await client.get(`Document/${documentId}`, {}, signal);
         documents.push({
-          id: String(link.documents_id),
+          id: documentId,
           name: String(doc?.filename || doc?.name || "documento"),
           mime: String(doc?.mime || ""),
           sha1: String(doc?.sha1sum || ""),
         });
+      } catch (error) {
+        if (signal.aborted) throw error;
+        documentsAvailable = false;
+        documents.push({id: documentId, name: "Documento " + documentId, mime: "", sha1: ""});
       }
-    } catch (error: any) {
-      if (signal.aborted) throw error;
-      documentsAvailable = false;
-      documents = [];
     }
-    return {
+    const suspiciousEmpty = previous?.timelineCoverage !== "complete" && previous?.documentsAvailable === false &&
+      previous.documents.length > 0 && !documents.length && !timeline.followups.length;
+    const incomplete = !documentsAvailable || suspiciousEmpty;
+    const result: RawTicket = {
       externalId: String(t?.id ?? id),
       title: String(t?.name || ""),
       status: String(t?.status ?? ""),
       priority: String(t?.priority ?? ""),
       created: String(t?.date || t?.date_creation || ""),
-      updated: String(t?.date_mod || ""),
+      updated,
       category: String(t?.itilcategories_id || ""),
       groups,
       content: String(t?.content || ""),
-      followups: followups.map((f) => ({
-        id: String(f.id),
-        date: String(f.date || f.date_creation || ""),
-        content: String(f.content || ""),
-        private: Number(f.is_private) === 1,
-      })),
+      followups: timeline.followups,
+      documentLinks: timeline.documentLinks,
+      messageAuthors: timeline.messageAuthors,
       documents,
-      documentsAvailable,
+      documentsAvailable: !incomplete,
+      approvalCoverage: timeline.approvalCoverage,
+      timelineCoverage: incomplete ? "partial" : "complete",
     };
+    return previous && (incomplete || timeline.approvalCoverage === "partial")
+      ? preserveTimeline(result, previous, !incomplete) : result;
   }
 }
 
@@ -477,5 +624,5 @@ export class DemoTicketSource implements TicketSource {
 }
 export const ticketHash = (t: RawTicket) =>
   createHash("sha256")
-    .update(JSON.stringify([t.title, t.status, t.priority, t.content, t.followups, t.documents, t.groups]))
+    .update(JSON.stringify([t.title, t.status, t.priority, t.content, t.followups, t.documents, t.groups, ...(t.documentsAvailable ? [] : [false])]))
     .digest("hex");

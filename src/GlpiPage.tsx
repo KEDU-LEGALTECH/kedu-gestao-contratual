@@ -1,5 +1,6 @@
+import { GlpiConversation } from "./GlpiConversation";
 import React, { useEffect, useState, useRef } from "react";
-import { RefreshCw, TriangleAlert, Link2, FileText, Inbox, Download } from "lucide-react";
+import { RefreshCw, TriangleAlert, Link2, Inbox } from "lucide-react";
 import { organizationAllowed } from "../shared/organization-policy";
 import {fieldLabels,officialInputs} from '../shared/official-fields';
 import {glpiStatusLabel,glpiPriorityLabel,isGlpiPending,isGlpiSolved,glpiPriorityRank} from "../shared/glpi-ticket-meta";
@@ -164,28 +165,6 @@ function TicketDetail({ ticket, data, can, action, api, busy, open }: Props & { 
     attested: false,
   });
   const [note, setNote] = useState("");
-  const [downloading, setDownloading] = useState("");
-  const [downloadError, setDownloadError] = useState("");
-  async function downloadAttachment(document: any) {
-    setDownloading(document.id);
-    setDownloadError("");
-    try {
-      const response = await fetch(`/api/glpi/tickets/${encodeURIComponent(ticket.external_id)}/documents/${encodeURIComponent(document.id)}/download`);
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        throw Error(body?.error || "Não foi possível baixar o anexo.");
-      }
-      const url = URL.createObjectURL(await response.blob());
-      const link = window.document.createElement("a");
-      link.href = url;
-      link.download = document.name || "anexo";
-      window.document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
-    } catch (error: any) { setDownloadError(error.message); }
-    finally { setDownloading(""); }
-  }
   const set = (key: string, value: any) => setForm((f) => ({ ...f, [key]: value }));
   const matrices = data.contracts.filter(
     (c: any) => c.school_id === form.school_id && c.instrument_kind === "Matriz" && c.status === "Assinado",
@@ -201,8 +180,12 @@ function TicketDetail({ ticket, data, can, action, api, busy, open }: Props & { 
         {ticket.title} • Grupos: {ticket.groups.join(", ")} • {ticket.followups} resposta(s) • {ticket.versions} versão(ões)
         registradas
       </p>
+      <h3>Conversa do GLPI</h3>
+      <GlpiConversation messages={ticket.conversation} documents={ticket.documents} fallback={ticket.requestText}
+        partial={ticket.documentsAvailable === false} approvalsPartial={ticket.approvalCoverage === "partial"} attachmentUrl={ticket.mode === "real" && can("files") && can("bank")
+          ? id => `/api/glpi/tickets/${encodeURIComponent(ticket.external_id)}/documents/${encodeURIComponent(id)}/download`
+          : undefined} />
       <h3>Dados identificados (com origem)</h3>
-      <details><summary>Ver solicitação original completa do GLPI</summary><pre className="contract-text-preview">{ticket.requestText || "Solicitação indisponível nesta versão. Atualize o servidor do portal."}</pre></details>
       <dl className="responsibility">
         {Object.entries(a.fields as Record<string, any>).map(([key, f]) => (
           <React.Fragment key={key}>
@@ -220,26 +203,6 @@ function TicketDetail({ ticket, data, can, action, api, busy, open }: Props & { 
         {a.suggestion.subtype ? " / " + a.suggestion.subtype : ""} ({a.suggestion.basis || "sem base"}). Confirme
         antes de criar.
       </p>
-      <h3>Anexos no GLPI</h3>
-      {ticket.documents.length ? (
-        ticket.documents.map((d: any) => (
-          <div className="document glpi-attachment" key={d.id}>
-            <FileText size={20} aria-hidden="true" />
-            <div>
-              <strong>{d.name}</strong>
-              <small>{d.mime || "tipo não informado"} • arquivo original do GLPI</small>
-            </div>
-            {ticket.mode === "real" && can("files") && can("bank") && (
-              <button className="secondary" disabled={!!downloading} onClick={() => downloadAttachment(d)}>
-                <Download size={16} /> {downloading === d.id ? "Baixando…" : "Baixar anexo"}
-              </button>
-            )}
-          </div>
-        ))
-      ) : (
-        <p className="muted">{ticket.documentsAvailable ? "Nenhum anexo retornado." : "Anexos indisponíveis para o token."}</p>
-      )}
-      {downloadError && <p className="inline-warning" role="alert">{downloadError}</p>}
       <h3>Pendências</h3>
       <ul className="pending-list">
         {a.pendencies.map((p: string) => (

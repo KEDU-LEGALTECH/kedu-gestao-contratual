@@ -36,3 +36,43 @@ export function requestExpectations(content:string,explicitFields:Record<string,
  return Object.fromEntries(Object.entries(fields).map(([key,values])=>[key,distinctFieldValues(key,values)]));
 }
 export {sameFieldValue as sameRequestedValue,distinctFieldValues as distinctRequestedValues} from '../shared/value-comparison.js';
+
+type TicketConversation = {
+ content: string;
+ created?: string;
+ followups?: {id?: string; content: string; date?: string; private?: boolean}[];
+ documentLinks?: Record<string, string[]>;
+ messageAuthors?: Record<string, string>;
+};
+
+export function conversationEntries(ticket: TicketConversation) {
+ const initial = {id:"initial", date:ticket.created, content:ticket.content};
+ const messages = [initial, ...(ticket.followups || []).filter(message => !message.private)];
+ return messages.map((message, index) => {
+  const id = message.id || "legacy-" + index;
+  return {
+   id, date:message.date, text:htmlToText(message.content).join('\n'),
+   author:ticket.messageAuthors?.[id],
+   documents:ticket.documentLinks?.[id] || [],
+  };
+ });
+}
+
+export function conversationText(ticket: TicketConversation) {
+ const initial = htmlToText(ticket.content).join('\n');
+ const messages = (ticket.followups || []).filter(message => !message.private)
+  .map(message => [message.date, ...htmlToText(message.content)].filter(Boolean).join('\n'));
+ return [initial, ...messages].filter(Boolean).join('\n\n');
+}
+
+/** Read each message independently so a field label cannot consume the next message. */
+export function conversationExpectations(ticket: TicketConversation, explicitFields: Record<string,{value:string}> = {}) {
+ const fields = requestExpectations(ticket.content, explicitFields);
+ for (const message of ticket.followups || []) {
+  if (message.private) continue;
+  for (const [key, values] of Object.entries(requestExpectations(message.content))) {
+   fields[key] = distinctFieldValues(key, [...(fields[key] || []), ...values]);
+  }
+ }
+ return fields;
+}

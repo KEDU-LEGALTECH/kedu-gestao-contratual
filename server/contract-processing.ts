@@ -10,7 +10,7 @@ import { wholeMonths } from "../shared/extenso.js";
 import { generate,review } from "./documents.js";
 import { readProcessingFile,readerVersion } from "./file-reading.js";
 import { invalidate } from "./workflow.js";
-import {requestExpectations,requestCompanyReferences,sameRequestedValue,distinctRequestedValues} from './request-expectations.js';
+import {conversationExpectations,requestCompanyReferences,sameRequestedValue,distinctRequestedValues} from './request-expectations.js';
 import {installmentTableFields} from './installment-table.js';
 import {identifyDocumentHeading,receivedDocumentKind} from '../shared/document-heading.js';
 import {attachmentRole,fieldsForRole,automaticReadingCheck,unusedPersonalId} from './reading-policy.js';
@@ -37,6 +37,7 @@ import {targetedReadingTargets,mergeTargetedReading} from './targeted-reading.js
 import {comparisonSources} from './comparison-sources.js';
 import {fileProgress} from './file-progress.js';
 import {readDoclingPage,doclingConfig} from './docling-reader.js';
+import {setImmediate as yieldToServer} from "node:timers/promises";
 // Tiny images without any text (logos, signatures, illustrations) are not unreadable documents.
 const logoImage=(f:any)=>!!f.problem&&/\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name)&&f.byteLength<80000&&/nenhum texto leg/i.test(f.problem);
 export function receivedDocumentTypes(did:string) {
@@ -73,12 +74,26 @@ export function ensureProcessing(did:string) {
  return one("SELECT * FROM contract_processing WHERE demand_id=?",did);
 }
 function filesFor(did:string,hash:string) {
- const files=all("SELECT id,demand_id,document_id,ticket_hash,name,mime,extracted,problem,created,length(bytes) AS byteLength,substr(bytes,1,24) AS head FROM processing_files WHERE demand_id=? ORDER BY rowid DESC",did).filter(f=>f.ticket_hash===hash || f.ticket_hash.startsWith(hash+":correction:"));
- return files.filter((f,i)=>files.findIndex(x=>x.document_id===f.document_id)===i);
+ const prefix=hash+":correction:";
+ const files=all("SELECT id,demand_id,document_id,ticket_hash,name,mime,extracted,problem,created,length(bytes) AS byteLength,substr(bytes,1,24) AS head FROM processing_files WHERE demand_id=? AND (ticket_hash=? OR substr(ticket_hash,1,?)=?) ORDER BY rowid DESC",did,hash,prefix.length,prefix);
+ const seen=new Set<string>();
+ return files.filter(f=>{
+  if(seen.has(f.document_id))return false;
+  seen.add(f.document_id);
+  return true;
+ });
 }
 function extractionReviewed(file:any) {
  const hash=sha256(Buffer.from(file.extracted));
  return !!one('SELECT file_id FROM processing_field_reviews WHERE file_id=? AND extraction_hash=? LIMIT 1',file.id,hash)||!!one('SELECT file_id FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?',file.id,hash);
+}
+function previouslyVerifiedAttachment(did:string,documentId:string,checksum:unknown) {
+ if(typeof checksum!=="string"||!(/^[a-f0-9]{40}$/i.test(checksum.trim())))return null;
+ for(const {id} of all("SELECT id FROM processing_files WHERE demand_id=? AND document_id=? AND length(bytes)>0 ORDER BY rowid DESC",did,documentId)){
+  const previous=one("SELECT id,name,mime,bytes,extracted,problem FROM processing_files WHERE id=?",id);
+  if(previous&&matchesImportedAttachment(Buffer.from(previous.bytes),checksum))return previous;
+ }
+ return null;
 }
 /** A human check belongs to the exact bytes and extraction, not to the ticket version.
  * Copies only checks of the same extraction, keeping author and date; never creates a new one. */
@@ -96,7 +111,7 @@ export function buildProcessingPlan(did:string) {
  const overrides=JSON.parse(job.overrides),values:Record<string,string>={},origins:Record<string,string>={},issues:Issue[]=[];
  const systemLabels:Record<string,string>={template:"Modelo do contrato",templateApproval:"Validação do modelo",history:"Numeração do aditivo",organization:"Organização",files:"Documentos",generation:"Geração do contrato",consistency:"Consistência dos dados"};
  const add=(field:string,message:string,extra:Partial<Issue>={})=>issues.push({field,label:field.startsWith("review:")?"Conferência da leitura":inputLabels[field]||systemLabels[field]||field,message,...extra});
- const request=requestExpectations(raw.content,analysis.fields),files=filesFor(did,ticket.hash),candidates:Record<string,{value:string;source:string;fileId:string}[]>={};
+ const request=conversationExpectations(raw,analysis.fields),files=filesFor(did,ticket.hash),candidates:Record<string,{value:string;source:string;fileId:string}[]>={};
  const demandType=analysis.suggestion.type||(d.type!=="A classificar"?d.type:"");
  // A textless small image is a logo only when another attachment carries the document itself.
  const isLogo=(f:any)=>logoImage(f)&&files.some((other:any)=>other!==f&&!other.problem);
@@ -153,7 +168,7 @@ export function buildProcessingPlan(did:string) {
  for(const [key,vs] of Object.entries(request)) {
   const distinct=distinctRequestedValues(key,vs);if(distinct.length===1){
    if(values[key] && !sameRequestedValue(key,values[key],distinct[0]) && !Object.hasOwn(overrides,key))add(key,"O documento difere do pedido. Corrija o valor para gerar o contrato.",{found:values[key],expected:distinct[0],source:"Formulário GLPI e documento anexado"});
-   values[key]=distinct[0];origins[key]="Formulário do chamado GLPI";
+   values[key]=distinct[0];origins[key]="Formulário e conversa do chamado GLPI";
   }
  }
  for(const key of ["cnpj","razaoSocial","nomeFantasia","endereco","remuneracao"])if(analysis.fields[key]?.value){
@@ -330,7 +345,7 @@ export async function processContract(did:string,userId:string|null=null,downloa
  const {demand,ticket}=processingSource(did);
  try {
   const raw=JSON.parse(ticket.payload);
-  for(const doc of (targetedOnly?[]:raw.documents||[]).slice(0,20)) {
+  for(const doc of (targetedOnly?[]:raw.documents||[])) {
    if(recoveryPaused()&&!force&&userId===null)break;
    const cached=filesFor(did,ticket.hash).find(f=>f.document_id===String(doc.id));
    if(cached?.byteLength&&!force&&extractionReviewed(cached))continue;
@@ -338,12 +353,15 @@ export async function processContract(did:string,userId:string|null=null,downloa
    activeFiles.set(did,{documentId:String(doc.id)});
    let file:any,extracted:any,reusedFrom:string|undefined;
    try {
-    const provenPrevious=!cached?.byteLength?all('SELECT * FROM processing_files WHERE demand_id=? AND document_id=? AND length(bytes)>0 ORDER BY rowid DESC',did,String(doc.id)).find(f=>matchesImportedAttachment(Buffer.from(f.bytes),doc.sha1)):null;
+    const provenPrevious=!cached?.byteLength?previouslyVerifiedAttachment(did,String(doc.id),doc.sha1):null;
     if(cached?.byteLength)file={name:cached.name,mime:cached.mime,bytes:Buffer.from(one('SELECT bytes FROM processing_files WHERE id=?',cached.id).bytes)};
     else if(provenPrevious)file={name:doc.name||provenPrevious.name,mime:provenPrevious.mime,bytes:Buffer.from(provenPrevious.bytes)};
     else for(let attempt=0;attempt<3;attempt++){
      try {file=await download(demand.glpi_id,String(doc.id),AbortSignal.timeout(30000));if(!file.bytes.length)throw Error('Arquivo vazio.');break;}
-     catch(error:any){if(attempt===2 || [400,401,403,404].includes(error?.status))throw error;}
+     catch(error:any){
+      if(attempt===2 || [400,401,403,404].includes(error?.status))throw error;
+      await new Promise(resolve=>setTimeout(resolve,750*2**attempt));
+     }
     }
     const previous=provenPrevious||(!cached?.byteLength?one('SELECT id,extracted,problem,bytes FROM processing_files WHERE demand_id=? AND document_id=? AND length(bytes)>0 ORDER BY rowid DESC LIMIT 1',did,String(doc.id)):null);
     // A changed ticket can retain the exact same attachment. Verify current GLPI bytes before reuse.
@@ -471,6 +489,7 @@ async function drainReadingQueue() {
  draining=true;
  try {
   while(!recoveryPaused()){
+   await yieldToServer();
    const job=durableQueue!.claim();if(!job)break;
    const source=processingSource(job.demand_id);
    if(!source.ticket||source.ticket.hash!==job.ticket_hash||['Concluído','Cancelado','Em assinatura'].includes(source.demand?.stage)){
@@ -479,7 +498,10 @@ async function drainReadingQueue() {
    try {
     if(running.has(job.demand_id)){durableQueue!.finish(job,'retry','Leitura manual em andamento');continue;}
     const before=recoveryProgress(job.demand_id,job.ticket_hash);
-    const targetedOnly=job.last_error==='targeted-fields';
+    const cachedIds = new Set(filesFor(job.demand_id, job.ticket_hash).filter(file => file.byteLength).map(file => file.document_id));
+    const hasMissingAttachments = (JSON.parse(source.ticket.payload).documents || [])
+      .some((doc: {id: string}) => !cachedIds.has(String(doc.id)));
+    const targetedOnly=job.last_error==='targeted-fields' && !hasMissingAttachments;
     await processContract(job.demand_id,null,downloadGlpiAttachment,false,targetedOnly);
     const after=recoveryProgress(job.demand_id,job.ticket_hash);
     const current=processingSource(job.demand_id);
@@ -490,24 +512,41 @@ async function drainReadingQueue() {
   }
  }finally{draining=false;}
 }
+let scanningRecovery=false;
 export function scheduleContractProcessing() {
- if(process.env.NODE_ENV==='test'||recoveryPaused())return;
- durableQueue??=new ReadingJobQueue(db);
- for(const d of all("SELECT d.id FROM demands d JOIN glpi_tickets t ON t.external_id=d.glpi_id WHERE t.mode='real' AND d.stage NOT IN('Concluído','Cancelado','Em assinatura')")){
-  const job=ensureProcessing(d.id);if(!job||running.has(d.id))continue;
-  if(needsDemandRecovery(d.id,job.ticket_hash))durableQueue.enqueue(d.id,job.ticket_hash,targetedRecovery(d.id,job.ticket_hash).length>0);
-  // Refresh comparisons without running OCR for already healthy originals.
-  if(job.status==='Analisando')saveProcessingResult(d.id);
- }
- void drainReadingQueue();
+ if(process.env.NODE_ENV==='test'||recoveryPaused()||scanningRecovery)return;
+ scanningRecovery=true;
+ void (async()=>{
+  durableQueue??=new ReadingJobQueue(db);
+  void drainReadingQueue();
+  for(const d of all("SELECT d.id FROM demands d JOIN glpi_tickets t ON t.external_id=d.glpi_id WHERE t.mode='real' AND d.stage NOT IN('Concluído','Cancelado','Em assinatura')")){
+   await yieldToServer();
+   if(recoveryPaused())break;
+   if(running.has(d.id))continue;
+   const job=ensureProcessing(d.id);
+   if(!job)continue;
+   const result=JSON.parse(job.result);
+   if(job.status==='Analisando'||result.fingerprint!==fingerprint(d.id))
+    saveProcessingResult(d.id);
+   if(needsDemandRecovery(d.id,job.ticket_hash))durableQueue.enqueue(d.id,job.ticket_hash,targetedRecovery(d.id,job.ticket_hash).length>0);
+  }
+  void drainReadingQueue();
+ })().catch(error=>console.error("Falha ao verificar a fila de leitura:",failureDetail(error)))
+   .finally(()=>{scanningRecovery=false;});
 }
 export function processingSummary(did:string) {
- const {demand,ticket}=processingSource(did);if(!ticket)return null;
- if(["Concluído","Cancelado","Em assinatura"].includes(demand.stage))return {status:demand.stage,revision:one("SELECT revision FROM contract_processing WHERE demand_id=?",did)?.revision||0,issues:0};
- const j=one("SELECT status,ticket_hash,revision,result FROM contract_processing WHERE demand_id=?",did);
- if(!j || j.ticket_hash!==ticket.hash)return {status:"Analisando",revision:j?.revision||0};
- const result=JSON.parse(j.result);
- if(j.status!=="Analisando" && (result.fingerprint!==fingerprint(did)||j.status!==processingStatus(result.issues||[],result.comparisons||[]))){const updated=saveProcessingResult(did);if(updated)return {status:updated.status,revision:updated.revision,issues:updated.issues.length};}
- return {status:j.status,revision:j.revision,issues:result.issues?.length||0};
+ const j=one(`SELECT d.stage,t.hash,p.status,p.ticket_hash,p.revision,
+  json_array_length(p.result,'$.issues') AS issues,
+  CASE WHEN p.status='Aguardando correção' THEN json_extract(p.result,'$.issues') END AS saved_issues,
+  CASE WHEN p.status='Aguardando correção' THEN json_extract(p.result,'$.comparisons') END AS saved_comparisons
+  FROM demands d JOIN glpi_tickets t ON t.external_id=d.glpi_id AND t.mode='real'
+  LEFT JOIN contract_processing p ON p.demand_id=d.id WHERE d.id=?`,did);
+ if(!j)return null;
+ if(["Concluído","Cancelado","Em assinatura"].includes(j.stage))return {status:j.stage,revision:j.revision||0,issues:0};
+ if(j.ticket_hash!==j.hash)return {status:"Analisando",revision:j.revision||0};
+ const status=j.status==='Aguardando correção'
+  ? processingStatus(JSON.parse(j.saved_issues||'[]'),JSON.parse(j.saved_comparisons||'[]')) : j.status;
+ if(status!==j.status)run("UPDATE contract_processing SET status=? WHERE demand_id=?",status,did);
+ return {status,revision:j.revision,issues:j.issues||0};
 }
 

@@ -395,10 +395,10 @@ test('nova versão sem anexo atual informa atualização pendente, sem reutiliza
 test('resumos respeitam etapa, seleção e permissões de acesso aos documentos',async()=>{
  const stage=completed('field-review').status;
  const url=base.replace('/demands','')+'/processing/summary?'+new URLSearchParams({stage,ids:'field-review'});
- const response=await fetch(url);assert.equal(response.status,200,await response.clone().text());
+ const response=await fetch(url,{headers:{connection:'close'}});assert.equal(response.status,200,await response.clone().text());
  const summary=await response.json();assert.equal(summary.count,1);assert.match(summary.markdown,/GLPI #field-review/);
- assert.equal((await fetch(url,{headers:{'x-role':'Consulta'}})).status,403);
- const empty=await fetch(base.replace('/demands','')+'/processing/summary?'+new URLSearchParams({stage,ids:'inexistente'}));
+ assert.equal((await fetch(url,{headers:{'x-role':'Consulta',connection:'close'}})).status,403);
+ const empty=await fetch(base.replace('/demands','')+'/processing/summary?'+new URLSearchParams({stage,ids:'inexistente'}),{headers:{connection:'close'}});
  assert.equal((await empty.json()).count,0);
 });
 test("Substituição manual de imagem por DOCX legível preenche os dados e libera a validação",async()=>{

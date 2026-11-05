@@ -1,5 +1,5 @@
 import { one } from "./db.js";
-import { GlpiClient, glpiConfig, configProblems, type GlpiConfig } from "./glpi.js";
+import { GlpiClient, glpiConfig, configProblems, readTicketTimeline, type GlpiConfig } from "./glpi.js";
 
 /** No remote URL supplied by the browser is accepted. Rechecks live group and document links. */
 export async function downloadGlpiAttachment(ticketId: string, documentId: string, signal: AbortSignal, config: GlpiConfig = glpiConfig(), fetchImpl: typeof fetch = fetch) {
@@ -12,9 +12,11 @@ export async function downloadGlpiAttachment(ticketId: string, documentId: strin
   const problems = configProblems(config);
   if (problems.length) throw Error("Configuração GLPI incompleta: " + problems.join("; "));
   const client = new GlpiClient(config, fetchImpl);
-  await client.open(signal);
+  let phase = "abertura da sessão";
   try {
-    const actors = await client.list(`Ticket/${ticketId}/Group_Ticket`, {}, 1000, signal);
+    await client.open(signal);
+    phase = "verificação do grupo autorizado";
+    const actors = await client.list(`Ticket/${ticketId}/Group_Ticket`, {}, Infinity, signal);
     // Name-only installations resolve the configured group IDs before checking the ticket.
     const allowedIds = new Set(config.groupIds);
     for (const name of config.groups) {
@@ -23,15 +25,36 @@ export async function downloadGlpiAttachment(ticketId: string, documentId: strin
     }
     if (!actors.some(a => allowedIds.has(Number(a.groups_id)) && config.actorTypes.includes(Number(a.type))))
       throw Object.assign(Error("O chamado não está mais atribuído aos grupos autorizados."), { status: 403 });
-    const links = await client.list(`Ticket/${ticketId}/Document_Item`, {}, 1000, signal);
-    if (!links.some(l => String(l.documents_id) === documentId))
+    phase = "verificação do vínculo do anexo";
+    const links = await client.list(`Ticket/${ticketId}/Document_Item`, {}, Infinity, signal);
+    const hasDocument = (items: any[]) => items.some(l => String(l.documents_id) === documentId);
+    let linked = hasDocument(links);
+    const origins = Object.entries(payload.documentLinks ?? {}).filter(([, ids]) => Array.isArray(ids) && ids.includes(documentId));
+    for (const [origin] of origins) {
+      if (linked) break;
+      const match = /^(?:(TicketTask|ITILSolution|TicketValidation):)?(\d+)$/.exec(origin);
+      if (!match) continue;
+      const [, type = "ITILFollowup", id] = match;
+      const entries = await client.list(`Ticket/${ticketId}/${type}`, {}, Infinity, signal);
+      if (!entries.some(entry => String(entry.id) === id && Number(entry.is_private) !== 1)) continue;
+      linked = hasDocument(await client.list(`${type}/${id}/Document_Item`, {}, Infinity, signal));
+    }
+    if (!linked && !origins.length)
+      linked = (await readTicketTimeline(client, ticketId, signal)).documentIds.has(documentId);
+    if (!linked)
       throw Object.assign(Error("O anexo não está mais vinculado ao chamado. Atualize a sincronização."), { status: 404 });
+    phase = "consulta dos metadados";
     const { body: metadata } = await client.get(`Document/${documentId}`, {}, signal);
+    phase = "transferência do arquivo";
     const bytes = await client.downloadDocument(documentId, signal);
     const name = String(metadata?.filename || attachment.name || "anexo").replace(/[\r\n\\/]/g, "_").slice(0, 180);
     const mime = /\.docx$/i.test(name)
       ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
       : /\.pdf$/i.test(name) ? "application/pdf" : "application/octet-stream";
     return { bytes, name, mime };
+  } catch (error) {
+    if (signal.aborted && (signal.reason as Error)?.name === "TimeoutError")
+      throw Object.assign(Error(`Tempo limite do anexo GLPI excedido durante a ${phase}.`, { cause: error }), { status: 504 });
+    throw error;
   } finally { await client.close(); }
 }

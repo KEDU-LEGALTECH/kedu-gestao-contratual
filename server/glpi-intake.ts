@@ -1,5 +1,6 @@
+import { conversationText, conversationEntries } from './request-expectations.js';
 import { all, one, run, id, now, db, audit } from "./db.js";
-import { analyzeTicket, htmlToText } from "./glpi-analysis.js";
+import { analyzeTicket } from "./glpi-analysis.js";
 import { saveDetails, details, nextReport, matrixCases, subtypes } from "./governance.js";
 import { allocateAddendum, invalidate, permit, access } from "./workflow.js";
 import { organizations, classifyOrganization } from "./organizations.js";
@@ -44,7 +45,7 @@ export function intakeForDemand(demandId: string) {
   const intake = one("SELECT i.*,t.payload,t.hash AS current_hash FROM glpi_intakes i JOIN glpi_tickets t ON t.external_id=i.ticket_id WHERE i.demand_id=?", demandId);
   if (!intake) return null;
   const raw = JSON.parse(intake.payload);
-  return { ...intake, payload: undefined, title: raw.title, text: htmlToText(raw.content).join("\n"), documents: raw.documents,
+  return { ...intake, payload: undefined, title: raw.title, text: conversationText(raw), conversation: conversationEntries(raw), documentsAvailable: raw.documentsAvailable, approvalCoverage: raw.approvalCoverage, documents: raw.documents,
     analysis: analyzeTicket(raw, { schools: organizations(), matrices: all("SELECT id,school_id FROM contract_registry WHERE instrument_kind='Matriz' AND status='Assinado'") }) };
 }
 

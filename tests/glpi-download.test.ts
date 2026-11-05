@@ -15,7 +15,7 @@ process.env.GLPI_USER_TOKEN = "fake-user";
 process.env.GLPI_RETRIES = "0";
 const bytes = Buffer.from("PK\x03\x04arquivo fictício de teste");
 const calls: { path: string; method: string; media: boolean }[] = [];
-let permitted = true, linked = true, fileDenied = false;
+let permitted = true, linked = true, fileDenied = false, followupVisible = false;
 const glpi = createServer((req, res) => {
   const url = new URL(req.url!, "http://test");
   const path = url.pathname.replace("/apirest.php/", "");
@@ -31,6 +31,8 @@ const glpi = createServer((req, res) => {
   if (path === "killSession") return json(true);
   if (path === "Ticket/1001/Group_Ticket") return json([{ groups_id: permitted ? 149 : 999, type: 2 }]);
   if (path === "Ticket/1001/Document_Item") return json(linked ? [{ documents_id: 51 }] : []);
+  if (path === "Ticket/1001/ITILFollowup") return json(followupVisible ? [{ id: 9 }] : []);
+  if (path === "ITILFollowup/9/Document_Item") return json([{ documents_id: 51 }]);
   if (path === "Document/51") {
     if (!media) return json({ filename: "arquivo.docx" });
     if (fileDenied) return json(["ERROR_RIGHT_MISSING", "sem direito"], 403);
@@ -95,6 +97,31 @@ test("Negativa de permissão do GLPI é exibida como erro e a sessão é encerra
   assert.doesNotMatch(body.error, /fake-user|fake-app|fake-session/);
   assert.equal(calls.at(-1)?.path, "killSession");
   fileDenied = false;
+});
+test("Anexo da conversa verifica somente a origem registrada e recusa uma origem removida", async () => {
+  const previous = one("SELECT payload FROM glpi_tickets WHERE external_id='1001'").payload;
+  const { downloadGlpiAttachment } = await import("../server/glpi-download.js");
+  run("UPDATE glpi_tickets SET payload=? WHERE external_id='1001'", JSON.stringify({
+    ...JSON.parse(previous), documentLinks: { "9": ["51"] },
+  }));
+  linked = false;
+  followupVisible = true;
+  try {
+    const start = calls.length;
+    assert.deepEqual((await downloadGlpiAttachment("1001", "51", AbortSignal.timeout(5000))).bytes, bytes);
+    assert.deepEqual(calls.slice(start).map(c => c.path), [
+      "initSession", "Ticket/1001/Group_Ticket", "Ticket/1001/Document_Item", "Ticket/1001/ITILFollowup",
+      "ITILFollowup/9/Document_Item", "Document/51", "Document/51", "killSession",
+    ]);
+    followupVisible = false;
+    const startRemoved = calls.length;
+    await assert.rejects(downloadGlpiAttachment("1001", "51", AbortSignal.timeout(5000)), { status: 404 });
+    assert.ok(!calls.slice(startRemoved).some(c => c.path === "ITILFollowup/9/Document_Item" || c.media));
+  } finally {
+    linked = true;
+    followupVisible = false;
+    run("UPDATE glpi_tickets SET payload=? WHERE external_id='1001'", previous);
+  }
 });
 test("Limite de bytes impede arquivos excessivos mesmo sem Content-Length", async () => {
   let canceled = false;
