@@ -1,4 +1,4 @@
-import {isOpenDemand} from "../shared/glpi-ticket-meta.js";
+import {isOpenDemand,demandDisplayStage} from "../shared/glpi-ticket-meta.js";
 import "dotenv/config";
 import {acquireBackendInstance,backendVersion} from './backend-instance.js';
 import express from "express";
@@ -1514,8 +1514,8 @@ function reportRows(req: any) {
     to = req.query.to ? z.iso.date().parse(req.query.to) : "2100-12-31";
   if (from > to) throw Error("O início do período deve ser anterior ao fim.");
   return all(
-    "SELECT d.id,d.created,d.completed,d.due,d.owner,d.stage,d.type,COALESCE(s.name,json_extract(d.data,'$.razaoSocial'),'Organização a identificar') AS school,COALESCE(u.name,'Não atribuído') AS owner_name FROM demands d LEFT JOIN schools s ON s.id=d.school_id LEFT JOIN users u ON u.id=d.owner",
-  ).map(d=>({...d,workflow_stage:d.stage,stage:["Concluído","Cancelado","Em assinatura"].includes(d.stage)?d.stage:processingSummary(d.id)?.status||d.stage})).filter(
+    "SELECT d.id,d.created,d.completed,d.due,d.owner,d.stage,d.type,COALESCE(s.name,json_extract(d.data,'$.razaoSocial'),'Organização a identificar') AS school,COALESCE(u.name,'Não atribuído') AS owner_name,(SELECT t.status FROM glpi_tickets t WHERE t.external_id=d.glpi_id) AS glpi_status FROM demands d LEFT JOIN schools s ON s.id=d.school_id LEFT JOIN users u ON u.id=d.owner",
+  ).map(d=>{const glpiOrigin=d.glpi_status?{status:d.glpi_status}:null;return {...d,workflow_stage:d.stage,glpiOrigin,stage:demandDisplayStage({stage:d.stage,glpiOrigin,processing:processingSummary(d.id)})};}).filter(
     (d) =>
       localDate(d.created) >= from &&
       localDate(d.created) <= to &&
@@ -1526,11 +1526,12 @@ function reportRows(req: any) {
 app.get("/api/reports", (req: any, res) => {
   const rows = reportRows(req),
     completed = rows.filter((d) => d.completed),
-    divergences: any[] = [];
+    divergences: any[] = [],
+    closedPendencies: any[] = [];
   for (const d of rows) {
     const processing=processingSummary(d.id);
     if(processing && !["Concluído","Cancelado","Em assinatura"].includes(d.workflow_stage)){
-      if(["Aguardando análise","Aguardando correção"].includes(processing.status))divergences.push({id:d.id,school:d.school,status:processing.status,count:processing.issues||0});
+      if(["Aguardando análise","Aguardando correção"].includes(processing.status))(isOpenDemand(d)?divergences:closedPendencies).push({id:d.id,school:d.school,status:processing.status,count:processing.issues||0,glpiStage:d.stage});
       continue;
     }
     const doc = latest(d.id);
@@ -1550,8 +1551,7 @@ app.get("/api/reports", (req: any, res) => {
   res.json({
     volume: rows.length,
     overdue: rows.filter(
-      (d) =>
-        !["Concluído", "Cancelado"].includes(d.stage) && !!d.due && d.due < localDate(),
+      (d) => isOpenDemand(d) && !!d.due && d.due < localDate(),
     ).length,
     average: completed.length
       ? Math.round(
@@ -1571,6 +1571,7 @@ app.get("/api/reports", (req: any, res) => {
       count: rows.filter((d) => d.stage === stage).length,
     })),
     divergences,
+    closedPendencies,
   });
 });
 app.get("/api/reports.csv", (req: any, res) => {

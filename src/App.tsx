@@ -42,7 +42,7 @@ import { OfficialPanel } from "./OfficialPanel";
 import { GlpiPage } from "./GlpiPage";
 import { OfficialTemplates } from "./OfficialTemplates";
 import { TemplateViewer } from "./TemplateViewer";
-import {glpiStatusLabel,glpiPriorityLabel,demandPriorityRank,matchesDemandQueue,isGlpiSolved,isOpenDemand,type DemandQueue} from "../shared/glpi-ticket-meta";
+import {glpiStatusLabel,glpiPriorityLabel,demandPriorityRank,matchesDemandQueue,demandDisplayStage,isGlpiSolved,isOpenDemand,type DemandQueue} from "../shared/glpi-ticket-meta";
 import { officialInputs } from "../shared/official-fields";
 import { organizationAllowed } from "../shared/organization-policy";
 import { Organizations } from "./Organizations";
@@ -382,7 +382,7 @@ export function App() {
         </div>
       </div>
     );
-  const displayStage=(d:any)=>d.processing?.status || d.stage;
+  const displayStage = (d: any) => demandDisplayStage(d);
   const listStages=[...new Set<string>(["Analisando","Aguardando análise","Aguardando correção","Sem erros",...data.demands.map(displayStage)])];
   const flowStages=data.demands.some((d:any)=>d.processing)?listStages:stages.slice(0,7);
   const filtered = data.demands.filter(
@@ -1400,14 +1400,14 @@ export function App() {
                       ],
                       [
                         "Sem erros",
-                        data.demands.filter((d:any)=>d.processing?.status==="Sem erros").length,
+                        data.demands.filter((d:any)=>displayStage(d)==="Sem erros").length,
                         ShieldCheck,
                         "Dados comparados conferem",
                         "conference-clean",
                       ],
                       [
                         "Aguardando correção",
-                        data.demands.filter((d:any)=>d.processing?.status==="Aguardando correção").length,
+                        data.demands.filter((d:any)=>displayStage(d)==="Aguardando correção").length,
                         FileCheck2,
                         "Confira os itens indicados",
                         "conference-correction",
@@ -1576,7 +1576,7 @@ export function App() {
                 <>
                   <section className="panel filters">
                     <div className="glpi-queue-tabs" role="group" aria-label="Separar demandas pelo status do GLPI">
-                      {([ ["all","Todas"],["active","Abertas"],["open","Em andamento"],["pending","Pendentes no GLPI"],["solved","Solucionados"] ] as const).map(([key,label])=><button key={key} type="button" className={demandQueue===key?"primary":"secondary"} aria-pressed={demandQueue===key} onClick={()=>setDemandQueue(key)}>{label} ({data.demands.filter((d:any)=>matchesDemandQueue(d,key)).length})</button>)}
+                      {([ ["all","Todas"],["active","Abertas"],["open","Em andamento"],["pending","Pendentes no GLPI"],["solved","Solucionados"],["closed","Fechados"] ] as const).map(([key,label])=><button key={key} type="button" className={demandQueue===key?"primary":"secondary"} aria-pressed={demandQueue===key} onClick={()=>setDemandQueue(key)}>{label} ({data.demands.filter((d:any)=>matchesDemandQueue(d,key)).length})</button>)}
                     </div>
                     <div className="filter-top">
                       <div className="search">

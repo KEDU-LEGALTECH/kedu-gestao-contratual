@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {RealGlpiSource,glpiConfig,ticketHash} from '../server/glpi.js';
-import {isGlpiPending,glpiPriorityLabel,glpiPriorityRank,matchesDemandQueue,demandPriorityRank} from '../shared/glpi-ticket-meta.js';
+import {isGlpiPending,glpiPriorityLabel,glpiPriorityRank,matchesDemandQueue,demandPriorityRank,demandDisplayStage} from '../shared/glpi-ticket-meta.js';
 
 function fixture(wrongStatus=false,previous:string[]=[],includeOpen=false,emptyStatus=false){
  const calls:{path:string;method:string}[]=[];
@@ -54,6 +54,17 @@ test('Abas de Demandas separam status de origem sem ocultar manuais ou encerrado
  for(const status of ['1','2','3']){assert.equal(matchesDemandQueue({glpiOrigin:{status}},'open'),true);assert.equal(matchesDemandQueue({glpiOrigin:{status}},'pending'),false);}
  assert.equal(matchesDemandQueue({glpiOrigin:{status:'4'}},'pending'),true);
  for(const d of [{glpiOrigin:null},{glpiOrigin:{status:'5'}},{glpiOrigin:{status:'6'}}]){assert.equal(matchesDemandQueue(d,'all'),true);assert.equal(matchesDemandQueue(d,'open'),false);assert.equal(matchesDemandQueue(d,'pending'),false);}
+ assert.equal(matchesDemandQueue({glpiOrigin:{status:'6'}},'closed'),true);
+ assert.equal(matchesDemandQueue({glpiOrigin:{status:'5'}},'closed'),false);
+ assert.equal(matchesDemandQueue({glpiOrigin:{status:'6'}},'solved'),false);
+});
+test('Etapa exibida separa status do GLPI, leitura e etapa final interna',()=>{
+ const processing={status:'Aguardando análise'};
+ assert.equal(demandDisplayStage({stage:'Recebido',glpiOrigin:{status:'4'},processing}),'Aguardando análise');
+ assert.equal(demandDisplayStage({stage:'Recebido',glpiOrigin:{status:'5'},processing}),'Solucionado no GLPI');
+ assert.equal(demandDisplayStage({stage:'Recebido',glpiOrigin:{status:'6'},processing}),'Fechado no GLPI');
+ assert.equal(demandDisplayStage({stage:'Concluído',glpiOrigin:{status:'5'},processing:{status:'Concluído'}}),'Concluído');
+ assert.equal(demandDisplayStage({stage:'Recebido',glpiOrigin:null,processing:null}),'Recebido');
 });
 test('Status sem resultados pode omitir data sem interromper a leitura dos demais status',async()=>{
  const {source}=fixture(false,[],true,true);const tickets=await source.read(AbortSignal.timeout(10000));

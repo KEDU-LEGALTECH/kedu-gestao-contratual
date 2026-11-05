@@ -155,16 +155,34 @@ export function Reports({
               </p>
             )}
           </section>
+          {report.closedPendencies?.length > 0 && (
+            <section className="panel">
+              <h2>Chamados encerrados no GLPI com pendências de leitura ({report.closedPendencies.length})</h2>
+              <p className="muted">Não contam como pendências ativas. A leitura registrada foi preservada.</p>
+              {report.closedPendencies.map((r: any) => (
+                <div className="report-row" key={r.id}>
+                  <span>
+                    {r.school} • {r.glpiStage} • {r.count} apontamentos • {r.status}
+                  </span>
+                  <button className="text-button" onClick={() => open(r.id)}>
+                    Inspecionar <ChevronRight size={15} />
+                  </button>
+                </div>
+              ))}
+            </section>
+          )}
           <section className="panel">
             <h2>Como os indicadores são calculados</h2>
             <p className="muted">
               O período filtra a data de criação em America/Sao_Paulo, com
-              início e fim inclusivos. Vencidas: etapas diferentes de Concluído
-              e Cancelado com prazo anterior a hoje. Tempo médio: dias corridos
+              início e fim inclusivos. Vencidas: demandas abertas com prazo
+              anterior a hoje, sem contar etapas Concluído e Cancelado nem
+              chamados solucionados ou fechados no GLPI. Tempo médio: dias corridos
               entre criação e conclusão das demandas concluídas selecionadas.
               As etapas acompanham a lista de Demandas. Pendências: resultado atual
-              da leitura e validação automática; nos fluxos administrativos,
-              última conferência da última versão, sem somar versões antigas.
+              da leitura e validação automática das demandas abertas; nos fluxos
+              administrativos, última conferência da última versão, sem somar
+              versões antigas.
             </p>
           </section>
         </>
