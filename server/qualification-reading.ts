@@ -36,7 +36,7 @@ export function qualificationFields(source:string,isOwn:(cnpj:string)=>boolean=(
   // PDF reading order can join the instrument title to the first party's name.
   // Strip only an explicit known title terminator, still anchored to this CNPJ.
   const namedLead=lead.replace(/^[\s\S]*\b(?:OUTORGA DE DIREITOS|IDENTIFICA[ÇC][ÃA]O DAS PARTES CONTRATANTES)\s+/i,'');
-  const name=namedLead.trim().replace(/^[,.\s]+/,'').split(/\s*,|\s+(?:pessoa jur[íi]dica|sociedade|com sede|com endere[çc]o|inscrit[ao])\b/i)[0].trim();
+  const name=namedLead.trim().replace(/^[,.\s]+/,'').replace(/^(?:a|o)\s+(?:empresa|sociedade)\s+(?=\p{Lu})/u,'').split(/\s*,|\s+(?:pessoa jur[íi]dica|sociedade|com sede|com endere[çc]o|inscrit[ao])\b/i)[0].trim();
   if(name.length>=3&&name.length<=150&&/\p{Lu}/u.test(name[0])&&!notName.test(name)&&name.split(/\s+/).length>=2)add('razaoSocial',name);
   // Address: "com sede na/em/à ..." or "com endereço em ..." on either side of the CNPJ.
   const address=/com\s+(?:sede|endere[çc]o)\s+(?:na|no|em|à|a)\s+(.{5,260}?)(?=,?\s*(?:neste ato|inscrit[ao]|doravante|telefone|e-mail|representad[ao])|$)/i.exec(block)?.[1];

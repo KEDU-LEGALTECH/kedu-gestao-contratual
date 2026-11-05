@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Relatorio auxiliar de conferencia Kedu - nao e payload da API",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["demanda_id", "glpi_id", "ticket_hash", "analisado_em", "cobertura_completa", "campos", "pendencias", "resultado_proposto", "gravacao_oficial_verificada"],
+  "properties": {
+    "demanda_id": {"type": "string", "minLength": 1},
+    "glpi_id": {"type": "string", "minLength": 1},
+    "ticket_hash": {"type": ["string", "null"]},
+    "analisado_em": {"type": "string", "format": "date-time"},
+    "cobertura_completa": {"type": "boolean"},
+    "resultado_proposto": {"enum": ["Aguardando análise", "Aguardando correção", "Sem erros"]},
+    "gravacao_oficial_verificada": {"type": "boolean"},
+    "pendencias": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "campos": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["campo", "esperado_glpi", "valor_literal", "entidade", "papel", "classificacao", "evidencias", "proxima_acao"],
+        "properties": {
+          "campo": {"type": "string", "minLength": 1},
+          "esperado_glpi": {"type": ["string", "null"]},
+          "valor_literal": {"type": ["string", "null"]},
+          "entidade": {"type": ["string", "null"]},
+          "papel": {"type": ["string", "null"]},
+          "classificacao": {"enum": ["confere", "divergencia_comprovada", "nao_localizado", "inconclusivo", "referencia_pendente", "nao_se_aplica"]},
+          "proxima_acao": {"type": "string", "minLength": 1},
+          "evidencias": {
+            "type": "array",
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["document_id", "arquivo", "hash_original", "localizador", "trecho", "metodo", "limitacoes"],
+              "properties": {
+                "document_id": {"type": ["string", "null"]},
+                "arquivo": {"type": "string", "minLength": 1},
+                "hash_original": {"type": ["string", "null"]},
+                "localizador": {"type": ["string", "null"]},
+                "trecho": {"type": ["string", "null"]},
+                "metodo": {"enum": ["texto_digital", "ocr", "visao_local", "conferencia_visual_assistida", "revisao_humana_registrada", "nao_lido"]},
+                "limitacoes": {"type": "array", "items": {"type": "string"}}
+              }
+            }
+          }
+        },
+        "allOf": [{
+          "if": {"properties": {"classificacao": {"enum": ["confere", "divergencia_comprovada"]}}},
+          "then": {
+            "properties": {
+              "valor_literal": {"type": "string", "minLength": 1},
+              "esperado_glpi": {"type": "string", "minLength": 1},
+              "entidade": {"type": "string", "minLength": 1},
+              "papel": {"type": "string", "minLength": 1},
+              "evidencias": {"minItems": 1, "items": {"properties": {"trecho": {"type": "string", "minLength": 1}, "localizador": {"type": "string", "minLength": 1}}}}
+            }
+          }
+        }]
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"resultado_proposto": {"const": "Sem erros"}}},
+      "then": {"properties": {
+        "cobertura_completa": {"const": true},
+        "pendencias": {"maxItems": 0},
+        "campos": {"minItems": 1, "items": {"properties": {"classificacao": {"enum": ["confere", "nao_se_aplica"]}}}}
+      }}
+    },
+    {
+      "if": {"properties": {"resultado_proposto": {"const": "Aguardando correção"}}},
+      "then": {"properties": {"campos": {"contains": {"properties": {"classificacao": {"const": "divergencia_comprovada"}}, "required": ["classificacao"]}}}}
+    }
+  ]
+}

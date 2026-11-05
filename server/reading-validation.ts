@@ -14,7 +14,7 @@ export function validateReadings(sources:Source[]) {
   const one=(key:string)=>source.fields[key]?.length===1?source.fields[key][0]:'';
   const add=(field:string,message:string,found:string,kind:'invalid'|'consistency'='invalid')=>findings.push({field,source:source.name,message,found,kind});
   for(const key of ['representanteCpf','documentoTitular','cnpj'])for(const value of source.fields[key]||[]){
-   const digits=value.replace(/\D/g,'');const valid=key==='representanteCpf'?validCpf(value):key==='cnpj'?validCnpj(value):digits.length===11?validCpf(value):validCnpj(value);
+   const digits=value.replace(/\D/g,'');const valid=key==='representanteCpf'?validCpf(value):digits.length===11?validCpf(value):validCnpj(value);
    if(!valid)add(key,'Dígitos verificadores inválidos no texto extraído. Confira o original antes de considerar erro de preenchimento.',value);
   }
   for(const key of ['inicio','fim','dataFormalizacao','dataAssinaturaMatriz'])for(const value of source.fields[key]||[]){

@@ -23,8 +23,8 @@ import {validateReadings} from './reading-validation.js';
 import {ReadingJobQueue} from './reading-job-queue.js';
 import {needsReadingRecovery,preservePreviousReading} from './reading-recovery-policy.js';
 import {identityEvidence} from './identity-evidence.js';
-import {withDocumentAddress,hasDigitalField,qualifiedNameNeedsReview,digitalFieldOrigin,headerTradeName} from './comparison-evidence.js';
-import {recoverTextFields} from './text-recovery.js';
+import {withDocumentAddress,hasDigitalField,qualifiedNameNeedsReview,digitalFieldOrigin,headerTradeName,legalFormReferenceNeedsReview,referenceTradeNameNeedsReview} from './comparison-evidence.js';
+import {recoverTextFields,labelledLocationExcerpt} from './text-recovery.js';
 import {assistedVisualField,assistedVisualAbsence} from './assisted-visual-evidence.js';
 import {readWithVision,visionConfig,visionSignature,shouldReadVision} from './vision-reading.js';
 import {plausibleFieldValue,ownIdentity} from './field-plausibility.js';
@@ -160,7 +160,7 @@ export function buildProcessingPlan(did:string) {
  }
  if(!values.modalidade){const named=["Garantia Completa","Garantia Conjunta","Garantia Prevista"].filter(x=>norm(htmlToText(raw.content).join(" ")+" "+raw.title).includes(norm(x)));if(named.length===1){values.modalidade=named[0];origins.modalidade="Modalidade explicitamente citada no chamado GLPI";}}
  const comparable=new Set(editableKeys.filter(key=>!["motivo","matriz"].includes(key)));
- const evidenceFiles=(raw.documents||[]).filter((doc:any)=>{const f=files.find(f=>f.document_id===String(doc.id));return !f||!isLogo(f)&&!blankImage(f);}).map((doc:any)=>{const f=files.find(f=>f.document_id===String(doc.id));const e=f?JSON.parse(f.extracted):{};return {name:f?.name||doc.name||'Anexo',text:e.text||'',problem:f?.problem||(!f?'Anexo ainda não obtido':''),incomplete:!!e.incomplete,downloadFailed:!!f&&!f.byteLength&&!!f.problem,downloadPending:!f};});
+ const evidenceFiles=(raw.documents||[]).filter((doc:any)=>{const f=files.find(f=>f.document_id===String(doc.id));return !f||!isLogo(f);}).map((doc:any)=>{const f=files.find(f=>f.document_id===String(doc.id));const e=f?JSON.parse(f.extracted):{};return {name:f?.name||doc.name||'Anexo',text:e.text||'',emptyContent:!!f&&blankImage(f),problem:f?.problem||(!f?'Anexo ainda não obtido':''),incomplete:!!e.incomplete,downloadFailed:!!f&&!f.byteLength&&!!f.problem,downloadPending:!f};});
  if(raw.documentsAvailable===false&&!evidenceFiles.length)evidenceFiles.push({name:'Lista de anexos indisponível no GLPI',text:'',problem:'Não foi possível consultar os anexos',incomplete:false,downloadFailed:false,downloadPending:true});
  const profileFiles=files.filter(f=>!isLogo(f)).map(f=>{const e=JSON.parse(f.extracted);return {name:f.name,text:e.text||'',problem:f.problem,incomplete:!!e.incomplete,method:e.method};});
  const comparisons:any[]=Object.entries(request).filter(([key])=>comparable.has(key)).map(([key,expected])=>{
@@ -196,7 +196,11 @@ export function buildProcessingPlan(did:string) {
    if(checked&&sameRequestedValue(key,checked.value,c.value))return true;
    return !reading.needsReview||automaticReadingCheck({...reading,fields:{[key]:[c.value]}},role,request);
   });
-  const needsFieldReview=tradeName||!!guided&&!guided.associated||qualifiedNameNeedsReview(key,found,expected)||!trustedReading&&(candidates[key]||[]).some(c=>{
+  const referenceTradeName=key==='razaoSocial'&&(candidates[key]||[]).some(c=>{
+   const reading=JSON.parse(files.find(f=>f.id===c.fileId)!.extracted);
+   return referenceTradeNameNeedsReview(key,found,expected,request.cnpj||[],{...reading.fields,...recoverTextFields(reading.text||'',{})});
+  });
+  const needsFieldReview=referenceTradeName||legalFormReferenceNeedsReview(key,found,expected)||tradeName||!!guided&&!guided.associated||qualifiedNameNeedsReview(key,found,expected)||!trustedReading&&(candidates[key]||[]).some(c=>{
    const pending=issues.filter(i=>i.field.startsWith('review:')&&i.field.endsWith(c.fileId));
    if(!pending.length)return false;
    // Structural, partial and legal reviews remain independent of OCR certainty.
@@ -207,7 +211,10 @@ export function buildProcessingPlan(did:string) {
    if(!reading.incomplete&&confirmed&&sameRequestedValue(key,confirmed.value,c.value))return false;
    return !automaticReadingCheck({...reading,fields:{[key]:[c.value]}},role,request);
   });
-  return {field:key,reviewReason:needsFieldReview||partlyMatches?comparisonReviewReason({tradeName,guided:!!guided&&!guided.associated,qualifiedName:qualifiedNameNeedsReview(key,found,expected),conflictingValues:partlyMatches,readings:(candidates[key]||[]).map(c=>JSON.parse(files.find(f=>f.id===c.fileId)!.extracted)),field:key}):undefined,matchesReference:matches,partlyMatches,expectedEntities:companies,message:companies.length>1?'O chamado menciona mais de uma empresa. Os CNPJs foram separados; confira cada arquivo com a empresa correspondente. O CNPJ do titular bancário não comprova, sozinho, o CNPJ do contrato social.':invalidReference?'O documento informado no GLPI tem quantidade de dígitos ou dígitos verificadores inválidos. Confirme a referência no chamado antes de solicitar alteração do arquivo.':undefined,missingReason:!found.length?evidence.reason:undefined,expectedDocument:evidence.expectedDocument,sourceDocuments:evidence.sourceDocuments,readingPending:needsFieldReview||partlyMatches,label:analysis.suggestion.type==="Parcelamento" && key==="valor"?"Valor parcelado":analysis.suggestion.type==="Parcelamento" && key==="parcelas"?"Quantidade de parcelas":inputLabels[key]||key,expected:expected.join("; "),found:found.join("; "),source:guided?guided.source+(guided.associated?" (valor localizado junto ao rótulo do campo)":" (valor do chamado localizado no texto)"):[...new Set((candidates[key]||[]).map(c=>c.source))].join("; "),used:values[key]||"",note:notApplicable||undefined,status:invalidReference||expected.length>1?"ambiguous":corrected?"corrected":notApplicable?"not_applicable":!found.length?"missing":needsFieldReview||partlyMatches?"review":!matches?"different":"matches"};
+  const bankHolderContext=key==='razaoSocial'&&guided&&!guided.associated?distinctRequestedValues('titularConta',(candidates.titularConta||[]).map(c=>c.value)):[];
+  const reviewReason=bankHolderContext.length===1?{code:'commercial_name_bank_holder',message:'O nome aparece no comunicado, mas não como razão social. O titular bancário declarado é '+bankHolderContext[0]+'. Confirme o vínculo entre o nome comercial e a pessoa jurídica; não foi presumida equivalência.'}:needsFieldReview||partlyMatches?comparisonReviewReason({referenceTradeName,referenceNameTypo:legalFormReferenceNeedsReview(key,found,expected),tradeName,guided:!!guided&&!guided.associated,qualifiedName:qualifiedNameNeedsReview(key,found,expected),conflictingValues:partlyMatches,readings:(candidates[key]||[]).map(c=>JSON.parse(files.find(f=>f.id===c.fileId)!.extracted)),field:key}):undefined;
+  if(reviewReason&&['reference_trade_name','reference_name_typo'].includes(reviewReason.code))for(const issue of issues.filter(i=>i.field===key))issue.message=reviewReason.message;
+  return {field:key,reviewReason,matchesReference:matches,partlyMatches,expectedEntities:companies,message:companies.length>1?'O chamado menciona mais de uma empresa. Os CNPJs foram separados; confira cada arquivo com a empresa correspondente. O CNPJ do titular bancário não comprova, sozinho, o CNPJ do contrato social.':invalidReference?'O documento informado no GLPI tem quantidade de dígitos ou dígitos verificadores inválidos. Confirme a referência no chamado antes de solicitar alteração do arquivo.':undefined,missingReason:!found.length?evidence.reason:undefined,expectedDocument:evidence.expectedDocument,sourceDocuments:evidence.sourceDocuments,readingPending:needsFieldReview||partlyMatches,label:key==='cnpj'&&expected.length===1&&expected[0].replace(/\D/g,'').length===11?'CPF':analysis.suggestion.type==="Parcelamento" && key==="valor"?"Valor parcelado":analysis.suggestion.type==="Parcelamento" && key==="parcelas"?"Quantidade de parcelas":inputLabels[key]||key,expected:expected.join("; "),found:found.join("; "),source:guided?guided.source+(guided.associated?" (valor localizado junto ao rótulo do campo)":" (valor do chamado localizado no texto)"):[...new Set((candidates[key]||[]).map(c=>c.source))].join("; "),used:values[key]||"",note:notApplicable||undefined,status:invalidReference||expected.length>1?"ambiguous":corrected?"corrected":notApplicable?"not_applicable":!found.length?"missing":needsFieldReview||partlyMatches?"review":!matches?"different":"matches"};
  });
  // Confidence belongs to the requested fields. Unused OCR fields must not keep an otherwise
  // completely read file pending after every requested field it supplies has independent proof.
@@ -266,7 +273,7 @@ export function buildProcessingPlan(did:string) {
  const required=officialRequired(actualType,actualSubtype,values.modalidade||"");
  for(const key of required)if(!values[key]?.trim() && !issues.some(i=>i.field===key))add(key,"Preencha este dado: ele não foi identificado no chamado ou nos documentos.");
  for(const [key,message]of Object.entries(validateData(values)))if(!issues.some(i=>i.field===key))add(key,message,{found:values[key]});
- if(values.cnpj && !validCnpj(values.cnpj))add("cnpj","CNPJ com dígitos verificadores inválidos. Confira o documento cadastral.",{found:values.cnpj});
+ if(values.cnpj && !plausibleFieldValue('cnpj',values.cnpj))add("cnpj","CPF/CNPJ com dígitos verificadores inválidos. Confira o documento cadastral.",{found:values.cnpj});
  for(const message of officialProblems(actualType,actualSubtype,values))add("consistency",message);
  let generated:Buffer|null=null,derived:Record<string,string>={};
  if(version)try {
@@ -291,7 +298,7 @@ export function buildProcessingPlan(did:string) {
     const assisted=values.length===1?assistedVisualField(e,key,values[0],attachmentRole(f.name,e.text||'')):null;
     const observations=values.map(value=>{
      const origin=assistedVisualField(e,key,value,attachmentRole(f.name,e.text||''))||digitalFieldOrigin(e,key,value)||e.fieldOrigins?.[key]?.find((o:any)=>sameRequestedValue(key,o.value,value));
-     return {value,page:origin?.page||(e.pages===1?1:undefined),excerpt:origin?.excerpt||fieldExcerpt(e.text||'',[value])};
+     return {value,page:origin?.page||(e.pages===1?1:undefined),excerpt:origin?.excerpt||fieldExcerpt(e.text||'',[value])||(scope.selected&&['cnpj','razaoSocial'].includes(key)?scope.selected.excerpt:'')||labelledLocationExcerpt(e.text||'',key,value)};
     });
     return {key,label:inputLabels[key]||key,values,observations,expected:request[key]||[],assistedVisualReview:!!assisted,page:assisted?.page||evidence?.page||e.fieldOrigins?.[key]?.[0]?.page||(e.pages===1?1:undefined),excerpt:assisted?.excerpt||evidence?.excerpt||(scope.selected&&['cnpj','razaoSocial'].includes(key)?scope.selected.excerpt:fieldExcerpt(e.text||'',values)),confirmed:!!check&&check.extraction_hash===sha256(Buffer.from(f.extracted))&&values.length===1&&sameRequestedValue(key,check.value,values[0])};
    }),
@@ -487,3 +494,4 @@ export function processingSummary(did:string) {
  if(j.status!=="Analisando" && (result.fingerprint!==fingerprint(did)||j.status!==processingStatus(result.issues||[],result.comparisons||[]))){const updated=saveProcessingResult(did);if(updated)return {status:updated.status,revision:updated.revision,issues:updated.issues.length};}
  return {status:j.status,revision:j.revision,issues:result.issues?.length||0};
 }
+

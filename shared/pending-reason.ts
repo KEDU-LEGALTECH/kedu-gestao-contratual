@@ -5,6 +5,7 @@ export function pendingReason(row:any):{code:string;label:string;action:string}|
  const source=row.expectedDocument?` (${row.expectedDocument})`:'';
  if(reason==='awaiting_version')return make(reason,'Versão atual pendente','Sincronize o chamado e atualize a leitura dos anexos da versão atual.');
  if(reason==='download_pending')return make(reason,'Download pendente','Atualize a leitura para obter o anexo que consta no chamado.');
+ if(reason==='empty_source')return make(reason,'Anexo recebido em branco','O arquivo foi enviado, mas não contém documento visível. Peça o reenvio da imagem ou do documento correto.');
  if(reason==='not_sent'||row.field==='files')return make('not_sent','Arquivo não enviado',`Anexe ao chamado o documento de origem${source} e sincronize novamente.`);
  if(reason==='download_failed'||/não foi possível (?:baixar|obter).*anexo|anexo ainda não obtido/i.test(row.message||''))return make('download_failed','Falha ao baixar','Confira se o anexo abre no GLPI e tente sincronizar e atualizar a leitura novamente.');
  if(reason==='partial'||row.reviewReason?.code==='partial_source'||/^review:partial:/.test(row.field||''))return make('partial','Página não lida','Atualize a leitura para recuperar as páginas restantes. Se persistir, envie uma cópia completa e legível.');

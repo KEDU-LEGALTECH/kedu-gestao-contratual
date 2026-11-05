@@ -3,16 +3,31 @@ import {structuredIdentityFields} from './structured-identities.js';
 import {ownIdentity,plausibleFieldValue} from './field-plausibility.js';
 import {bankFields} from './bank-reading.js';
 import {validCnpj} from './registration-reading.js';
-import {distinctRequestedValues} from './request-expectations.js';
+import {distinctRequestedValues,sameRequestedValue} from './request-expectations.js';
 import {fullStateName} from '../shared/state-name.js';
 import {contextualLayoutFields} from './contextual-layout-fields.js';
+import {explicitContractTotals} from './explicit-contract-total.js';
 type Fields=Record<string,string[]>;
+export function labelledLocationExcerpt(text:string,key:string,value:string){
+ if(!['cidade','estado'].includes(key))return '';
+ const lines=text.split(/\r?\n/).filter(line=>/(?:Cidade|Munic[íi]pio)\s*\/\s*UF/i.test(line));
+ const matches=lines.filter(line=>recoverTextFields(line,{})[key]?.some(v=>sameRequestedValue(key,v,value)));
+ return matches.length===1?matches[0].trim():'';
+}
 /** Fields recoverable from an already extracted text without OCR; existing fields are never replaced. */
 export function recoverTextFields(text:string,existing:Fields):Fields {
  const found:Fields={};
+ // Labelled location is not evidence of a street, registered seat or bank owner.
+ const locations=[...text.matchAll(/(?:^|\n)\s*(?:Cidade|Munic[íi]pio)\s*\/\s*UF\s*:?\s+([\p{L}][\p{L} .'-]{1,70}?)\s*\/\s*([A-Z]{2})(?=\s|$)/giu)]
+  .map(m=>({city:m[1].trim(),uf:m[2].toUpperCase()})).filter(m=>!!fullStateName(m.uf));
+ if(locations.length===1){found.cidade=[locations[0].city+' - '+locations[0].uf];found.estado=[fullStateName(locations[0].uf)!];}
+ const totals=explicitContractTotals(text);if(totals.length&&!existing.valorTotal?.some(v=>v.trim()))found.valorTotal=totals;
  for(const part of [contextualLayoutFields(text),bankFields(text),qualificationFields(text,cnpj=>ownIdentity('cnpj',cnpj))])for(const [key,values] of Object.entries(part))found[key]=distinctRequestedValues(key,[...(found[key]||[]),...values]);
- const socialNames=distinctRequestedValues('razaoSocial',[...text.matchAll(/a\s+sociedade\s+(?:girar[áa]|adotar[áa])\s+sob\s+(?:o\s+)?nome\s+empresarial\s*[“"]([^”"\n]{5,180})[”"]/gi)].map(m=>m[1].trim()));
- if(socialNames.length===1)found.razaoSocial=socialNames;
+ const socialNames=distinctRequestedValues('razaoSocial',[
+  ...[...text.matchAll(/a\s+sociedade\s+(?:girar[áa]|adotar[áa])\s+sob\s+(?:o\s+)?nome\s+empresarial\s*[“"]([^”"\n]{5,180})[”"]/gi)].map(m=>m[1].trim()),
+  ...[...text.matchAll(/a\s+(?:sociedade|empresa)\s+(?:girar[áa]|adotar[áa])\s+sob\s+(?:o\s+)?nome\s+empresarial\s*[.:]?\s*[“"]?([^”"\n]{3,160}?\b(?:LTDA|EIRELI|EPP|ME|MEI))\b/gi)].map(m=>m[1].trim()),
+ ]);
+ if(socialNames.length)found.razaoSocial=distinctRequestedValues('razaoSocial',[...(found.razaoSocial||[]),...socialNames]);
  const seats=[...text.matchAll(/a\s+sociedade\s+ter[áa]\s+sua\s+sede\s+(?:na|no|em)\s+([\s\S]{8,240}?\bCEP\s*:?\s*\d{2}\.?\d{3}-?\d{3})/gi)].map(m=>m[1].replace(/\s+/g,' ').trim());
  if(seats.length===1){
   const address=seats[0].replace(/^seguinte\s+endere[çc]o\s*:\s*/i,'');found.endereco=[address];
@@ -30,3 +45,4 @@ export function recoverTextFields(text:string,existing:Fields):Fields {
  for(const [key,values] of Object.entries(structuredIdentityFields(text)))found[key]=[...new Set([...(found[key]||[]),...values])];
  return Object.fromEntries(Object.entries(found).filter(([key,values])=>values.length&&!existing[key]?.some(value=>plausibleFieldValue(key,value))));
 }
+

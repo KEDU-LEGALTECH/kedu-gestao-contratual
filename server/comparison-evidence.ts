@@ -1,5 +1,28 @@
 import {sameRequestedValue,distinctRequestedValues} from './request-expectations.js';
 
+/** A possible typo in the requested legal-form suffix is a reference question,
+ * never permission to silently repair the name or demand a document correction. */
+export function legalFormReferenceNeedsReview(key:string,found:string[],expected:string[]){
+ if(key!=='razaoSocial'||found.length!==1||expected.length!==1)return false;
+ const tokens=(s:string)=>s.normalize('NFD').replace(/\p{Diacritic}/gu,'').toUpperCase().replace(/[.,]/g,'').trim().split(/\s+/);
+ const a=tokens(found[0]),b=tokens(expected[0]);
+ if(a.length<3||a.length!==b.length||a.slice(0,-1).join(' ')!==b.slice(0,-1).join(' '))return false;
+ const actual=a.at(-1)!,reference=b.at(-1)!,forms=['LTDA','EIRELI','EPP','ME','MEI'];
+ if(!forms.includes(actual)||forms.includes(reference)||!/^[A-Z]{2,9}$/.test(reference)||Math.abs(actual.length-reference.length)!==1)return false;
+ const longer=actual.length>reference.length?actual:reference,shorter=actual.length>reference.length?reference:actual;
+ return [...longer].some((_,i)=>longer.slice(0,i)+longer.slice(i+1)===shorter);
+}
+
+/** A commercial-name reference is not proof that the documented legal name is wrong.
+ * This only requests association/review and never declares the names equivalent. */
+export function referenceTradeNameNeedsReview(key:string,found:string[],expected:string[],expectedCnpj:string[],fields:Record<string,string[]>){
+ if(key!=='razaoSocial'||found.length!==1||expected.length!==1||expectedCnpj.length!==1||fields.cnpj?.length!==1||fields.nomeFantasia?.length!==1)return false;
+ if(!sameRequestedValue('cnpj',fields.cnpj[0],expectedCnpj[0])||sameRequestedValue(key,found[0],expected[0]))return false;
+ const fold=(s:string)=>s.normalize('NFD').replace(/\p{Diacritic}/gu,'').toUpperCase().replace(/[^A-Z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
+ const trade=fold(fields.nomeFantasia[0]),reference=fold(expected[0]);
+ return reference.length>=4&&(trade===reference||trade.startsWith(reference+' '));
+}
+
 /** A parenthetical maintainer is neither proof of a different entity nor
  * permission to discard the qualifier and approve the short name. */
 export function qualifiedNameNeedsReview(key:string,found:string[],expected:string[]){

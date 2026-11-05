@@ -42,7 +42,7 @@ import { OfficialPanel } from "./OfficialPanel";
 import { GlpiPage } from "./GlpiPage";
 import { OfficialTemplates } from "./OfficialTemplates";
 import { TemplateViewer } from "./TemplateViewer";
-import {glpiStatusLabel,glpiPriorityLabel,demandPriorityRank,matchesDemandQueue,isGlpiSolved,type DemandQueue} from "../shared/glpi-ticket-meta";
+import {glpiStatusLabel,glpiPriorityLabel,demandPriorityRank,matchesDemandQueue,isGlpiSolved,isOpenDemand,type DemandQueue} from "../shared/glpi-ticket-meta";
 import { officialInputs } from "../shared/official-fields";
 import { organizationAllowed } from "../shared/organization-policy";
 import { Organizations } from "./Organizations";
@@ -1388,7 +1388,7 @@ export function App() {
                         "Demandas abertas",
                         data.metrics.open,
                         Files,
-                        "Todas as etapas em andamento",
+                        "Demandas ainda ativas",
                         "blue",
                       ],
                       [
@@ -1418,6 +1418,11 @@ export function App() {
                         key={title}
                         onClick={() => {
                           setPage("Demandas");
+                          setDemandQueue(title === "Demandas abertas" || title === "Prazos vencidos" ? "active" : "all");
+                          setQuery("");
+                          setOwner("");
+                          setPriority("");
+                          setType("");
                           setDeadline(
                             title === "Prazos vencidos" ? "overdue" : "",
                           );
@@ -1464,6 +1469,7 @@ export function App() {
                             <button
                               key={s}
                               onClick={() => {
+                                setDemandQueue("all");
                                 setStage(s);
                                 setPage("Demandas");
                               }}
@@ -1546,6 +1552,7 @@ export function App() {
                         onClick={() => {
                           setPage("Demandas");
                           setStage("");
+                          setDemandQueue("all");
                         }}
                       >
                         Ver todas as demandas <ChevronRight size={16} />
@@ -1553,10 +1560,7 @@ export function App() {
                     </div>
                     {table(
                       data.demands
-                        .filter(
-                          (d: any) =>
-                            !["Concluído", "Cancelado"].includes(d.stage),
-                        )
+                        .filter(isOpenDemand)
                         .sort((a: any, b: any) => a.due.localeCompare(b.due))
                         .slice(0, 5),
                       true,
@@ -1572,7 +1576,7 @@ export function App() {
                 <>
                   <section className="panel filters">
                     <div className="glpi-queue-tabs" role="group" aria-label="Separar demandas pelo status do GLPI">
-                      {([ ["all","Todas"],["open","Em andamento"],["pending","Pendentes no GLPI"],["solved","Solucionados"] ] as const).map(([key,label])=><button key={key} type="button" className={demandQueue===key?"primary":"secondary"} aria-pressed={demandQueue===key} onClick={()=>setDemandQueue(key)}>{label} ({data.demands.filter((d:any)=>matchesDemandQueue(d,key)).length})</button>)}
+                      {([ ["all","Todas"],["active","Abertas"],["open","Em andamento"],["pending","Pendentes no GLPI"],["solved","Solucionados"] ] as const).map(([key,label])=><button key={key} type="button" className={demandQueue===key?"primary":"secondary"} aria-pressed={demandQueue===key} onClick={()=>setDemandQueue(key)}>{label} ({data.demands.filter((d:any)=>matchesDemandQueue(d,key)).length})</button>)}
                     </div>
                     <div className="filter-top">
                       <div className="search">

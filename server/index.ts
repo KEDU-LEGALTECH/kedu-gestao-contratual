@@ -1,3 +1,4 @@
+import {isOpenDemand} from "../shared/glpi-ticket-meta.js";
 import "dotenv/config";
 import {acquireBackendInstance,backendVersion} from './backend-instance.js';
 import express from "express";
@@ -225,8 +226,8 @@ app.get("/api/bootstrap", (req: any, res) => {
     const glpiTicket=one("SELECT status,json_extract(payload,'$.priority') AS priority FROM glpi_tickets WHERE external_id=?",d.glpi_id);
     return { ...d, receivedDocumentTypes:receivedDocumentTypes(d.id),glpiOrigin:glpiTicket || null, processing:processingSummary(d.id),data: safeData(req.user, JSON.parse(d.data)), documentCheck: check ? {status:check.status,stale:checks.some(c=>c.data_version!==d.data_version || c.ticket_hash!==one("SELECT hash FROM glpi_tickets WHERE external_id=?",d.glpi_id)?.hash)} : null };
   });
-  const terminal = ["Concluído", "Cancelado"];
-  const open = demands.filter((d) => !terminal.includes(d.stage));
+
+  const open = demands.filter(isOpenDemand);
   const completed = demands.filter(
     (d) =>
       d.stage === "Concluído" &&

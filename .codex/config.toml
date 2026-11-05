@@ -1,0 +1,8 @@
+[mcp_servers.hermes_documentos]
+command = "cmd.exe"
+args = ["/d", "/c", "server\\start-hermes-mcp.cmd"]
+cwd = "C:/Users/Raissa Reis/Documents/kedu_sistema"
+enabled = true
+enabled_tools = ["list_project_documents", "read_project_document", "list_pending_demands", "read_pending_batch"]
+startup_timeout_sec = 20
+tool_timeout_sec = 900

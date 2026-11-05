@@ -1,3 +1,4 @@
+import {readingBlockers} from '../server/processing-status';
 import {FieldEvidence} from './FieldEvidence';
 import {pendingReason} from '../shared/pending-reason';
 const states:Record<string,string>={matches:"Confere",review:"Conferir leitura",different:"Erro — corrigir",missing:"Não lido",ambiguous:"Pedido ambíguo",corrected:"Corrigido na nova versão",not_applicable:"Não se aplica"};
@@ -29,17 +30,19 @@ function Rows({rows,did}:{rows:any[];did?:string}){
   <td><span className={'comparison-state state-'+r.status}>{r.expectedEntities?.length>1?"Conferir empresas":pendingReason(r)?.label??(r.status==="missing"&&r.missingReason==="awaiting_version"?"Atualização pendente":r.status==="missing"&&r.missingReason==="not_sent"?"Documento não enviado":r.missingReason==="not_printed"?"Dado não informado":states[r.status])}</span>{action(r)}</td>
  </tr>)}</tbody></table></div>;
 }
-export function RequestComparison({rows,did}:{rows:any[];did?:string}){
+export function RequestComparison({rows,did,issues=[]}:{rows:any[];did?:string;issues?:any[]}){
  if(!rows?.length)return null;
+ const blockers=readingBlockers(issues) as any[];
  const sorted=[...rows].sort((a,b)=>(order[a.status]??9)-(order[b.status]??9));
  const errors=sorted.filter(r=>r.status==='different'),pending=sorted.filter(r=>['missing','review','ambiguous'].includes(r.status)),done=sorted.filter(r=>['matches','corrected'].includes(r.status)),notApplicable=sorted.filter(r=>r.status==='not_applicable');
  return <section id="conferencia-preenchimento" className="panel request-comparison" aria-label="Conferência do preenchimento">
   <div className="comparison-heading"><div><h2>Documento × solicitação GLPI</h2><p className="muted">Cada campo pedido no chamado comparado com o que foi lido nos documentos.</p></div></div>
   <div className="comparison-counters" role="list">
    <span role="listitem" className="counter-error"><strong>{errors.length}</strong> com erro</span>
-   <span role="listitem" className="counter-review"><strong>{pending.length}</strong> pendente(s) de conferência</span>
+   <span role="listitem" className="counter-review"><strong>{pending.length+blockers.length}</strong> pendente(s) de conferência</span>
    <span role="listitem" className="counter-match"><strong>{done.length}</strong> confere(m)</span>
   </div>
+  {!!blockers.length&&<div className="inline-warning"><h3>Outras pendências que mantêm a demanda em análise ({blockers.length})</h3><ul>{blockers.map((i:any)=><li key={i.field}><strong>{i.label}</strong><p>{i.message}</p>{i.source&&<small>Arquivo: {i.source}</small>}</li>)}</ul></div>}
   {!!errors.length&&<><h3>Erros: corrigir o preenchimento</h3><Rows did={did} rows={errors}/></>}
   {!!pending.length&&<><h3>Campos pendentes de conferência</h3><p className="muted">Podem ser dúvidas de leitura, dados não informados ou documentos de origem ainda necessários. Veja o motivo em cada linha.</p><Rows did={did} rows={pending}/></>}
   {!!notApplicable.length&&<details className="pending-groups"><summary>Não se aplicam a este tipo de documento ({notApplicable.length})</summary><p className="muted">Informados no GLPI, mas não esperados nos documentos desta demanda. Não bloqueiam a conferência.</p><Rows did={did} rows={notApplicable}/></details>}

@@ -4,7 +4,9 @@ export const glpiStatusLabel=(value:unknown)=>statuses[String(value)]||"Status n
 export const glpiPriorityLabel=(value:unknown)=>priorities[String(value)]||"Prioridade não informada";
 export const isGlpiPending=(value:unknown)=>String(value)==="4";
 export const isGlpiSolved=(value:unknown)=>String(value)==="5";
-export type DemandQueue="all"|"open"|"pending"|"solved";
-export const matchesDemandQueue=(d:{glpiOrigin?:{status?:unknown}|null},queue:DemandQueue)=>queue==="all" || (queue==="pending"?isGlpiPending(d.glpiOrigin?.status):queue==="solved"?isGlpiSolved(d.glpiOrigin?.status):["1","2","3"].includes(String(d.glpiOrigin?.status)));
+type DemandOrigin={stage?:string;glpiOrigin?:{status?:unknown}|null};
+export const isOpenDemand=(d:DemandOrigin)=>!['Concluído','Cancelado'].includes(d.stage||'') && !['5','6'].includes(String(d.glpiOrigin?.status));
+export type DemandQueue="all"|"active"|"open"|"pending"|"solved";
+export const matchesDemandQueue=(d:DemandOrigin,queue:DemandQueue)=>queue==="all" || (queue==="active"?isOpenDemand(d):queue==="pending"?isGlpiPending(d.glpiOrigin?.status):queue==="solved"?isGlpiSolved(d.glpiOrigin?.status):["1","2","3"].includes(String(d.glpiOrigin?.status)));
 export const glpiPriorityRank=(value:unknown)=>priorities[String(value)]?Number(value):0;
 export const demandPriorityRank=(d:{glpiOrigin?:{priority?:unknown}|null;priority?:string})=>d.glpiOrigin?glpiPriorityRank(d.glpiOrigin.priority):({Urgente:6,Alta:4,Normal:3}[d.priority||""]||0);

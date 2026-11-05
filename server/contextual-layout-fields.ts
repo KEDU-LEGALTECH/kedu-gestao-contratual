@@ -19,6 +19,24 @@ export function contextualLayoutFields(text:string):Fields {
  const seats=[...text.replace(/\s+/g,' ').matchAll(/(?:com sede|a sociedade (?:tem|ter[áa]|mant[ée]m) (?:a sua |sua )?sede)\s+(?:na|no|em|[àa])?\s*([^;]{8,260}?\bCEP\s*:?\s*\d{2}\.?\d{3}-?\d{3})/gi)].map(m=>m[1]);
  const companySeats=unique(seats.filter(s=>/^(?:rua|avenida|travessa|rodovia|estrada|alameda|pra[çc]a|r\.|av\.)\s/i.test(s)));
  if(companySeats.length===1)fields.endereco=companySeats;
+ // Some corporate clauses print the CEP before "Município de ... Estado do ...".
+ // The association must start at the company's seat, never a partner's home or court.
+ const flat=text.replace(/\s+/g,' ');
+ const seatStarts=[...flat.matchAll(/(?:a\s+(?:empresa|sociedade)\s+(?:tem|ter[áa]|mant[ée]m)\s+(?:a\s+)?(?:sua\s+)?sede|\bE\s+Tem\s+sua\s+sede)(?:\s+e\s+domic[íi]lio)?\s+(?:na\s+)?(?:na|no|em|[àa])\s+/gi)];
+ const labelledSeats=seatStarts.map((m,i)=>flat.slice(m.index!+m[0].length,Math.min(seatStarts[i+1]?.index??flat.length,m.index!+m[0].length+320)).split(/\bCL[ÁA]USULA\b/i)[0]);
+ const labelledPlaces=labelledSeats.flatMap(seat=>{
+  if(!/^(?:Rua|Avenida|Travessa|Rodovia|Estrada|Alameda|Pra[çc]a)\b/i.test(seat))return [];
+  const m=/^.{3,260}?\bMunic[íi]pio de\s+([\p{L}][\p{L} '\-]{1,60}),\s*(Estado d[eoas]{1,2}\s+[\p{L} ]{2,30}?)(?=[.;]|$)/iu.exec(seat);
+  if(m){
+   const fold=(s:string)=>s.normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase();
+   const state=['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'].map(fullStateName).find(s=>s&&fold(s)===fold(m[2].trim()));
+   return state?[{city:m[1].trim(),state}]:[];
+  }
+  const abbreviated=/[,–—-]\s*([\p{L}][\p{L} ']{1,60})\s*[-\/]\s*([A-Z]{2})\s*,\s*CEP\s*:?\s*\d{2}\.?\d{3}-?\d{3}\b/iu.exec(seat);
+  const state=abbreviated&&fullStateName(abbreviated[2]);
+  return abbreviated&&state?[{city:abbreviated[1].trim(),state}]:[];
+ });
+ if(labelledPlaces.length&&unique(labelledPlaces.map(p=>p.city.toUpperCase())).length===1&&unique(labelledPlaces.map(p=>p.state.toUpperCase())).length===1){fields.cidade=[labelledPlaces[0].city];fields.estado=[labelledPlaces[0].state];}
  const places=seats.flatMap(seat=>{
   const m=/,\s*([\p{L}][\p{L} '\-]{1,60}),\s*([\p{L}][\p{L} ]{1,30}),\s*CEP\b/iu.exec(seat);
   if(!m)return [];

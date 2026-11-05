@@ -1,5 +1,5 @@
 import {receiverBankFields} from './bank-reading.js';
-export type ContractParty={role:string;name:string;cnpj:string;excerpt:string};
+export type ContractParty={role:string;name:string;cnpj:string;excerpt:string;aliases?:string[]};
 const canon=(s:string)=>s.normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().replace(/[^a-z0-9]/g,'');
 const mask=(s:string)=>{const d=s.replace(/\D/g,'');return `${d.slice(0,2)}.${d.slice(2,5)}.${d.slice(5,8)}/${d.slice(8,12)}-${d.slice(12)}`;};
 /** Only explicit party declarations are considered, never witnesses or arbitrary CNPJs. */
@@ -10,14 +10,22 @@ export function extractContractParties(text:string):ContractParty[] {
   const match=declarations[i],start=match.index!+match[0].length;
   const block=text.slice(start,Math.min(declarations[i+1]?.index??text.length,start+1800)).split(/\n\s*(?:DADOS (?:DE PAGAMENTO|BANC[ÁA]RIOS)|OBSERVA[ÇC][ÕO]ES|CL[ÁA]USULA|OBJETO DO CONTRATO)\s*[:\-]/i)[0];
   const ids=[...block.matchAll(/\bCNPJ(?:\/(?:MF|ME))?\s*(?:sob\s*(?:o\s*)?)?(?:n[º°o.]?\s*)?[:\s]*(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})(?!\d)/gi)].map(m=>mask(m[1]));
+  if(!ids.length){
+   const personal=/^\s*([^\n]+)\n\s*CPF\s*(?:n[º°o.]?\s*)?[:\s]*(\d{3}\.?\d{3}\.?\d{3}-?\d{2})(?!\d)/i.exec(block);
+   if(personal&&!/\b(?:LTDA|EIRELI|SOCIEDADE|REPRESENTANTE|CNPJ)\b/i.test(personal[1]))ids.push(personal[2]);
+  }
   const unique=[...new Set(ids)];if(unique.length!==1)continue;
   const named=/(?:^|\n)\s*(?:NOME|RAZ[ÃA]O SOCIAL|NOME EMPRESARIAL)\s*:\s*([^\n]+)/i.exec(block)?.[1];
-  const first=block.split('\n').map(s=>s.trim()).find(Boolean)||'';
+  const first=block.split(/\s*(?:,?\s*inscrit[ao]\b|\bCNPJ\b|\bCPF\b)/i)[0].replace(/\s+/g,' ').trim();
   const name=(named||first).split(/,\s*(?:pessoa jur[íi]dica|inscrit[ao]|com sede)|\s+CNPJ\b/i)[0].replace(/[;,\s]+$/,'').trim();
   if(name.length<3||name.length>200||/^(?:CNPJ|ENDERE[ÇC]O)\b/i.test(name))continue;
-  const party={role:match[1].toUpperCase(),name,cnpj:unique[0],excerpt:block.slice(0,500).trim()};
+  const party:ContractParty={role:match[1].toUpperCase(),name,cnpj:unique[0],excerpt:block.slice(0,500).trim()};
   if(!parties.some(p=>canon(p.name)===canon(name)&&p.cnpj===party.cnpj))parties.push(party);
  }
+ // Explicit first-person alias declaration, not a name guessed from GLPI.
+ const people=parties.filter(p=>p.cnpj.replace(/\D/g,'').length===11);
+ const aliases=[...text.matchAll(/aceit[oa]\s+por\s+mim\s*\(\s*([^()\n]{3,80})\s*\)/gi)].map(m=>m[1].trim());
+ if(people.length===1&&aliases.length===1)people[0].aliases=aliases;
  return parties;
 }
 export function selectContractParty(parties:ContractParty[],expectedCnpj?:string) {
@@ -34,6 +42,6 @@ export function scopePartyReading<T extends {text:string;fields:Record<string,st
  const parties=extractContractParties(reading.text),selected=selectContractParty(parties,expectedCnpj);
  if(!parties.length)return {reading,parties,selected};
  const fields={...reading.fields};delete fields.cnpj;delete fields.razaoSocial;
- if(selected){fields.cnpj=[selected.cnpj];fields.razaoSocial=[selected.name];}
+ if(selected){fields.cnpj=[selected.cnpj];fields.razaoSocial=[selected.aliases?.length===1?selected.aliases[0]:selected.name];}
  return {reading:{...reading,fields},parties,selected};
 }

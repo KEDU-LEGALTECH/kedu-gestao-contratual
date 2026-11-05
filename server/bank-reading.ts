@@ -48,6 +48,18 @@ export function bankFields(source:string):Fields {
  const result:Fields={};
  const add=(key:string,value:string|undefined)=>{const v=value?.replace(/\s+/g,' ').trim();if(v&&!/preencher|_{3,}|\{\{/i.test(v)&&!(result[key]||=[]).includes(v))result[key].push(v);};
  const text=source.replace(/[ \t]+/g,' ');
+ // An account can be identified in a corporate attachment or judicial annex.
+ // Require the named account owner and the account/agency/bank in one clause.
+ for(const m of text.matchAll(/conta\s+empresarial\s+da\s+(?:pessoa\s+jur[íi]dica\s+)?([\p{L}][\p{L} .&'\-]{3,160}?)\s*,\s*de\s+n[.º°o\s]*\s*(\d[\d.]{0,17}-[\dXx])\s*,\s*Ag\.?\s*(\d{1,6}-[\dXx])\s*,\s*(Banco\s+do\s+Brasil|Sicredi|Sicoob|Santander|Bradesco|Ita[úu]|Nubank)\b/giu)){
+  add('titularConta',m[1]);add('conta',m[2].replace(/\./g,''));add('agencia',m[3]);add('banco',m[4]);
+ }
+ // A Sicredi account card labels its holder as Associado. Cooperativa is
+ // preserved as context and is not silently converted into an agency number.
+ if(/\bSicredi\b/i.test(text)&&/(?:^|\n)\s*Cooperativa\s*:\s*\d{1,6}\b/i.test(text)){
+  const names=[...text.matchAll(/(?:^|\n)\s*Associad[oa]\s*:\s*([^\n]+)/gi)].map(m=>m[1].trim());
+  const accounts=[...text.matchAll(/(?:^|\n)\s*Conta\s*:\s*(\d{1,15}-[\dXx])\s*(?=\n|$)/gi)].map(m=>m[1]);
+  if(names.length&&accounts.length&&new Set(names).size===1&&new Set(accounts).size===1){add('banco','Sicredi');add('titularConta',names[0]);add('conta',accounts[0]);}
+ }
  // Caixa's company-account PDF prints the actual account in the navigation
  // header. The Pix payload also includes branch/operation digits: never parse
  // that combined value as the account, or use the greeting as its holder.
@@ -127,3 +139,4 @@ export function bankFields(source:string):Fields {
  }
  return Object.fromEntries(Object.entries(result).map(([k,v])=>[k,v.filter(Boolean)]).filter(([,v])=>v.length));
 }
+
