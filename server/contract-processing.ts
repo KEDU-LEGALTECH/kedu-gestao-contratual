@@ -80,6 +80,15 @@ function extractionReviewed(file:any) {
  const hash=sha256(Buffer.from(file.extracted));
  return !!one('SELECT file_id FROM processing_field_reviews WHERE file_id=? AND extraction_hash=? LIMIT 1',file.id,hash)||!!one('SELECT file_id FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?',file.id,hash);
 }
+/** A human check belongs to the exact bytes and extraction, not to the ticket version.
+ * Copies only checks of the same extraction, keeping author and date; never creates a new one. */
+function carryReviews(fromFileId:string,did:string,documentId:string,hash:string) {
+ const target=one('SELECT id,extracted FROM processing_files WHERE demand_id=? AND document_id=? AND ticket_hash=?',did,documentId,hash);
+ const extractionHash=sha256(Buffer.from(target.extracted));
+ const fields=run('INSERT OR IGNORE INTO processing_field_reviews SELECT ?,field,extraction_hash,value,author,created FROM processing_field_reviews WHERE file_id=? AND extraction_hash=?',target.id,fromFileId,extractionHash).changes;
+ const whole=run('INSERT OR IGNORE INTO processing_file_reviews SELECT ?,extraction_hash,author,created FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?',target.id,fromFileId,extractionHash).changes;
+ if(fields||whole)audit(did,null,'Conferência humana mantida na nova versão do chamado: mesmo arquivo e mesma extração. Nenhuma nova conferência foi criada.');
+}
 export function buildProcessingPlan(did:string) {
  const {demand:d,ticket}=processingSource(did),job=one("SELECT * FROM contract_processing WHERE demand_id=?",did);
  if(!d || !ticket || !job)return null;
@@ -327,7 +336,7 @@ export async function processContract(did:string,userId:string|null=null,downloa
    if(cached?.byteLength&&!force&&extractionReviewed(cached))continue;
    if(!force&&!needsReadingRecovery(cached))continue;
    activeFiles.set(did,{documentId:String(doc.id)});
-   let file:any,extracted:any;
+   let file:any,extracted:any,reusedFrom:string|undefined;
    try {
     const provenPrevious=!cached?.byteLength?all('SELECT * FROM processing_files WHERE demand_id=? AND document_id=? AND length(bytes)>0 ORDER BY rowid DESC',did,String(doc.id)).find(f=>matchesImportedAttachment(Buffer.from(f.bytes),doc.sha1)):null;
     if(cached?.byteLength)file={name:cached.name,mime:cached.mime,bytes:Buffer.from(one('SELECT bytes FROM processing_files WHERE id=?',cached.id).bytes)};
@@ -336,9 +345,9 @@ export async function processContract(did:string,userId:string|null=null,downloa
      try {file=await download(demand.glpi_id,String(doc.id),AbortSignal.timeout(30000));if(!file.bytes.length)throw Error('Arquivo vazio.');break;}
      catch(error:any){if(attempt===2 || [400,401,403,404].includes(error?.status))throw error;}
     }
-    const previous=provenPrevious||(!cached?.byteLength?one('SELECT extracted,problem,bytes FROM processing_files WHERE demand_id=? AND document_id=? AND length(bytes)>0 ORDER BY rowid DESC LIMIT 1',did,String(doc.id)):null);
+    const previous=provenPrevious||(!cached?.byteLength?one('SELECT id,extracted,problem,bytes FROM processing_files WHERE demand_id=? AND document_id=? AND length(bytes)>0 ORDER BY rowid DESC LIMIT 1',did,String(doc.id)):null);
     // A changed ticket can retain the exact same attachment. Verify current GLPI bytes before reuse.
-    if(previous&&!previous.problem&&sha256(Buffer.from(previous.bytes))===sha256(file.bytes)&&!needsReadingRecovery({byteLength:file.bytes.length,extracted:previous.extracted}))extracted=JSON.parse(previous.extracted);
+    if(previous&&!previous.problem&&sha256(Buffer.from(previous.bytes))===sha256(file.bytes)&&!needsReadingRecovery({byteLength:file.bytes.length,extracted:previous.extracted})){extracted=JSON.parse(previous.extracted);reusedFrom=previous.id;}
     else extracted=await readProcessingFile(file.bytes,file.name);
    }
    catch(error){file??={name:doc.name,mime:doc.mime||"application/octet-stream",bytes:Buffer.alloc(0)};extracted={version:readerVersion,text:"",fields:{},problem:file.bytes.length?"O original está disponível, mas a leitura falhou. Confira o arquivo ou envie uma cópia acessível.":"Não foi possível baixar o anexo após as tentativas de recuperação. Confira a disponibilidade no GLPI.",failureDetail:failureDetail(error),method:'inconclusiva',needsReview:false};}
@@ -346,7 +355,14 @@ export async function processContract(did:string,userId:string|null=null,downloa
    // A crashed or unavailable reader never replaces a reading that already worked; it is retried later.
    if(preservePreviousReading(cached?.extracted,extracted)){activeFiles.delete(did);continue;}
    if(cached?.byteLength)run("UPDATE processing_files SET extracted=?,problem=? WHERE id=?",JSON.stringify(extracted),extracted.problem,cached.id);
-   else run("INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(demand_id,document_id,ticket_hash) DO UPDATE SET name=excluded.name,mime=excluded.mime,bytes=excluded.bytes,extracted=excluded.extracted,problem=excluded.problem,created=excluded.created",id(),did,String(doc.id),ticket.hash,file.name,file.mime,file.bytes,JSON.stringify(extracted),extracted.problem,now());
+   else {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+     run("INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(demand_id,document_id,ticket_hash) DO UPDATE SET name=excluded.name,mime=excluded.mime,bytes=excluded.bytes,extracted=excluded.extracted,problem=excluded.problem,created=excluded.created",id(),did,String(doc.id),ticket.hash,file.name,file.mime,file.bytes,JSON.stringify(extracted),extracted.problem,now());
+     if(reusedFrom)carryReviews(reusedFrom,did,String(doc.id),ticket.hash);
+     db.exec('COMMIT');
+    }catch(error){db.exec('ROLLBACK');throw error;}
+   }
    run("UPDATE contract_processing SET revision=revision+1 WHERE demand_id=?",did);invalidate(did);
    activeFiles.delete(did);
   }

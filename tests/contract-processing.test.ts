@@ -79,6 +79,48 @@ test('nova versão reutiliza leitura saudável somente após confirmar bytes atu
  assert.equal(JSON.parse(changed.extracted).reuseMarker,undefined);
  assert.deepEqual(JSON.parse(changed.extracted).fields.razaoSocial,['Outra escola']);
 });
+test('conferência humana acompanha nova versão só com mesmos bytes e mesma extração',async()=>{
+ fixture('keep-review');await processContract('keep-review','u',mock());
+ const original=one('SELECT * FROM processing_files WHERE demand_id=?','keep-review');
+ const extracted=JSON.stringify({...JSON.parse(original.extracted),needsReview:true,method:'OCR de imagem'});
+ run('UPDATE processing_files SET extracted=? WHERE id=?',extracted,original.id);
+ const hash=sha256(Buffer.from(extracted)),when='2026-01-02T03:04:05.000Z';
+ assert.ok(buildProcessingPlan('keep-review')!.issues.some(i=>i.field==='review:'+original.id));
+ run('INSERT INTO processing_file_reviews VALUES(?,?,?,?)',original.id,hash,'u',when);
+ run('INSERT INTO processing_field_reviews VALUES(?,?,?,?,?,?)',original.id,'cnpj',hash,'11.444.777/0001-61','u',when);
+ const same=async()=>({bytes:Buffer.from(original.bytes),name:original.name,mime:original.mime});
+ run('UPDATE glpi_tickets SET hash=? WHERE external_id=?','keep-v2','keep-review');
+ await processContract('keep-review',null,same);
+ const kept=one('SELECT * FROM processing_files WHERE demand_id=? AND ticket_hash=?','keep-review','keep-v2');
+ assert.notEqual(kept.id,original.id);assert.equal(kept.extracted,extracted);
+ const whole=one('SELECT * FROM processing_file_reviews WHERE file_id=?',kept.id),field=one('SELECT * FROM processing_field_reviews WHERE file_id=?',kept.id);
+ assert.deepEqual([whole.extraction_hash,whole.author,whole.created],[hash,'u',when]);
+ assert.deepEqual([field.field,field.value,field.author,field.created],['cnpj','11.444.777/0001-61','u',when]);
+ assert.ok(one('SELECT file_id FROM processing_file_reviews WHERE file_id=?',original.id),'a conferência original permanece');
+ assert.ok(!buildProcessingPlan('keep-review')!.issues.some(i=>i.field==='review:'+kept.id));
+ assert.ok(one("SELECT id FROM audit WHERE demand_id=? AND action LIKE 'Conferência humana mantida%'",'keep-review'));
+ // Another version without changes in the attachment keeps it again.
+ run('UPDATE glpi_tickets SET hash=? WHERE external_id=?','keep-v3','keep-review');
+ await processContract('keep-review',null,same);
+ const again=one('SELECT id FROM processing_files WHERE demand_id=? AND ticket_hash=?','keep-review','keep-v3');
+ assert.ok(one('SELECT file_id FROM processing_file_reviews WHERE file_id=?',again.id));
+ // Different bytes are another document: no check may follow them.
+ run('UPDATE glpi_tickets SET hash=? WHERE external_id=?','keep-v4','keep-review');
+ await processContract('keep-review',null,mock({...data,razaoSocial:'Outra escola'}));
+ const other=one('SELECT id FROM processing_files WHERE demand_id=? AND ticket_hash=?','keep-review','keep-v4');
+ assert.equal(one('SELECT count(*) n FROM processing_file_reviews WHERE file_id=?',other.id).n,0);
+ assert.equal(one('SELECT count(*) n FROM processing_field_reviews WHERE file_id=?',other.id).n,0);
+});
+test('sem conferência anterior, a nova versão não cria conferência nem registra sua manutenção',async()=>{
+ fixture('no-review');await processContract('no-review','u',mock());
+ const original=one('SELECT * FROM processing_files WHERE demand_id=?','no-review');
+ run('UPDATE glpi_tickets SET hash=? WHERE external_id=?','no-review-v2','no-review');
+ await processContract('no-review',null,async()=>({bytes:Buffer.from(original.bytes),name:original.name,mime:original.mime}));
+ const current=one('SELECT id FROM processing_files WHERE demand_id=? AND ticket_hash=?','no-review','no-review-v2');
+ assert.equal(one('SELECT count(*) n FROM processing_file_reviews WHERE file_id=?',current.id).n,0);
+ assert.equal(one('SELECT count(*) n FROM processing_field_reviews WHERE file_id=?',current.id).n,0);
+ assert.equal(one("SELECT count(*) n FROM audit WHERE demand_id=? AND action LIKE 'Conferência humana mantida%'",'no-review').n,0);
+});
 test('comprovante com dado confirmado em contrato digital dispensa revisão duplicada; divergência não',async()=>{
  fixture('corroborated');await processContract('corroborated','u',mock());
  const extracted={version:2,text:'Dados bancários',fields:{agencia:['0001']},needsReview:true,method:'OCR de imagem'};
