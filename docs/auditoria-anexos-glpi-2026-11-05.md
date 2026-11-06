@@ -77,7 +77,7 @@ Em uma simulação em cópia do banco, interrompida antes do fim, o orçamento d
 
 ## Decisões tomadas em 05/11/2026
 
-Ainda não implementadas. Devem ser aplicadas por um agente de cada vez, depois do commit da leitura completa da conversa.
+Decisões 1, 2 e 3 implementadas em 06/11/2026. A decisão 4 depende do administrador do GLPI.
 
 1. **Arquivo lido por completo, sem campo aproveitado:** não bloqueia a demanda, desde que todos os campos pedidos estejam resolvidos por outra fonte e o arquivo fique visível como "não utilizado".
 2. **Chamados solucionados e fechados:** pausar a leitura automática, permitir releitura manual e religar a leitura se o chamado for reaberto.

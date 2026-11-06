@@ -48,6 +48,7 @@ db.exec(readFileSync("migrations/015.sql", "utf8"));
 db.exec(readFileSync("migrations/016.sql", "utf8"));
 db.exec(readFileSync("migrations/017.sql", "utf8"));
 if(!(db.prepare('PRAGMA table_info(reading_jobs)').all() as any[]).some(c=>c.name==='progress'))db.exec(readFileSync('migrations/018.sql','utf8'));
+db.exec(readFileSync("migrations/019.sql", "utf8"));
 if (!(db.prepare("SELECT sql FROM sqlite_master WHERE name='contract_processing'").get() as any).sql.includes("Sem erros")) {
  db.exec(`BEGIN IMMEDIATE;
  CREATE TABLE contract_processing_next(

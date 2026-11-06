@@ -6,7 +6,7 @@ export function validCpf(value:string) {
  return true;
 }
 type Source={name:string;fields:Record<string,string[]>;incomplete?:boolean;problem?:string};
-export type ReadingFinding={field:string;source:string;message:string;kind:'invalid'|'consistency';found:string};
+export type ReadingFinding={field:string;source:string;message:string;kind:'invalid'|'consistency';found:string;resolution?:{note:string;created:string}};
 const money=(value:string)=>{const match=/^(?:R\$\s*)?(\d{1,3}(?:\.\d{3})*|\d+),(\d{2})$/.exec(value.trim());return match?Number(match[1].replaceAll('.',''))*100+Number(match[2]):null;};
 export function validateReadings(sources:Source[]) {
  const findings:ReadingFinding[]=[];

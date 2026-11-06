@@ -58,15 +58,18 @@ function hasExplicitFieldLabel(field:string,text:string) {
  return false;
 }
 /** Unknown or inaccessible attachments must never be declared absent. */
-export function missingFieldEvidence(field:string,files:EvidenceFile[]) {
+export function missingFieldEvidence(field:string,files:EvidenceFile[],incompleteCoverage=false) {
  const origin=origins[field]||{label:'Contrato ou documento de apoio correspondente',kinds:['contract']};
  const sources=files.map(file=>({...file,kind:file.kind||documentSourceKind(file)}));
  const relevant=sources.filter(file=>origin.kinds.includes(file.kind)||hasExplicitFieldLabel(field,file.text||''));
  const uncertain=sources.some(file=>file.kind==='unknown');
  // An unread attachment can contain this field regardless of its filename/type.
  const candidates=relevant.length?relevant:sources.filter(file=>file.kind==='unknown'||file.downloadFailed||file.downloadPending||file.problem||file.incomplete);
- const reason=!sources.length?'not_sent':candidates.some(file=>file.downloadFailed)?'download_failed':candidates.some(file=>file.downloadPending)?'download_pending':candidates.some(file=>file.emptyContent)?'empty_source':!relevant.length&&uncertain?'source_unidentified':candidates.some(file=>file.incomplete)?'partial':candidates.some(file=>file.problem)?'read_failed':!relevant.length?'not_sent':'not_located';
+ // Only a complete search of the ticket can say that a document was not sent.
+ const notSent=incompleteCoverage?'coverage_partial':'not_sent';
+ const reason=!sources.length?notSent:candidates.some(file=>file.downloadFailed)?'download_failed':candidates.some(file=>file.downloadPending)?'download_pending':candidates.some(file=>file.emptyContent)?'empty_source':!relevant.length&&uncertain?'source_unidentified':candidates.some(file=>file.incomplete)?'partial':candidates.some(file=>file.problem)?'read_failed':!relevant.length?notSent:'not_located';
  const message=reason==='not_sent'?`Documento de origem não enviado/identificado entre os anexos: ${origin.label}.`:
+ reason==='coverage_partial'?`Nenhum documento de origem foi identificado nos anexos consultados, mas a consulta ao GLPI ficou incompleta. Não é possível afirmar que o arquivo não foi enviado. Fonte esperada: ${origin.label}.`:
  reason==='empty_source'?`O anexo foi recebido, mas a imagem está em branco e não contém o dado. Solicite o documento correto. Fonte esperada: ${origin.label}.`:
  reason==='source_unidentified'?`Não foi possível identificar qual anexo contém este campo. Fonte esperada: ${origin.label}.`:
  reason==='download_failed'?`O anexo consta no chamado, mas não foi possível baixar seu conteúdo. Fonte esperada: ${origin.label}.`:

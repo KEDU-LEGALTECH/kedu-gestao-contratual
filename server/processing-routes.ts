@@ -3,7 +3,8 @@ import multer from "multer";
 import { z } from "zod";
 import { all,one,run,db,id,now,audit } from "./db.js";
 import { access,permit,allocateAddendum,invalidate } from "./workflow.js";
-import { ensureProcessing,processContract,processingSource,saveProcessingResult,buildProcessingPlan,processingFileProgress } from "./contract-processing.js";
+import { ensureProcessing,processContract,processingSource,saveProcessingResult,buildProcessingPlan,processingFileProgress,resolutionSignature } from "./contract-processing.js";
+import {plausibleFieldValue} from "./field-plausibility.js";
 import { editableKeys,extractProcessingFile,normalizeValue } from "./processing-extract.js";
 import { sha256,officialValues } from "./official-templates.js";
 import { generate,review } from "./documents.js";
@@ -103,6 +104,32 @@ export function registerProcessingRoutes(app:Express,process:(did:string,userId?
    recordReadingGold(file.id,req.params.field,value,hash,req.user.id,body.evidence);
    run('UPDATE contract_processing SET revision=revision+1 WHERE demand_id=?',d.id);invalidate(d.id);
    audit(d.id,req.user.id,'Transcrição de campo corrigida e conferida no original; gabarito registrado. Arquivo original preservado.');
+   saveProcessingResult(d.id);db.exec('COMMIT');res.json(processingView(d.id));
+  }catch(error){db.exec('ROLLBACK');throw error;}
+ });
+ // Human decisions the reader cannot make: which reference applies and why a finding is acceptable.
+ app.post('/api/demands/:id/processing/resolutions',(req:any,res)=>{
+  const {demand:d}=get(req,true);
+  const body=z.object({revision:z.number().int().min(1),kind:z.enum(['reference','validation']),field:z.string().min(1).max(60),value:z.string().trim().max(500).optional(),note:z.string().trim().min(5).max(1000),confirmed:z.literal(true)}).parse(req.body);
+  db.exec('BEGIN IMMEDIATE');try{
+   const plan=buildProcessingPlan(d.id);
+   if(!plan||plan.job.status==='Analisando'||plan.job.revision!==body.revision||plan.job.ticket_hash!==plan.ticket.hash)throw Object.assign(Error('A análise mudou. Reabra a demanda.'),{status:409});
+   let signature:string,value='',label:string;
+   if(body.kind==='reference'){
+    const row=plan.comparisons.find((c:any)=>c.field===body.field&&c.status==='ambiguous');
+    if(!row)throw Object.assign(Error('Esta referência não está pendente.'),{status:409});
+    value=normalizeValue(body.field,body.value||'');
+    if(!value)throw Error('Informe o valor correto da referência.');
+    if(['cnpj','representanteCpf','documentoTitular'].includes(body.field)&&!plausibleFieldValue(body.field,value))throw Error('O documento informado tem dígitos verificadores inválidos.');
+    signature=resolutionSignature(body.field,row.expected);label='Referência do chamado definida: '+row.label;
+   }else{
+    const finding=plan.validationFindings.find((f:any)=>f.field===body.field&&!f.resolution);
+    if(!finding)throw Object.assign(Error('Este achado não está pendente.'),{status:409});
+    signature=resolutionSignature(body.field,finding.found);label='Achado de validação conferido: '+body.field;
+   }
+   run('INSERT INTO processing_resolutions VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(demand_id,kind,field) DO UPDATE SET signature=excluded.signature,value=excluded.value,note=excluded.note,author=excluded.author,created=excluded.created',d.id,body.kind,body.field,signature,value,body.note,req.user.id,now());
+   run('UPDATE contract_processing SET revision=revision+1 WHERE demand_id=?',d.id);invalidate(d.id);
+   audit(d.id,req.user.id,label+'. Justificativa: '+body.note+'. Não constitui aprovação jurídica.');
    saveProcessingResult(d.id);db.exec('COMMIT');res.json(processingView(d.id));
   }catch(error){db.exec('ROLLBACK');throw error;}
  });

@@ -58,24 +58,38 @@ function numberAssociated(key:string,text:string,index:number,length:number){
  * `associated` means a field label or legal qualification is printed next to the value; otherwise
  * the occurrence only shows that the value exists somewhere in the document. */
 export function guidedConfirmation(key:string,expected:string,files:{name:string;extracted:string;problem?:string|null}[]) {
+ const target=searchTarget(key,expected);if(!target)return undefined;
+ let located:{value:string;source:string;associated:boolean}|undefined;
+ for(const file of files){
+  const text=readableText(file);if(!text)continue;
+  const role=attachmentRole(file.name,text);
+  if(['report','counterproposal','simulation'].includes(role)||(bankFields.includes(key)&&role!=='bank'))continue;
+  const hits=occurrences(key,text,target,expected);
+  if(hits.some(Boolean))return {value:expected,source:file.name,associated:true};
+  if(hits.length&&!located)located={value:expected,source:file.name,associated:false};
+ }
+ return located;
+}
+function searchTarget(key:string,expected:string){
  if(![...nameFields,...idFields,'cep'].includes(key)||!expected)return undefined;
  const target=words(expected);
  if(nameFields.includes(key)&&(target.includes('|')||target.filter(w=>w.length>2&&!legalSuffix.test(w)).length<2||target.join(' ').length<10))return undefined;
  const digits=expected.replace(/\D/g,'');
  if(idFields.includes(key)&&!plausibleFieldValue(key,expected)||key==='cep'&&digits.length!==8)return undefined;
- let located:{value:string;source:string;associated:boolean}|undefined;
- for(const file of files){
-  if(file.problem)continue;
-  let reading:any;try{reading=JSON.parse(file.extracted||'{}');}catch{continue;}
-  const text=String(reading.text||'');if(!text.trim())continue;
-  const role=attachmentRole(file.name,text);
-  if(['report','counterproposal','simulation'].includes(role)||(bankFields.includes(key)&&role!=='bank'))continue;
-  let hits:boolean[];
-  // Also try the layout variants: a name wrapped across lines, and table columns separated by wide gaps.
-  if(nameFields.includes(key))hits=[text,text.replace(/[ \t]{3,}/g,'\n'),text.replace(/(?<=\S)[ \t]*\r?\n[ \t]*(?=\S)/g,' ')].flatMap(variant=>{const tokens=words(variant);return delimitedName(tokens,target).map(at=>nameAssociated(key,tokens,target,at));});
-  else{const flat=fold(text);hits=[...flat.matchAll(/\d[\d.\-\/]{6,22}\d/g)].filter(m=>m[0].replace(/\D/g,'')===digits).map(m=>numberAssociated(key,flat,m.index!,m[0].length));}
-  if(hits.some(Boolean))return {value:expected,source:file.name,associated:true};
-  if(hits.length&&!located)located={value:expected,source:file.name,associated:false};
- }
- return located;
+ return target;
+}
+function readableText(file:{extracted:string;problem?:string|null}){
+ if(file.problem)return '';
+ try{const text=String(JSON.parse(file.extracted||'{}').text||'');return text.trim()?text:'';}catch{return '';}
+}
+function occurrences(key:string,text:string,target:string[],expected:string){
+ // Also try the layout variants: a name wrapped across lines, and table columns separated by wide gaps.
+ if(nameFields.includes(key))return [text,text.replace(/[ \t]{3,}/g,'\n'),text.replace(/(?<=\S)[ \t]*\r?\n[ \t]*(?=\S)/g,' ')].flatMap(variant=>{const tokens=words(variant);return delimitedName(tokens,target).map(at=>nameAssociated(key,tokens,target,at));});
+ const flat=fold(text),digits=expected.replace(/\D/g,'');
+ return [...flat.matchAll(/\d[\d.\-\/]{6,22}\d/g)].filter(m=>m[0].replace(/\D/g,'')===digits).map(m=>numberAssociated(key,flat,m.index!,m[0].length));
+}
+/** Which attachment prints the value, whatever its role. Helps a person find it and never confirms the field. */
+export function attachmentWithValue(key:string,expected:string,files:{name:string;extracted:string;problem?:string|null}[]) {
+ const target=searchTarget(key,expected);if(!target)return undefined;
+ return files.find(file=>{const text=readableText(file);return !!text&&occurrences(key,text,target,expected).length>0;})?.name;
 }

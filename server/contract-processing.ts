@@ -28,7 +28,8 @@ import {recoverTextFields,labelledLocationExcerpt} from './text-recovery.js';
 import {assistedVisualField,assistedVisualAbsence} from './assisted-visual-evidence.js';
 import {readWithVision,visionConfig,visionSignature,shouldReadVision} from './vision-reading.js';
 import {plausibleFieldValue,ownIdentity} from './field-plausibility.js';
-import {guidedConfirmation} from './guided-confirmation.js';
+import {guidedConfirmation,attachmentWithValue} from './guided-confirmation.js';
+import {supersededDocuments} from './document-versions.js';
 import {blankImage,blankImageMessage} from './blank-image.js';
 import {notApplicableReason,cessionClauseCheck,reportIdentity} from './comparison-profile.js';
 import {comparisonReviewReason} from './comparison-review-reason.js';
@@ -47,13 +48,17 @@ export function receivedDocumentTypes(did:string) {
  return [...new Set<string>(docs.map((doc:any)=>{const file=files.find(f=>f.document_id===String(doc.id));return receivedDocumentKind(file?.name||doc.name,file?JSON.parse(file.extracted).text||'':'');}))];
 }
 export const processingStates=["Analisando","Aguardando análise","Aguardando correção","Sem erros"];
-type Issue={field:string;label:string;message:string;found?:string;expected?:string;source?:string};
+type Issue={field:string;label:string;message:string;found?:string;expected?:string;source?:string;missingReason?:string};
+/** A registered human resolution applies only while the ticket shows the same reference or finding. */
+export const resolutionSignature=(field:string,value:string)=>sha256(Buffer.from(JSON.stringify([field,value])));
+const closedInGlpi=(status:unknown)=>['5','6'].includes(String(status));
 const running=new Set<string>();
 const activeFiles=new Map<string,{documentId:string;targeted?:boolean;page?:number}>();
 function fingerprint(did:string) {
  const d=one("SELECT school_id,contract_id,data_version FROM demands WHERE id=?",did);
  return sha256(Buffer.from(JSON.stringify([
-  'hybrid-local-ocr-v25-header-trade-name-comparison-format-v2',
+  'hybrid-local-ocr-v26-unused-files-document-versions-resolutions',
+  all('SELECT kind,field,signature,value FROM processing_resolutions WHERE demand_id=? ORDER BY kind,field',did),
   d,
   all("SELECT v.id,v.status,s.template_hash,h.template_hash AS approved_hash,i.version_id AS inactive FROM template_sources s JOIN template_versions v ON v.id=s.version_id LEFT JOIN template_homologations h ON h.version_id=v.id LEFT JOIN inactive_template_versions i ON i.version_id=v.id ORDER BY v.id"),
   all("SELECT id,parent_id,sequence,status FROM contracts WHERE school_id=? ORDER BY id",d?.school_id),
@@ -111,7 +116,14 @@ export function buildProcessingPlan(did:string) {
  const overrides=JSON.parse(job.overrides),values:Record<string,string>={},origins:Record<string,string>={},issues:Issue[]=[];
  const systemLabels:Record<string,string>={template:"Modelo do contrato",templateApproval:"Validação do modelo",history:"Numeração do aditivo",organization:"Organização",files:"Documentos",generation:"Geração do contrato",consistency:"Consistência dos dados"};
  const add=(field:string,message:string,extra:Partial<Issue>={})=>issues.push({field,label:field.startsWith("review:")?"Conferência da leitura":inputLabels[field]||systemLabels[field]||field,message,...extra});
- const request=conversationExpectations(raw,analysis.fields),files=filesFor(did,ticket.hash),candidates:Record<string,{value:string;source:string;fileId:string}[]>={};
+ const request=conversationExpectations(raw,analysis.fields),candidates:Record<string,{value:string;source:string;fileId:string}[]>={};
+ const resolutions=all('SELECT * FROM processing_resolutions WHERE demand_id=?',did),references:Record<string,{value:string;note:string;original:string}>={};
+ for(const r of resolutions)if(r.kind==='reference'&&request[r.field]?.length&&resolutionSignature(r.field,request[r.field].join("; "))===r.signature){references[r.field]={value:r.value,note:r.note,original:request[r.field].join("; ")};request[r.field]=[r.value];}
+ // All versions stay available, but a clearly replaced document no longer speaks for the demand.
+ const superseded=supersededDocuments(raw.documents||[]),allFiles=filesFor(did,ticket.hash),files=allFiles.filter(f=>!superseded.has(f.document_id));
+ const currentDocuments=(raw.documents||[]).filter((doc:any)=>!superseded.has(String(doc.id))),unusedFiles=new Set<string>();
+ // Only a complete search of the ticket can say that a document was not sent.
+ const incompleteCoverage=raw.timelineCoverage==='partial'||raw.approvalCoverage==='partial';
  const demandType=analysis.suggestion.type||(d.type!=="A classificar"?d.type:"");
  // A textless small image is a logo only when another attachment carries the document itself.
  const isLogo=(f:any)=>logoImage(f)&&files.some((other:any)=>other!==f&&!other.problem);
@@ -142,7 +154,7 @@ export function buildProcessingPlan(did:string) {
    if(Object.keys(table).length)add("review:simulation:"+f.id,"O anexo contém uma simulação com alternativas de parcelamento. Os valores foram lidos na linha da quantidade solicitada; é necessário conferir e obter o instrumento contratual correspondente.",{label:"Simulação de parcelamento",source:f.name});
   }
  }
- for(const doc of raw.documents || [])if(!files.some(f=>f.document_id===String(doc.id)))add("file:"+doc.id,"Não foi possível obter este anexo. Tente novamente ou envie uma cópia DOCX.",{source:doc.name});
+ for(const doc of currentDocuments)if(!files.some(f=>f.document_id===String(doc.id)))add("file:"+doc.id,"Não foi possível obter este anexo. Tente novamente ou envie uma cópia DOCX.",{source:doc.name});
  // A supporting OCR file need not be confirmed twice when every extracted field
  // is independently present with the same value in a fully digital document.
  for(const f of files){
@@ -158,7 +170,7 @@ export function buildProcessingPlan(did:string) {
   }));
   if(corroborated){const index=issues.findIndex(i=>i.field==='review:'+f.id);if(index>=0)issues.splice(index,1);}
  }
- if(!raw.documents?.length)add("files","O chamado não contém contrato anexado. É necessário obter o documento.");
+ if(!raw.documents?.length)add("files",incompleteCoverage?"Nenhum anexo foi identificado, mas a consulta ao GLPI ficou incompleta. Confira o chamado antes de pedir o documento.":"O chamado não contém contrato anexado. É necessário obter o documento.",incompleteCoverage?{missingReason:'coverage_partial'}:{});
  if(files.length && files.every(f=>['report','bank','registration'].includes(attachmentRole(f.name,JSON.parse(f.extracted).text||''))))add('contractMissing','Os anexos recebidos são documentos de apoio. Obtenha o instrumento contratual correspondente; relatórios e comprovantes não foram utilizados como contrato.',{label:'Instrumento contratual não recebido'});
  for(const [key,vs] of Object.entries(candidates)) {
   const distinct=vs.map(x=>normalizeValue(key,x.value)).filter((v,i,a)=>a.findIndex(x=>sameRequestedValue(key,x,v))===i);
@@ -184,7 +196,7 @@ export function buildProcessingPlan(did:string) {
  }
  if(!values.modalidade){const named=["Garantia Completa","Garantia Conjunta","Garantia Prevista"].filter(x=>norm(htmlToText(raw.content).join(" ")+" "+raw.title).includes(norm(x)));if(named.length===1){values.modalidade=named[0];origins.modalidade="Modalidade explicitamente citada no chamado GLPI";}}
  const comparable=new Set(editableKeys.filter(key=>!["motivo","matriz"].includes(key)));
- const evidenceFiles=(raw.documents||[]).filter((doc:any)=>{const f=files.find(f=>f.document_id===String(doc.id));return !f||!isLogo(f);}).map((doc:any)=>{const f=files.find(f=>f.document_id===String(doc.id));const e=f?JSON.parse(f.extracted):{};return {name:f?.name||doc.name||'Anexo',text:e.text||'',emptyContent:!!f&&blankImage(f),problem:f?.problem||(!f?'Anexo ainda não obtido':''),incomplete:!!e.incomplete,downloadFailed:!!f&&!f.byteLength&&!!f.problem,downloadPending:!f};});
+ const evidenceFiles=currentDocuments.filter((doc:any)=>{const f=files.find(f=>f.document_id===String(doc.id));return !f||!isLogo(f);}).map((doc:any)=>{const f=files.find(f=>f.document_id===String(doc.id));const e=f?JSON.parse(f.extracted):{};return {name:f?.name||doc.name||'Anexo',text:e.text||'',emptyContent:!!f&&blankImage(f),problem:f?.problem||(!f?'Anexo ainda não obtido':''),incomplete:!!e.incomplete,downloadFailed:!!f&&!f.byteLength&&!!f.problem,downloadPending:!f};});
  if(raw.documentsAvailable===false&&!evidenceFiles.length)evidenceFiles.push({name:'Lista de anexos indisponível no GLPI',text:'',problem:'Não foi possível consultar os anexos',incomplete:false,downloadFailed:false,downloadPending:true});
  const profileFiles=files.filter(f=>!isLogo(f)).map(f=>{const e=JSON.parse(f.extracted);return {name:f.name,text:e.text||'',problem:f.problem,incomplete:!!e.incomplete,method:e.method};});
  const comparisons:any[]=Object.entries(request).filter(([key])=>comparable.has(key)).map(([key,expected])=>{
@@ -199,9 +211,12 @@ export function buildProcessingPlan(did:string) {
   const tradeName=key==='razaoSocial'&&!matches&&!guided&&!!candidates[key]?.length&&candidates[key].every(c=>headerTradeName(JSON.parse(files.find(f=>f.id===c.fileId)!.extracted).text,c.value));
   // Several values where one equals the request (branches, partners, witnesses) need a check, not a correction.
   const partlyMatches=!matches && expected.length===1 && found.length>1 && found.some(v=>sameRequestedValue(key,v,expected[0]));
-  const previousVersion=!found.length&&(raw.documents||[]).some((doc:any)=>!files.some(f=>f.document_id===String(doc.id))&&one('SELECT id FROM processing_files WHERE demand_id=? AND document_id=? LIMIT 1',did,String(doc.id)));
+  const previousVersion=!found.length&&currentDocuments.some((doc:any)=>!files.some(f=>f.document_id===String(doc.id))&&one('SELECT id FROM processing_files WHERE demand_id=? AND document_id=? LIMIT 1',did,String(doc.id)));
   const visuallyAbsent=!found.length&&files.length>0&&files.every(f=>!f.problem&&assistedVisualAbsence(JSON.parse(f.extracted),key));
-  const evidence=previousVersion?{...missingFieldEvidence(key,evidenceFiles),reason:'awaiting_version',message:'O chamado foi atualizado. A leitura disponível pertence à versão anterior; aguardando obter e conferir os anexos da versão atual.'}:visuallyAbsent?{...missingFieldEvidence(key,evidenceFiles),reason:'not_printed',message:'Os anexos foram conferidos visualmente e este dado não está informado. Solicite um documento que o contenha ou esclareça o pedido; não se trata de falha de OCR.'}:missingFieldEvidence(key,evidenceFiles);
+  const fieldEvidence=missingFieldEvidence(key,evidenceFiles,incompleteCoverage);
+  // Shows where the value is printed so a person can check it; the field stays pending.
+  const valueSource=!found.length&&expected.length===1&&['not_located','source_unidentified','not_sent','coverage_partial'].includes(fieldEvidence.reason)?attachmentWithValue(key,expected[0],files):undefined;
+  const evidence=previousVersion?{...fieldEvidence,reason:'awaiting_version',message:'O chamado foi atualizado. A leitura disponível pertence à versão anterior; aguardando obter e conferir os anexos da versão atual.'}:visuallyAbsent?{...fieldEvidence,reason:'not_printed',message:'Os anexos foram conferidos visualmente e este dado não está informado. Solicite um documento que o contenha ou esclareça o pedido; não se trata de falha de OCR.'}:valueSource?{...fieldEvidence,reason:'value_unassociated',message:`O valor aparece em "${valueSource}", mas sem rótulo ou entidade que o ligue a este campo. Confira o trecho no original; isto não confirma o campo.`}:fieldEvidence;
   const notApplicable=!found.length&&!corrected&&expected.length===1?notApplicableReason(demandType,key,profileFiles):'';
   if(!found.length && !corrected && !notApplicable && !issues.some(i=>i.field===key))add(key,evidence.message,{expected:expected.join("; "),source:evidence.expectedDocument});
   // Certainty concerns the extracted value, independently of agreement with GLPI.
@@ -238,7 +253,7 @@ export function buildProcessingPlan(did:string) {
   const bankHolderContext=key==='razaoSocial'&&guided&&!guided.associated?distinctRequestedValues('titularConta',(candidates.titularConta||[]).map(c=>c.value)):[];
   const reviewReason=bankHolderContext.length===1?{code:'commercial_name_bank_holder',message:'O nome aparece no comunicado, mas não como razão social. O titular bancário declarado é '+bankHolderContext[0]+'. Confirme o vínculo entre o nome comercial e a pessoa jurídica; não foi presumida equivalência.'}:needsFieldReview||partlyMatches?comparisonReviewReason({referenceTradeName,referenceNameTypo:legalFormReferenceNeedsReview(key,found,expected),tradeName,guided:!!guided&&!guided.associated,qualifiedName:qualifiedNameNeedsReview(key,found,expected),conflictingValues:partlyMatches,readings:(candidates[key]||[]).map(c=>JSON.parse(files.find(f=>f.id===c.fileId)!.extracted)),field:key}):undefined;
   if(reviewReason&&['reference_trade_name','reference_name_typo'].includes(reviewReason.code))for(const issue of issues.filter(i=>i.field===key))issue.message=reviewReason.message;
-  return {field:key,reviewReason,matchesReference:matches,partlyMatches,expectedEntities:companies,message:companies.length>1?'O chamado menciona mais de uma empresa. Os CNPJs foram separados; confira cada arquivo com a empresa correspondente. O CNPJ do titular bancário não comprova, sozinho, o CNPJ do contrato social.':invalidReference?'O documento informado no GLPI tem quantidade de dígitos ou dígitos verificadores inválidos. Confirme a referência no chamado antes de solicitar alteração do arquivo.':undefined,missingReason:!found.length?evidence.reason:undefined,expectedDocument:evidence.expectedDocument,sourceDocuments:evidence.sourceDocuments,readingPending:needsFieldReview||partlyMatches,label:key==='cnpj'&&expected.length===1&&expected[0].replace(/\D/g,'').length===11?'CPF':analysis.suggestion.type==="Parcelamento" && key==="valor"?"Valor parcelado":analysis.suggestion.type==="Parcelamento" && key==="parcelas"?"Quantidade de parcelas":inputLabels[key]||key,expected:expected.join("; "),found:found.join("; "),source:guided?guided.source+(guided.associated?" (valor localizado junto ao rótulo do campo)":" (valor do chamado localizado no texto)"):[...new Set((candidates[key]||[]).map(c=>c.source))].join("; "),used:values[key]||"",note:notApplicable||undefined,status:invalidReference||expected.length>1?"ambiguous":corrected?"corrected":notApplicable?"not_applicable":!found.length?"missing":needsFieldReview||partlyMatches?"review":!matches?"different":"matches"};
+  return {field:key,referenceResolution:references[key],reviewReason,matchesReference:matches,partlyMatches,expectedEntities:companies,message:companies.length>1?'O chamado menciona mais de uma empresa. Os CNPJs foram separados; confira cada arquivo com a empresa correspondente. O CNPJ do titular bancário não comprova, sozinho, o CNPJ do contrato social.':invalidReference?'O documento informado no GLPI tem quantidade de dígitos ou dígitos verificadores inválidos. Confirme a referência no chamado antes de solicitar alteração do arquivo.':undefined,missingReason:!found.length?evidence.reason:undefined,expectedDocument:evidence.expectedDocument,sourceDocuments:evidence.sourceDocuments,readingPending:needsFieldReview||partlyMatches,label:key==='cnpj'&&expected.length===1&&expected[0].replace(/\D/g,'').length===11?'CPF':analysis.suggestion.type==="Parcelamento" && key==="valor"?"Valor parcelado":analysis.suggestion.type==="Parcelamento" && key==="parcelas"?"Quantidade de parcelas":inputLabels[key]||key,expected:expected.join("; "),found:found.join("; "),source:guided?guided.source+(guided.associated?" (valor localizado junto ao rótulo do campo)":" (valor do chamado localizado no texto)"):[...new Set((candidates[key]||[]).map(c=>c.source))].join("; "),used:values[key]||"",note:notApplicable||undefined,status:invalidReference||expected.length>1?"ambiguous":corrected?"corrected":notApplicable?"not_applicable":!found.length?"missing":needsFieldReview||partlyMatches?"review":!matches?"different":"matches"};
  });
  // Confidence belongs to the requested fields. Unused OCR fields must not keep an otherwise
  // completely read file pending after every requested field it supplies has independent proof.
@@ -251,16 +266,24 @@ export function buildProcessingPlan(did:string) {
   if(/^XLSX(?: com OCR)?$/.test(e.method||'')&&e.literalIdentityFields&&literalRelated.length&&literalRelated.every(c=>c.status==='matches'&&!c.readingPending&&['cnpj','razaoSocial','nomeFantasia'].includes(c.field)&&e.literalIdentityFields[c.field]?.length===1)){
    issues.splice(index,1);continue;
   }
-  if(e.incomplete||!Number.isInteger(e.pages)||e.pages<1||(e.formulaCount||0)>0||['counterproposal','simulation','report'].includes(role))continue;
+  if(e.incomplete||(e.formulaCount||0)>0||['counterproposal','simulation','report'].includes(role))continue;
   if(issues.some(i=>i.field.startsWith('review:')&&i.field.endsWith(f.id)&&i.field!=='review:'+f.id))continue;
   const related=comparisons.filter(c=>request[c.field]?.length&&(candidates[c.field]||[]).some(v=>v.fileId===f.id));
+  // A completely read file that supplies no requested field does not block the demand once every
+  // requested field is resolved by another source. It stays visible as not used.
+  if(!related.length&&comparisons.length&&comparisons.every(c=>['matches','corrected','not_applicable'].includes(c.status)&&!c.readingPending)){issues.splice(index,1);unusedFiles.add(f.id);continue;}
+  if(!Number.isInteger(e.pages)||e.pages<1)continue;
   if(!related.length&&unusedPersonalId(e,f.name,request,comparisons)){issues.splice(index,1);continue;}
   if(related.length&&related.every(c=>c.status==='matches'&&!c.readingPending))issues.splice(index,1);
  }
  const cession=cessionClauseCheck(demandType,profileFiles);
  if(cession){comparisons.push(cession);if(cession.status!=='matches')add('clausulaCessao',cession.message,{label:cession.label});}
  const validationFindings=validateReadings(files.filter(f=>!f.problem).map(f=>{const scoped=scopePartyReading(JSON.parse(f.extracted),request.cnpj?.length===1?request.cnpj[0]:undefined).reading;const fields=fieldsForRole(attachmentRole(f.name,scoped.text||''),scoped.fields);return {name:f.name,fields:Object.fromEntries(Object.entries(fields).map(([key,vs])=>[key,vs.filter(v=>plausibleFieldValue(key,v))]))};}));
- for(const finding of validationFindings)add('review:validation:'+finding.field,finding.message,{label:inputLabels[finding.field]||finding.field,found:finding.found,source:finding.source});
+ for(const finding of validationFindings){
+  const resolved=resolutions.find(r=>r.kind==='validation'&&r.field===finding.field&&r.signature===resolutionSignature(finding.field,finding.found));
+  if(resolved){finding.resolution={note:resolved.note,created:resolved.created};continue;}
+  add('review:validation:'+finding.field,finding.message,{label:inputLabels[finding.field]||finding.field,found:finding.found,source:finding.source});
+ }
  if(!values.duracaoMeses && values.inicio && values.fim)try{const months=wholeMonths(values.inicio,values.fim);if(months!==null && months>0){values.duracaoMeses=String(months);origins.duracaoMeses="Calculado a partir das datas exatas de início e fim";}}catch{}
  if(!d.school_id)add("organization","Identifique e cadastre a organização correta antes de gerar o contrato.");
  else {const school=one("SELECT cnpj FROM schools WHERE id=?",d.school_id);if(values.cnpj && school?.cnpj.replace(/\D/g,"")!==values.cnpj.replace(/\D/g,""))add("cnpj","O CNPJ informado difere da organização vinculada à demanda.",{found:values.cnpj,expected:school?.cnpj});}
@@ -311,7 +334,7 @@ export function buildProcessingPlan(did:string) {
  }catch{add("generation","Não foi possível preencher o modelo com estes dados. Confira o modelo e os campos indicados.");}
  const typeIdentification={type:actualType||"Não identificado",source:analysis.suggestion.type?analysis.suggestion.basis:d.type!=="A classificar"?"Classificação registrada na demanda":documentTypes.length===1?"Título no início do documento ou nome do arquivo":"Conferência manual necessária",ticketTitle:raw.title};
  return {demand:d,ticket,job,values,origins,issues:issues.map(issue=>({...issue,pendingReason:pendingReason({...issue,...comparisons.find(c=>c.field===issue.field)})})),comparisons,validationFindings,typeIdentification,template,templates,version,sequence,matrix,derived,generated,type:actualType,subtype:actualSubtype,
-  files:files.map(f=>{const scope=scopePartyReading(JSON.parse(f.extracted),request.cnpj?.length===1?request.cnpj[0]:undefined),e=scope.reading;return {
+  files:allFiles.map(f=>{const scope=scopePartyReading(JSON.parse(f.extracted),request.cnpj?.length===1?request.cnpj[0]:undefined),e=scope.reading;return {
    parties:scope.parties,selectedParty:scope.selected,vision:e.vision,
    guidance:readingGuidance(e,attachmentRole(f.name,e.text||'')),changes:proposedChanges(e.text||''),
    fieldReviews:[...new Set([...Object.keys(candidates).filter(key=>candidates[key].some(c=>c.fileId===f.id)),...Object.keys(request).filter(key=>missingFieldEvidence(key,[{name:f.name,text:e.text||''}]).reason!=='not_sent')])].map(key=>{
@@ -326,7 +349,7 @@ export function buildProcessingPlan(did:string) {
     });
     return {key,label:inputLabels[key]||key,values,observations,expected:request[key]||[],assistedVisualReview:!!assisted,page:assisted?.page||evidence?.page||e.fieldOrigins?.[key]?.[0]?.page||(e.pages===1?1:undefined),excerpt:assisted?.excerpt||evidence?.excerpt||(scope.selected&&['cnpj','razaoSocial'].includes(key)?scope.selected.excerpt:fieldExcerpt(e.text||'',values)),confirmed:!!check&&check.extraction_hash===sha256(Buffer.from(f.extracted))&&values.length===1&&sameRequestedValue(key,check.value,values[0])};
    }),
-   available:!!f.byteLength,incomplete:!!e.incomplete,role:attachmentRole(f.name,e.text||''),
+   available:!!f.byteLength,incomplete:!!e.incomplete,role:attachmentRole(f.name,e.text||''),notUsed:unusedFiles.has(f.id),supersededBy:superseded.get(f.document_id),
    readingValidatedAutomatically:automaticReadingCheck(e,attachmentRole(f.name,e.text||''),request),
    reviewFields:Object.entries(candidates).filter(([,vs])=>vs.some(c=>c.fileId===f.id)).map(([key])=>inputLabels[key]||key),
    warnings:e.warnings||[],ocrEngine:e.ocrEngine,preprocessing:e.preprocessing||[],formulaCount:e.formulaCount||0,calculatedFields:Object.entries(e.calculatedFields||{}).map(([key,values])=>({key,label:inputLabels[key]||key,values})),identification:identifyDocumentHeading(f.name,e.text||""),id:f.id,document_id:f.document_id,name:f.name,mime:f.mime,problem:f.problem,method:e.method,confidence:e.confidence,pages:e.pages,
@@ -449,12 +472,15 @@ function targetedRecovery(did:string,hash:string,comparisons?:any[]){
   return targets.length?[{file,targets}]:[];
  });
 }
-function needsDemandRecovery(did:string,hash:string) {
+function needsFileRecovery(did:string,hash:string) {
  const cached=filesFor(did,hash),ticket=one('SELECT payload FROM glpi_tickets WHERE external_id=(SELECT glpi_id FROM demands WHERE id=?)',did);
- return targetedRecovery(did,hash).length>0||(JSON.parse(ticket?.payload||'{}').documents||[]).some((doc:any)=>{
+ return (JSON.parse(ticket?.payload||'{}').documents||[]).some((doc:any)=>{
   const file=cached.find(f=>f.document_id===String(doc.id));
   return needsReadingRecovery(file)&&!(file&&extractionReviewed(file))&&!(file&&logoImage(file)&&cached.some(other=>other.id!==file.id&&!other.problem));
  });
+}
+function needsDemandRecovery(did:string,hash:string) {
+ return targetedRecovery(did,hash).length>0||needsFileRecovery(did,hash);
 }
 /** Short operator-facing cause; GLPI client messages are already sanitized (no tokens or URLs). */
 function failureDetail(error:any){
@@ -495,6 +521,8 @@ async function drainReadingQueue() {
    if(!source.ticket||source.ticket.hash!==job.ticket_hash||['Concluído','Cancelado','Em assinatura'].includes(source.demand?.stage)){
     durableQueue!.finish(job,'superseded');continue;
    }
+   // Tickets ended in GLPI are read only on request. Reopening changes the version and creates a new job.
+   if(closedInGlpi(source.ticket.status)){durableQueue!.finish(job,'superseded','Chamado encerrado no GLPI: leitura automática pausada; releitura manual disponível.');continue;}
    try {
     if(running.has(job.demand_id)){durableQueue!.finish(job,'retry','Leitura manual em andamento');continue;}
     const before=recoveryProgress(job.demand_id,job.ticket_hash);
@@ -519,7 +547,7 @@ export function scheduleContractProcessing() {
  void (async()=>{
   durableQueue??=new ReadingJobQueue(db);
   void drainReadingQueue();
-  for(const d of all("SELECT d.id FROM demands d JOIN glpi_tickets t ON t.external_id=d.glpi_id WHERE t.mode='real' AND d.stage NOT IN('Concluído','Cancelado','Em assinatura')")){
+  for(const d of all("SELECT d.id,t.status FROM demands d JOIN glpi_tickets t ON t.external_id=d.glpi_id WHERE t.mode='real' AND d.stage NOT IN('Concluído','Cancelado','Em assinatura')")){
    await yieldToServer();
    if(recoveryPaused())break;
    if(running.has(d.id))continue;
@@ -528,7 +556,9 @@ export function scheduleContractProcessing() {
    const result=JSON.parse(job.result);
    if(job.status==='Analisando'||result.fingerprint!==fingerprint(d.id))
     saveProcessingResult(d.id);
-   if(needsDemandRecovery(d.id,job.ticket_hash))durableQueue.enqueue(d.id,job.ticket_hash,targetedRecovery(d.id,job.ticket_hash).length>0);
+   if(closedInGlpi(d.status))continue;
+   const fileRecovery=needsFileRecovery(d.id,job.ticket_hash),targeted=targetedRecovery(d.id,job.ticket_hash).length>0;
+   if(fileRecovery||targeted)durableQueue.enqueue(d.id,job.ticket_hash,targeted&&!fileRecovery,fileRecovery);
   }
   void drainReadingQueue();
  })().catch(error=>console.error("Falha ao verificar a fila de leitura:",failureDetail(error)))

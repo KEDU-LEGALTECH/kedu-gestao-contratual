@@ -112,9 +112,11 @@ async function releaseWorker(current:Worker) {
 /** Completed readings are reused for identical bytes and name while the reader code and OCR setup stay the same.
  * Failures, partial readings and readings without the configured OCR engine are always repeated. */
 let cache:DatabaseSync|null|undefined,fingerprint="";
+// The worker never imports these files: changing them must not discard saved OCR pages.
+const outsideReader=/^server[\\/](?:index|glpi|glpi-sync|glpi-download|glpi-intake|glpi-schedule|contract-processing|processing-routes|reading-job-queue)\.ts$/;
 function readerFingerprint() {
  const root=fileURLToPath(new URL("..",import.meta.url)),hash=createHash("sha256");
- const files=[...["server","shared"].flatMap(folder=>(readdirSync(join(root,folder),{recursive:true}) as string[]).filter(f=>/\.(ts|py)$/.test(f)).map(f=>join(folder,f))),"package-lock.json","data/ocr-runtime.json"].sort();
+ const files=[...["server","shared"].flatMap(folder=>(readdirSync(join(root,folder),{recursive:true}) as string[]).filter(f=>/\.(ts|py)$/.test(f)).map(f=>join(folder,f)).filter(f=>!outsideReader.test(f))),"package-lock.json","data/ocr-runtime.json"].sort();
  for(const file of files)if(existsSync(join(root,file)))hash.update(file+"\0").update(readFileSync(join(root,file)));
  return hash.update(String(readerVersion)+(process.env.OCR_ENGINE||"")).digest("hex");
 }
