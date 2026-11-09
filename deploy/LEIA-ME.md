@@ -17,6 +17,13 @@ O portal continua usando SQLite. Os arquivos desta pasta preparam a implantaçã
 - `npm run supabase:check`: após configurar o ambiente, verifica conexão PostgreSQL em transação somente leitura, TLS validado e, com credencial de Storage, se o bucket é privado. Não cria objetos, não migra registros e não muda o armazenamento do portal.
 - `npm run legal:package`: exporta modelos oficiais editáveis e prévias com campos PENDENTES e aviso de não assinatura, manifesto de hashes e checklist. Não aprova versões nem registra prévias fictícias em demandas reais.
 - `npm run db:backup`: backup online consistente, incluindo WAL, com integridade e referências verificadas.
+- `npm run glpi:check`: confirma, em poucos segundos e só com leituras, se a máquina alcança o GLPI: nome do servidor, tokens, grupos e chamados visíveis. Use no servidor candidato antes da implantação. Não grava nada nem mostra tokens.
+
+## OCR na imagem Docker
+
+A imagem inclui Python e PaddleOCR (`server/ocr/requirements.txt`). Na primeira inicialização, `deploy/docker-entrypoint.sh` baixa os modelos para o volume de dados e só marca o OCR como pronto após uma inferência de teste. Isso exige saída de rede uma vez. Se falhar, o servidor sobe mesmo assim e lê imagens só com Tesseract; reinicie para tentar de novo. `OCR_ENGINE=legacy` desativa o PaddleOCR. A imagem fica grande (alguns GB) por causa do PaddlePaddle; use servidor Linux x86-64.
+
+Checklist para o TI: [docs/implantacao-servidor-checklist.md](../docs/implantacao-servidor-checklist.md).
 
 O pacote jurídico gerado é material para revisão, não evidência de aprovação. Nesta máquina, a renderização das prévias não foi concluída porque `soffice.exe` (LibreOffice) não está instalado. A estrutura DOCX foi gerada, mas a conferência visual no Word/Google Docs e a validação jurídica continuam pendentes. Não utilizar essas prévias para assinatura.
 
@@ -24,7 +31,7 @@ Os diretórios de migração e backup contêm dados internos, hashes de autentic
 
 ## Backups automáticos
 
-`BACKUP_INTERVAL_HOURS=6` executa uma cópia ao iniciar e a cada seis horas, enquanto o servidor estiver rodando. `BACKUP_DIR` define a pasta. `last-success.json` registra a última cópia validada. Falhas são registradas no log; não há exclusão automática de backups históricos. Defina capacidade e retenção com o TI. Uma cópia no mesmo computador/servidor não substitui cópia externa.
+`BACKUP_INTERVAL_HOURS=6` executa uma cópia ao iniciar e a cada seis horas, enquanto o servidor estiver rodando. `BACKUP_DIR` define a pasta. `last-success.json` registra a última cópia validada. Falhas são registradas no log, e uma cópia que falha não deixa arquivo `.partial`. `BACKUP_KEEP` define quantos backups automáticos manter (por exemplo, 28 = 7 dias a cada 6 horas); os mais antigos são removidos só depois de um novo backup verificado. Backups com outro nome nunca são removidos. Sem `BACKUP_KEEP`, ou com 0, todos são mantidos. Defina capacidade e retenção com o TI. Uma cópia no mesmo computador/servidor não substitui cópia externa.
 
 Para testar restauração, abra uma cópia do snapshot em uma pasta separada, configure `DATABASE_PATH` para essa cópia e execute as verificações em ambiente isolado, sem tokens reais do GLPI. Não sobrescreva o banco em uso. O backup é reaberto em modo somente leitura e validado automaticamente a cada execução.
 

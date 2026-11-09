@@ -15,6 +15,7 @@
     "reading:benchmark": "tsx server/reading-benchmark.ts",
     "migration:prepare": "tsx server/migration-inventory.ts",
     "supabase:check": "tsx server/supabase-check.ts",
+    "glpi:check": "tsx server/glpi-check.ts",
     "legal:package": "tsx server/legal-review-package.ts",
     "production:check": "tsx server/readiness.ts"
   },

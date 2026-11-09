@@ -1,5 +1,7 @@
 **
 !Dockerfile
+!deploy/
+!deploy/docker-entrypoint.sh
 !.dockerignore
 !package.json
 !package-lock.json
