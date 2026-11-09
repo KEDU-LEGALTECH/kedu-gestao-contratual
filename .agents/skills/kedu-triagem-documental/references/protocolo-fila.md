@@ -4,7 +4,7 @@
 
 Fonte de contrato: `server/hermes_document_mcp.py`, lista TOOLS. Confirmar schemas presentes no cliente antes de chamar. Prefixos podem variar: `hermes_documentos` no Codex e `kedu_documentos` no Hermes local são configurações registradas, não garantia de disponibilidade nesta sessão.
 
-- list_pending_demands: status é Aguardando análise ou Aguardando correção; limit de 1 a 100 no schema MCP; offset >= 0. Retorno: counts.pending_demands, counts.returned, demands, database_read_only e project_data_modified.
+- list_pending_demands: status é Aguardando análise ou Aguardando correção; limit de 1 a 100 no schema MCP; offset >= 0. Retorno: counts.pending_demands, counts.returned, demands, database_read_only e project_data_modified. Para Conferência parcial, usar o inventário somente leitura pelo status de `contract_processing` se o schema do MCP não aceitar o filtro.
 - read_pending_batch: status, attachment_offset >= 0, max_documents de 1 a 12 (usar 1 a 3), fields opcionais de 1 a 30 rótulos. Retorno: documents, total_attachments, next_attachment_offset, complete. O resultado read significa que a chamada terminou, não leitura integral ou aprovação.
 - read_project_document: path dentro do projeto, fields (1 a 30), page_numbers opcionais (até seis páginas numeradas a partir de 1).
 - list_project_documents: query opcional, limit até 200; pesquisa índice exportado. O índice pode estar desatualizado e não substitui a relação demanda/chamado/anexos.
@@ -28,7 +28,7 @@ Data com fuso, origem do banco/índice, filtro, IDs fixados, versão do chamado,
 - Ganho de extração: campo antes sem valor agora tem valor independente e localizável no original.
 - Ganho de conferência: campo antes inconclusivo agora possui prova suficiente e comparação válida.
 - Divergência identificada: erro de preenchimento comprovado, não erro de OCR.
-- Redução de Aguardando análise: status oficial alterado e relido, separando destino Sem erros e Aguardando correção. Isso não significa conclusão jurídica nem assinatura.
+- Transição oficial de etapa: reconciliar a mesma coorte por ID, separando saídas para Conferência parcial, Sem erros e Aguardando correção. Separar ganho de extração, ganho de conferência automática e mudança de classificação. Uma tabela com campos em **Confere** só comprova a mudança da demanda quando a nova etapa também for verificada no fluxo oficial.
 - Precisão: exige gabarito independente conferido. Percentual de coincidência com GLPI, autoconfiança do modelo ou contadores do sistema não mede acurácia por si só. Calcular com ferramenta e declarar denominador/amostra.
 
 ## Consulta somente leitura em WSL/Windows

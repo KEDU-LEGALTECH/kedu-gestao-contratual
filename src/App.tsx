@@ -383,7 +383,7 @@ export function App() {
       </div>
     );
   const displayStage = (d: any) => demandDisplayStage(d);
-  const listStages=[...new Set<string>(["Analisando","Aguardando análise","Aguardando correção","Sem erros",...data.demands.map(displayStage)])];
+  const listStages=[...new Set<string>(["Analisando","Aguardando análise","Conferência parcial","Aguardando correção","Sem erros",...data.demands.map(displayStage)])];
   const flowStages=data.demands.some((d:any)=>d.processing)?listStages:stages.slice(0,7);
   const filtered = data.demands.filter(
     (d: any) =>
@@ -1598,7 +1598,7 @@ export function App() {
                         ))}
                       </select>
                     </div>
-                    <p className="muted">Aguardando correção: erro identificado no preenchimento. Aguardando análise: parte dos documentos não foi lida ou confirmada.</p>
+                    <p className="muted">Aguardando análise: nenhum documento lido. Conferência parcial: há leitura, mas ainda faltam dados ou verificações. Aguardando correção: erro identificado no preenchimento.</p>
                     <details className="more-filters" open={!!(owner||priority||type||deadline)}>
                     <summary>Mais filtros</summary>
                     <div className="filter-row">

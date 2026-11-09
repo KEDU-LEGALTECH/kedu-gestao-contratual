@@ -2,6 +2,13 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {conversationEntries,conversationExpectations,requestExpectations} from '../server/request-expectations.js';
 
+test('normaliza o CNPJ exibido como inteiro decimal no GLPI apenas se os dígitos forem válidos',()=>{
+ assert.deepEqual(requestExpectations('<p>CNPJ: 41.301.376.000.113,00</p>').cnpj,['41.301.376/0001-13']);
+ for(const value of ['41301376000113,01','41.301.376.000.114,00']){
+  assert.deepEqual(requestExpectations(`<p>CNPJ: ${value}</p>`).cnpj,[value]);
+ }
+});
+
 test('A conversa mantém cada anexo na mensagem de origem e omite notas privadas',()=>{
  const entries=conversationEntries({
   content:'<p>Pedido inicial</p>',

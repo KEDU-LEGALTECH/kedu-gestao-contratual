@@ -1,6 +1,7 @@
 import {distinctFieldValues,sameFieldValue} from '../shared/value-comparison.js';
 import {htmlToText,extractFields} from './glpi-analysis.js';
 import {fieldsFromLines,normalizeValue} from './processing-extract.js';
+import {validCnpj} from './registration-reading.js';
 export function requestCompanyReferences(content:string){
  return [...htmlToText(content).join('\n').matchAll(/(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})\s*\(([^)\n]{3,180})\)/g)].map(m=>({cnpj:m[1],name:m[2].trim()}));
 }
@@ -10,8 +11,15 @@ export function requestExpectations(content:string,explicitFields:Record<string,
  const lines=htmlToText(content),form=extractFields(lines);
  const nested=['observacoes','detalhamento'].flatMap(k=>form[k]?[form[k]]:[]);
  const fields=fieldsFromLines([...lines,...nested]);
+ if(!fields.cnpj&&explicitFields.cnpj?.value)fields.cnpj=[normalizeValue('cnpj',explicitFields.cnpj.value)];
  // CNPJs with company labels in one cell are separate references, not one malformed number.
  if(fields.cnpj)fields.cnpj=fields.cnpj.flatMap(value=>{
+  // The GLPI form can display an integer identifier with Brazilian thousands and decimal formatting.
+  const decimal=/^(\d+|\d{1,3}(?:\.\d{3})+),(\d{2})$/.exec(value);
+  if(decimal){
+   const digits=decimal[1].replace(/\./g,'');
+   return [decimal[2]==='00'&&validCnpj(digits)?normalizeValue('cnpj',digits):value];
+  }
   const ids=[...value.matchAll(/\b(?:\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}|\d{14})(?!\d)/g)].map(m=>normalizeValue('cnpj',m[0]));
   return ids.length?ids:[value];
  });
@@ -32,7 +40,7 @@ export function requestExpectations(content:string,explicitFields:Record<string,
   const shape=key==='valor'?/^\d+,\d{2}$/:key==='remuneracao'?/^\d+,\d{2}%$/:/^\d+$/;
   if(matches.length)fields[key]=[...new Set([...(fields[key]||[]).filter(v=>shape.test(v)),...matches])];
  }
- for(const key of ['cnpj','razaoSocial','remuneracao'])if(!fields[key] && explicitFields[key]?.value)fields[key]=[normalizeValue(key,explicitFields[key].value)];
+ for(const key of ['razaoSocial','remuneracao'])if(!fields[key] && explicitFields[key]?.value)fields[key]=[normalizeValue(key,explicitFields[key].value)];
  return Object.fromEntries(Object.entries(fields).map(([key,values])=>[key,distinctFieldValues(key,values)]));
 }
 export {sameFieldValue as sameRequestedValue,distinctFieldValues as distinctRequestedValues} from '../shared/value-comparison.js';

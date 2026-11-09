@@ -44,9 +44,10 @@ export function cessionClauseCheck(type:string,files:ProfileFile[]) {
 export function reportIdentity(text:string) {
  const lines=text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).slice(0,40);
  for(let i=1;i<lines.length;i++){
+  if(/^PLANILHA:/i.test(lines[i]))break;
   if(!/^\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}$/.test(lines[i])||!validCnpj(lines[i]))continue;
   const d=lines[i].replace(/\D/g,''),cnpj=`${d.slice(0,2)}.${d.slice(2,5)}.${d.slice(5,8)}/${d.slice(8,12)}-${d.slice(12)}`;
-  const name=lines[i-1].replace(/\s*:\s*[\p{L}]+\/\d{4}$/u,'').trim();
+  const name=lines[i-1].replace(/\s*:\s*(?:[\p{L}]+\/\d{4}|janeiro|fevereiro|março|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)$/iu,'').trim();
   return {cnpj,razaoSocial:/\p{L}{3}/u.test(name)&&!/^\[/.test(name)?name:''};
  }
  return null;

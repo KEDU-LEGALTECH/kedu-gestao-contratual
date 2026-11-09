@@ -16,7 +16,7 @@ As referências incluem protocolo de paginação, fontes por campo/formato e JSO
 
 Diagnóstico inicial:
 
-    Use kedu-triagem-documental no projeto Kedu. Inventarie Aguardando análise, fixe IDs/versões e separe causas por demanda/anexo/campo. Trabalhe somente leitura, sem baixar anexos ou alterar status. Informe os bloqueios e a ordem de tratamento.
+    Use kedu-triagem-documental no projeto Kedu. Inventarie Aguardando análise e Conferência parcial separadamente, fixe IDs/versões e separe causas por demanda/anexo/campo. Trabalhe somente leitura, sem baixar anexos ou alterar status. Informe os bloqueios e a ordem de tratamento.
 
 Piloto de leitura, após o diagnóstico:
 
@@ -31,6 +31,17 @@ Continuação de um lote já autorizado:
 Relatório por demanda e documento: campos encontrados e esperados separados, entidade/papel, arquivo/versão, página ou outro localizador, trecho, método, classificação, limitações e próxima ação. Totais calculados por ferramenta: demandas, anexos únicos, páginas e campos. Contagem de causas pode se sobrepor.
 
 Ausências reais exigem pedir documentos ou esclarecimentos; OCR repetido não resolve falta de fonte. A redução da fila depende de execução e validação no fluxo oficial. Criar skills não executa automaticamente essa fila, não altera o motor de OCR e não comprova acurácia.
+
+## Atualização 1.3.0
+
+- Identificar cada parte no preâmbulo de contratos e aditivos, com razão social, CNPJ e papel associados.
+- Reconhecer a identificação da escola na aba de resumo de planilhas de descredenciamento e conferir o CNPJ quando o GLPI o exibir como inteiro com formatação decimal.
+- Diagnosticar separadamente falha de leitura, associação ao campo e formatação da referência antes de reprocessar o arquivo.
+
+## Atualização 1.2.0 (09/11/2026)
+
+- Conferência automática de valores equivalentes quando a extração está associada ao campo correto e a referência é válida. A etapa oficial usa o mesmo resultado da comparação.
+- Separação entre **Aguardando análise** (sem leitura aproveitável), **Conferência parcial** (leitura com pendências), **Aguardando correção** (divergência comprovada) e **Sem erros** (conferência resolvida). Medir separadamente a fila de arquivos e as transições de demanda.
 
 ## Atualização 1.1.0 (09/11/2026)
 

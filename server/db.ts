@@ -49,11 +49,11 @@ db.exec(readFileSync("migrations/016.sql", "utf8"));
 db.exec(readFileSync("migrations/017.sql", "utf8"));
 if(!(db.prepare('PRAGMA table_info(reading_jobs)').all() as any[]).some(c=>c.name==='progress'))db.exec(readFileSync('migrations/018.sql','utf8'));
 db.exec(readFileSync("migrations/019.sql", "utf8"));
-if (!(db.prepare("SELECT sql FROM sqlite_master WHERE name='contract_processing'").get() as any).sql.includes("Sem erros")) {
+if (!(db.prepare("SELECT sql FROM sqlite_master WHERE name='contract_processing'").get() as any).sql.includes("Conferência parcial")) {
  db.exec(`BEGIN IMMEDIATE;
  CREATE TABLE contract_processing_next(
  demand_id TEXT PRIMARY KEY REFERENCES demands(id),ticket_hash TEXT NOT NULL,
- status TEXT NOT NULL CHECK(status IN('Analisando','Aguardando análise','Aguardando correção','Sem erros','Pendências de cadastro','Pronto para download')),
+ status TEXT NOT NULL CHECK(status IN('Analisando','Aguardando análise','Conferência parcial','Aguardando correção','Sem erros','Pendências de cadastro','Pronto para download')),
  revision INTEGER NOT NULL DEFAULT 1,overrides TEXT NOT NULL DEFAULT '{}',template_id TEXT,
  result TEXT NOT NULL DEFAULT '{}',updated TEXT NOT NULL);
  INSERT INTO contract_processing_next SELECT * FROM contract_processing;

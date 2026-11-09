@@ -1,13 +1,42 @@
 import {receiverBankFields} from './bank-reading.js';
+import {validCnpj} from './registration-reading.js';
 export type ContractParty={role:string;name:string;cnpj:string;excerpt:string;aliases?:string[]};
 const canon=(s:string)=>s.normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().replace(/[^a-z0-9]/g,'');
 const mask=(s:string)=>{const d=s.replace(/\D/g,'');return `${d.slice(0,2)}.${d.slice(2,5)}.${d.slice(5,8)}/${d.slice(8,12)}-${d.slice(12)}`;};
+
+/** A running preamble can qualify each company without a "CONTRATANTE:" label. */
+function preambleParties(text:string):ContractParty[]{
+ const intro=/\b(?:pelo presente\s+(?:instrumento|contrato)[^;]{0,180}?\b(?:as partes|de um lado)|celebrad[oa]\s+entre\s*,?\s*de um lado)\s*[:,]?\s*/i.exec(text.slice(0,4000));
+ if(!intro)return [];
+ const start=intro.index+intro[0].length;
+ const parties:ContractParty[]=[];
+ for(const paragraph of text.slice(start,start+4200).split(';')){
+  const block=paragraph.trim().replace(/^(?:(?:e\s*,?\s*)?de outro lado\s*[:,]?\s*)?(?:\d{1,2}\s*[.)]\s*)?/i,'');
+  const qualification=/^([^,;]{3,180}),\s*(?:com\s+(?:sede|endere[çc]o)|sociedade\b|pessoa jur[íi]dica\b|inscrit[ao]\s+no\s+CNPJ)/i.exec(block);
+  if(!qualification)break;
+  const ids=[...block.matchAll(/\bCNPJ\s*(?:\/\s*(?:MF|ME))?\s*(?:sob\s+(?:o\s+)?)?(?:n\s*[º°o.]?\s*)?[:\s]*(\d{2}\.?\d{3}\.?\d{3}\s*\/?\s*\d{4}\s*[-–—]?\s*\d{2})(?!\d)/gi)];
+  if(ids.length!==1||!validCnpj(ids[0][1].replace(/\D/g,'')))break;
+  const roleName='COL[ÉE]GIO|ESCOLA|CONTRATANTE|CONTRATAD[AO]|CEDENTE|CESSION[ÁA]RI[AO]';
+  const roleLabel=new RegExp(`\\(\\s*["“]?(${roleName})["”]?\\s*\\)\\s*$`,'i');
+  const nameWithRole=qualification[1].replace(/\s+/g,' ').trim();
+  const printedName=nameWithRole.replace(roleLabel,'').trim();
+  const legalName=/^(.+?\b(?:LTDA\.?|LIMITADA|S\s*\.\s*A\.?|EIRELI|S\s*\/\s*A))(?:\s+[-–—]\s+(?:COL[ÉE]GIO|ESCOLA)\b.+)?$/i.exec(printedName)?.[1];
+  if(!legalName)break;
+  const label=(roleLabel.exec(nameWithRole)||roleLabel.exec(block))?.[1];
+  parties.push({role:label?.toUpperCase()||'qualificada no preâmbulo',name:legalName,cnpj:mask(ids[0][1]),excerpt:block.slice(0,ids[0].index!+ids[0][0].length)});
+ }
+ // Require separate qualification blocks so a stray CNPJ in the body cannot become a party.
+ return parties.length>=2?parties:[];
+}
+
 /** Only explicit party declarations are considered, never witnesses or arbitrary CNPJs. */
 export function extractContractParties(text:string):ContractParty[] {
- const pattern=/(?:^|\n)\s*(CONTRATANTE|CONTRATAD[AO]|CEDENTE|CESSION[ÁA]RI[AO]|INSTITUI[ÇC][ÃA]O DE ENSINO)\s*:\s*/gi;
+ const pattern=/(?:^|\n)\s*(CONTRATANTE|CONTRATAD[AO]|CEDENTE|CESSION[ÁA]RI[AO]|INSTITUI[ÇC][ÃA]O DE ENSINO|ANUENTE(?:\s*\/\s*PALESTRANTE)?|PALESTRANTE|AGENTE|INTERVENIENTE(?:\s+ANUENTE)?)\s*:\s*/gi;
  const declarations=[...text.matchAll(pattern)],parties:ContractParty[]=[];
  for(let i=0;i<declarations.length;i++){
   const match=declarations[i],start=match.index!+match[0].length;
+  // Auxiliary roles end the previous qualification without becoming the contracting party.
+  if(/^(?:anuente|palestrante|agente|interveniente)/i.test(match[1]))continue;
   const block=text.slice(start,Math.min(declarations[i+1]?.index??text.length,start+1800)).split(/\n\s*(?:DADOS (?:DE PAGAMENTO|BANC[ÁA]RIOS)|OBSERVA[ÇC][ÕO]ES|CL[ÁA]USULA|OBJETO DO CONTRATO)\s*[:\-]/i)[0];
   const ids=[...block.matchAll(/\bCNPJ(?:\/(?:MF|ME))?\s*(?:sob\s*(?:o\s*)?)?(?:n[º°o.]?\s*)?[:\s]*(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})(?!\d)/gi)].map(m=>mask(m[1]));
   if(!ids.length){
@@ -26,7 +55,7 @@ export function extractContractParties(text:string):ContractParty[] {
  const people=parties.filter(p=>p.cnpj.replace(/\D/g,'').length===11);
  const aliases=[...text.matchAll(/aceit[oa]\s+por\s+mim\s*\(\s*([^()\n]{3,80})\s*\)/gi)].map(m=>m[1].trim());
  if(people.length===1&&aliases.length===1)people[0].aliases=aliases;
- return parties;
+ return parties.length?parties:preambleParties(text);
 }
 export function selectContractParty(parties:ContractParty[],expectedCnpj?:string) {
  if(!parties.length)return null;

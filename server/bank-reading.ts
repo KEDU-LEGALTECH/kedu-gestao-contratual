@@ -115,6 +115,13 @@ export function bankFields(source:string):Fields {
  const section=bankAccountSection(text).split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
  const mixedParties=section.some(line=>/\b(?:pagador|remetente|destinat[áa]rio|benefici[áa]rio|conta de origem)\b/i.test(line));
  for(let i=0;i<section.length;i++){
+  const account=/^N[úu]mero (?:da|de) conta[ \t]*:?[ \t]*(.*)$/i.exec(section[i]);
+  if(account&&!mixedParties){
+   const value=account[1]||section[i+1]||'';
+   if(/^\d{1,15}(?:-[\dXx])?$/.test(value))add('conta',value);
+  }
+  const agency=/^Ag[êe]ncia[ \t]*:?[ \t]*(\d{1,6}(?:-[\dXx])?)$/i.exec(section[i]);
+  if(agency&&!mixedParties)add('agencia',agency[1]);
   const document=/^(?:CPF\s*\/\s*CNPJ|CNPJ\s*\/\s*CPF|CNPJ|CPF)\s*:?\s*(.*)$/i.exec(section[i]);
   if(document&&!mixedParties){const value=document[1]||section[i+1]||'';if(validDocument(value)&&/^[\d.\/\-\s]+$/.test(value))add('documentoTitular',documentMask(digits(value)));}
   const owner=/^(?:Nome do titular|Titular da conta|Titular)\s*:?\s*(.*)$/i.exec(section[i]);

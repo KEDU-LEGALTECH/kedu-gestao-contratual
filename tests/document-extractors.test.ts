@@ -91,6 +91,7 @@ test('endereço é comparado por rua e número, não pela frase inteira',()=>{
 });
 
 import {notApplicableReason,cessionClauseCheck,reportIdentity} from '../server/comparison-profile.js';
+import {attachmentRole} from '../server/reading-policy.js';
 test('campo ausente que o tipo de documento não contém não bloqueia; valor lido continua comparado',()=>{
  const template={name:'Contrato REGULAR - Pais X Escolas.docx',text:'CPF: {{cpf_contratante}} CNPJ: {{cnpj_escola}} valor {{valor_parcela}}'};
  assert.match(notApplicableReason('Aditivo','cnpj',[template]),/modelos com marcadores/);
@@ -111,4 +112,10 @@ test('contrato educacional: cláusula de cessão à Kedu é conferida',()=>{
 });
 test('relatório de descredenciamento identifica a escola pelo nome acima do CNPJ',()=>{
  assert.deepEqual(reportIdentity('DESCREDENCIAMENTO\n[DADO CALCULADO]\nCOLEGIO INVICTOS: JULHO/2026\n49.172.814/0001-00\nData'),{cnpj:'49.172.814/0001-00',razaoSocial:'COLEGIO INVICTOS'});
+});
+test('planilha de descredenciamento usa a identidade da escola no resumo',()=>{
+ const text='PLANILHA: Resumo\nDescredenciamento\n[DADO CALCULADO]\nColégio Exemplo: Julho\n41.301.376/0001-13\nPLANILHA: Operadora\nKedu\n45.543.580/0001-00';
+ assert.equal(attachmentRole('planilha.xlsx',text),'report');
+ assert.deepEqual(reportIdentity(text),{cnpj:'41.301.376/0001-13',razaoSocial:'Colégio Exemplo'});
+ assert.equal(reportIdentity(text.replace('41.301.376/0001-13','')),null);
 });

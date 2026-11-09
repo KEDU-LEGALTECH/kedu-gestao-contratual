@@ -73,7 +73,7 @@ Classificação obrigatória:
 | **Confere** | Valor explícito, associado à entidade correta e equivalente ao chamado, com evidência verificável. |
 | **Sem erros** | Todos os campos aplicáveis e solicitados foram lidos ou confirmados e conferem; não há divergências nem campos pendentes. |
 
-“Aguardando correção” exige ao menos uma divergência comprovada. Se não foi possível ler ou confirmar, a classificação correta é “Aguardando análise”. Não transformar falta de documento ou incerteza em erro de preenchimento.
+Para calcular a etapa da demanda, seguir `kedu-conferencia-documental`. Aguardando correção exige uma divergência comprovada. Sem divergência, Aguardando análise indica ausência de leitura aproveitável e Conferência parcial indica leitura aproveitável com pendência restante.
 
 ## Procedimento
 

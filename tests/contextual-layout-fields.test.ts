@@ -1,10 +1,22 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
 import {contextualLayoutFields} from '../server/contextual-layout-fields.js';
-import {receiverBankFields} from '../server/bank-reading.js';
+import {bankFields,receiverBankFields} from '../server/bank-reading.js';
 import {scopePartyReading} from '../server/contract-parties.js';
 import {documentSourceKind} from '../server/document-evidence.js';
 import {unusedPersonalId} from '../server/reading-policy.js';
 import {sameFieldValue} from '../shared/value-comparison.js';
+import {headerTradeName} from '../server/comparison-evidence.js';
+test('número de conta explícito na seção bancária preserva agência e dígito',()=>{
+ const text='Dados bancários\nConta Brasileira\nNúmero de conta 26043482-5\nAgência 0001\nBanco 077 - Inter';
+ assert.deepEqual(bankFields(text),{conta:['26043482-5'],agencia:['0001']});
+ assert.deepEqual(bankFields(text.replace('Conta Brasileira','Pagador')),{});
+});
+test('cabeçalho de repreço separa o nome da escola da coluna Tempo Operado',()=>{
+ const text='Análise de Repreço/Renovação\nEscola Escola Teste Ltda   Tempo Operado   15 meses\nCNPJ   11444777000161   Alunado   95';
+ assert.deepEqual(contextualLayoutFields(text).razaoSocial,['Escola Teste Ltda']);
+ assert.equal(headerTradeName(text,'Escola Teste Ltda'),true);
+ assert.equal(contextualLayoutFields(text.replace('11444777000161','11444777000162')).razaoSocial,undefined);
+});
 test('alvará não troca razão social pelo nome fantasia',()=>{
  const text='ALVARÁ\nNOME OU RAZÃO SOCIAL\nT C DE SANTANA SANTOS\nNOME FANTASIA\nCENTRO EDUCACIONAL FENIX\nCOMPLEMENTO: CIDADE ESTADO\nCandeias BA';
  const f=contextualLayoutFields(text);assert.deepEqual(f.razaoSocial,['T C DE SANTANA SANTOS']);assert.deepEqual(f.cidade,['Candeias']);assert.deepEqual(f.estado,['BA']);

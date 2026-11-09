@@ -18,6 +18,11 @@ Confirmar as capacidades na implementação disponível; não prometer suporte u
 
 Para extração direta de PDF/Office carregar a skill do formato e sua referência pertinente. No MCP atual o limite é 20 MB por arquivo, até seis páginas PDF por chamada e corte de texto de 60.000 caracteres. Esses limites não são os limites universais do motor integrado. Confirmar código/schema atual. Persistir progresso fora dos originais.
 
+## Identidade por parte ou aba
+
+- **Contrato ou aditivo com várias partes.** Leia o preâmbulo mesmo quando não houver rótulos como “Contratante”. Use separadores como “de um lado”, “de outro lado” e os parágrafos de qualificação para vincular nome empresarial, CNPJ e papel. Se houver um complemento comercial depois de um travessão, separe-o da razão social somente quando a qualificação sustentar essa separação. Guarde o nome literal e o localizador. Fornecedor, anuente, representante e escola têm papéis distintos. Mantenha a pendência se o texto não vincular o identificador à parte solicitada.
+- **Planilha de descredenciamento.** Comece pela aba de resumo e pelo cabeçalho de identificação. Uma célula pode conter só o CNPJ, sem rótulo, logo abaixo do nome da escola e do mês. Use a disposição das células e o contexto da aba para comprovar a associação. Registre as células de nome e CNPJ, inclusive quando houver mesclagem. Separe o CNPJ da operadora e os identificadores de outras abas, linhas de cobrança ou filiais. Leia os identificadores literais mesmo quando o relatório também contiver fórmulas financeiras. Restrinja a conferência aos campos aplicáveis ao pedido.
+
 ## Fonte provável por campo (não exclusividade)
 
 - Razão social/CNPJ/nome fantasia: qualificação contratual e documento cadastral, distinguindo cada rótulo. Alvará e cabeçalho comercial podem mostrar fantasia; preservar dúvida.

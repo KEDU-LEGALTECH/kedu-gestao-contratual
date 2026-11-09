@@ -10,7 +10,7 @@ export function targetedReadingTargets(name:string,reading:any,comparisons:any[]
  if(reading.problem||reading.incomplete||reading.decorative||!/\.(pdf|png|jpe?g|webp|tiff?|bmp|gif)$/i.test(name))return [];
  const pages=new Map<number,Set<string>>();
  for(const c of comparisons){
-  if(!['missing','review'].includes(c.status)||protectedFields.includes(c.field)||c.partlyMatches||['conflicting_values','trade_name','qualified_name','spreadsheet_calculation'].includes(c.reviewReason?.code))continue;
+  if(!['missing','review'].includes(c.status)||protectedFields.includes(c.field)||c.partlyMatches||['conflicting_values','trade_name','qualified_name','spreadsheet_calculation','invalid_identifier'].includes(c.reviewReason?.code))continue;
   const belongs=String(c.source||'').includes(name)||c.sourceDocuments?.includes(name)||!['not_sent','source_unidentified'].includes(missingFieldEvidence(c.field,[{name,text:reading.text||''}]).reason);
   if(!belongs)continue;
   const origins=[...(reading.fieldOrigins?.[c.field]||[]),...(reading.digitalFieldOrigins?.[c.field]||[])];

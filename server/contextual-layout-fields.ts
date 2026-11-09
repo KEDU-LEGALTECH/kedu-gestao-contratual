@@ -2,9 +2,15 @@ import {validCnpj} from './registration-reading.js';
 import {fullStateName} from '../shared/state-name.js';
 type Fields=Record<string,string[]>;
 const unique=(values:string[])=>[...new Set(values.map(v=>v.trim()).filter(Boolean))];
+export function repricingSchoolName(text:string){
+ const header=/^\s*An[áa]lise de Repre[çc]o\/Renova[çc][ãa]o[ \t]*\r?\n[ \t]*Escola[ \t]+([^\r\n]+?)[ \t]+Tempo Operado[^\r\n]*\r?\n[ \t]*CNPJ[ \t]+(\d{14}|\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})(?!\d)/i.exec(text);
+ return header&&validCnpj(header[2])?header[1].trim():undefined;
+}
 /** Explicit labels only; the GLPI reference is never an input to this recovery. */
 export function contextualLayoutFields(text:string):Fields {
  const fields:Fields={};
+ const school=repricingSchoolName(text);
+ if(school)fields.razaoSocial=[school];
  // Explicit location label, never a location guessed from a person's birthplace.
  const locations=[...text.matchAll(/(?:^|\n)\s*[*•-]?\s*Localiza[çc][ãa]o\s*:\s*([\p{L}][\p{L} '\-]{1,60}?)\s*[-\/]\s*([A-Z]{2})\s*(?=\n|$)/gu)];
  const validLocations=locations.filter(m=>fullStateName(m[2]));

@@ -27,4 +27,6 @@ test('confirmação tem ação própria e campos corretos ou divergentes não vi
  assert.equal(pendingReason({status:'review',reviewReason:{code:'partial_source'}})?.label,'Página não lida');
  assert.equal(pendingReason({status:'matches'}),undefined);
  assert.equal(pendingReason({status:'different'}),undefined);
+ assert.equal(pendingReason({status:'not_applicable',missingReason:'not_located'}),undefined);
+ assert.equal(pendingReason({status:'ambiguous',missingReason:'not_located'}),undefined);
 });

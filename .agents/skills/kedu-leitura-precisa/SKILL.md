@@ -1,7 +1,7 @@
 ---
 name: kedu-leitura-precisa
 description: Use em anexos Kedu. Leia por campo, página e entidade.
-version: 1.1.0
+version: 1.3.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -27,7 +27,11 @@ Para ler contrato, aditivo, proposta, contraproposta, documento societário/cada
 7. Conferir candidatos no original quando houver OCR incerto, tabela, imagem, nome comercial, carimbo, manuscrito ou conflito. Concordância de duas respostas do mesmo modelo não constitui prova independente. Resposta com citação fabricada ou sem valor verificável deve ser recusada.
 8. Seguir os blocos mínimos: identificação das partes; sede/endereço cadastral; representante e poderes; titular e dados bancários; condições financeiras; vigência e datas; tipo de instrumento e vínculo matriz/aditivo; anexos e assinatura declarada. Ler apenas campos aplicáveis ao pedido, mas não ignorar páginas que alterem seu significado.
 9. Conferir anexos complementares e versões antes de declarar não localizado. Distinguir não baixado, página pendente, fonte ilegível, valor sem associação e dado não informado após exame completo das fontes pertinentes. Nenhum deles equivale a zero, vazio confirmado ou divergência.
-10. Encaminhar extração para `kedu-conferencia-documental`. Relatar cobertura, trechos e lacunas. Uma busca dirigida pode resolver campo sem comprovar leitura integral; declarar essa diferença.
+10. Encaminhar a extração para `kedu-conferencia-documental` com duas informações separadas: se há ao menos um anexo vigente com texto aproveitável e quais campos/páginas/trechos ainda precisam de leitura. Uma busca dirigida pode resolver o campo e servir de evidência para **Confere** sem comprovar leitura integral do anexo. Para OCR, registrar o trecho original da extração e a associação ao campo para que a comparação possa resolver a pendência automaticamente.
+
+## Identidade em contratos e planilhas
+
+Quando o mesmo anexo trouxer mais de uma empresa ou o identificador aparecer no texto mas faltar na tabela, consulte **Identidade por parte ou aba** em [Formatos e documentos de origem](references/formatos-e-fontes.md). Entregue à conferência um par de razão social e CNPJ por entidade, com os respectivos trechos ou células.
 
 ## Armadilhas
 

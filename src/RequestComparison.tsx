@@ -13,7 +13,7 @@ function ResolutionForm({title,hint,initial,withValue,busy,submit}:{title:string
   <button className="secondary" disabled={busy}>{title}</button>
  </form>;
 }
-function notFound(row:any){if(['download_pending','download_failed','partial','read_failed','coverage_partial','value_unassociated'].includes(row.missingReason))return pendingReason(row)!.label;if(row.missingReason==='not_printed')return 'Dado não informado no documento';return row.missingReason==="awaiting_version"?"Leitura da versão atual pendente":row.missingReason==="not_sent"?'Documento de origem não enviado':row.missingReason==="source_unidentified"?'Anexo de origem não identificado':row.missingReason==="unreadable"?'Leitura parcial ou falha do anexo':'Não localizado na extração';}
+function notFound(row:any){if(['download_pending','download_failed','partial','read_failed','coverage_partial','value_unassociated'].includes(row.missingReason))return pendingReason({...row,status:'missing'})!.label;if(row.missingReason==='not_printed')return 'Dado não informado no documento';return row.missingReason==="awaiting_version"?"Leitura da versão atual pendente":row.missingReason==="not_sent"?'Documento de origem não enviado':row.missingReason==="source_unidentified"?'Anexo de origem não identificado':row.missingReason==="unreadable"?'Leitura parcial ou falha do anexo':'Não localizado na extração';}
 function display(key:string,value:string){
  if(['valor','cashbackValor','valorTotal','valorParcela'].includes(key))return value.split('; ').map(v=>/^\d+,\d{2}$/.test(v)?new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(Number(v.replace(',','.'))):v).join('; ');
  return value;

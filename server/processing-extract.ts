@@ -87,7 +87,7 @@ export function fieldsFromLines(lines:string[]) {
   // Only typed numeric labels accept a missing colon. Narrative headings and
   // historic/alternative rates must not become the requested contract values.
   const typed:Array<[string,RegExp]>=[
-   ["cnpj",/^CNPJ\s*(?:n[º°o.]?\s*)?:?\s*((?:\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})|\d{14})(?=\s|$|[;,]|[.](?!\d))/i],
+   ["cnpj",/^CNPJ\s*(?:n[º°o.]?\s*)?:?\s*((?:\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})|\d{14})(?=\s|$|;|[.,](?!\d))/i],
    ["cep",/^CEP\s*:?\s*(\d{2}\.?\d{3}-?\d{3})(?=\s|$|[;,])/i],
    ["alunos",/^(?:Alunado|Quantidade de alunos)\s*:?\s*(\d{1,6})(?=\s|$)/i],
    ["remuneracao",/^Remunera[çc][ãa]o Kedu\s*\(%\)\s*:?\s*(\d{1,3}(?:[.,]\d{1,2})?\s*%)(?=\s|$)/i],

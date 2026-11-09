@@ -33,6 +33,25 @@ function file(did:string,documentId:string,name:string,reading:any,problem=''){
 const contract={text:'CONTRATADA: Escola Teste Ltda, inscrita no CNPJ '+VALID,fields:{razaoSocial:['Escola Teste Ltda'],cnpj:[VALID]},digitalFields:{razaoSocial:['Escola Teste Ltda'],cnpj:[VALID]}};
 const ocrPhoto={text:'Foto de uma reunião, sem dados cadastrais.',method:'OCR de imagem',needsReview:true,confidence:90};
 
+test('CNPJ da contratada lido com dígitos inválidos aparece com evidência e continua pendente',()=>{
+ const invalid='11.444.777/0001-62';
+ const text=`CONTRATANTE: KEDU LTDA, inscrita no CNPJ 45.543.580/0001-00.
+CONTRATADA: Escola Teste Ltda, inscrita no CNPJ ${invalid}.
+AGENTE: Outra Empresa Ltda, inscrita no CNPJ 05.868.278/0001-07.`;
+ for(const [id,expected,status] of [['printed-invalid-reference',invalid,'ambiguous'],['printed-invalid-document',VALID,'review']]){
+  demand(id,[{id:'1',name:'Contrato.docx'}],{cnpj:expected});
+  file(id,'1','Contrato.docx',{text,method:'DOCX'});
+  const plan=buildProcessingPlan(id)!;
+  const row=plan.comparisons.find(c=>c.field==='cnpj')!;
+  assert.equal(row.found,invalid);
+  assert.equal(row.status,status);
+  assert.equal(pendingReason(row)?.code,'invalid_identifier');
+  assert.match(row.evidence[0].excerpt,/Escola Teste Ltda/);
+  assert.equal(plan.issues.some(i=>i.field.startsWith('review:parties:')),false);
+  assert.equal(processingStatus(plan.issues,plan.comparisons,true),'Conferência parcial');
+ }
+});
+
 test('Versão: só substitui com mesmo nome e extensão e declaração explícita de revisão',()=>{
  const edu='Contrato Educacional Alfabethus EDUC. INF 2027';
  const links=supersededDocuments([{id:436874,name:edu+'.docx'},{id:438591,name:edu+' - Revisado.docx'}]);

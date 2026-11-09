@@ -10,7 +10,7 @@
     "ticket_hash": {"type": ["string", "null"]},
     "analisado_em": {"type": "string", "format": "date-time"},
     "cobertura_completa": {"type": "boolean"},
-    "resultado_proposto": {"enum": ["Aguardando análise", "Aguardando correção", "Sem erros"]},
+    "resultado_proposto": {"enum": ["Aguardando análise", "Conferência parcial", "Aguardando correção", "Sem erros"]},
     "gravacao_oficial_verificada": {"type": "boolean"},
     "pendencias": {"type": "array", "items": {"type": "string", "minLength": 1}},
     "campos": {

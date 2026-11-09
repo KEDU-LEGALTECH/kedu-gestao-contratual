@@ -21,6 +21,25 @@ test('a wrapped legal suffix is one entity across repeated declarations',()=>{
 test('different names sharing an identifier are not silently merged',()=>{
  const parties=extractContractParties('CONTRATADA: ALFA LTDA, CNPJ 05.868.278/0001-07\nCONTRATADA: BETA LTDA, CNPJ 05.868.278/0001-07');assert.equal(selectContractParty(parties,'05.868.278/0001-07'),null);
 });
+test('a running preamble keeps the school and supplier qualifications separate',()=>{
+ const school='CENTRO EDUCACIONAL EXEMPLO LTDA - COLÉGIO EXEMPLO, com sede na Rua A, inscrita no CNPJ/MF sob nº 61.060.246/0001-43, neste ato representada por seus representantes (“COLÉGIO”)';
+ const supplier='SISTEMAS DE ENSINO EXEMPLO S.A., sociedade anônima, inscrita no CNPJ/MF sob o nº 49.323.314/0001-14';
+ const fields={razaoSocial:['CENTRO EDUCACIONAL EXEMPLO LTDA - COLÉGIO EXEMPLO','SISTEMAS DE ENSINO EXEMPLO S.A.'],cnpj:['61.060.246/0001-43','49.323.314/0001-14']};
+ for(const text of [
+  `Pelo presente instrumento particular (“Aditivo”), as Partes\n${school};\n${supplier};\nConsiderando que:`,
+  `O presente contrato é celebrado entre, de um lado:\n1. ${supplier};\nE de outro lado,\n2. ${school};`,
+  `Pelo presente Contrato particular, de um lado ${supplier};\nE, de outro lado, ${school.replace('EXEMPLO,','EXEMPLO (“CONTRATANTE”),')};`,
+ ]){
+  const scoped=scopePartyReading({text,fields},'61.060.246/0001-43');
+  assert.equal(scoped.parties.length,2);
+  assert.deepEqual(scoped.reading.fields,{razaoSocial:['CENTRO EDUCACIONAL EXEMPLO LTDA'],cnpj:['61.060.246/0001-43']});
+  assert.match(scoped.selected!.excerpt,/61\.060\.246\/0001-43/);
+  const unmatched=scopePartyReading({text,fields},'05.868.278/0001-07');
+  assert.equal(unmatched.selected,null);
+  assert.deepEqual(unmatched.reading.fields,{});
+ }
+ assert.deepEqual(extractContractParties(`O contrato menciona ${school}; ${supplier};`),[]);
+});
 test('Cidade/UF table is read without inferring a registered address',()=>{
  const f=recoverTextFields('CNPJ 23.050.490/0002-17\nCidade/UF   Candeias/BA   Faturamento Mensal (R$) -',{});
  assert.deepEqual(f.cidade,['Candeias - BA']);assert.deepEqual(f.estado,['Estado da Bahia']);assert.equal(f.endereco,undefined);assert.equal(f.razaoSocial,undefined);

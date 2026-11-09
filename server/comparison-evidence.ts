@@ -1,4 +1,5 @@
 import {sameRequestedValue,distinctRequestedValues} from './request-expectations.js';
+import {repricingSchoolName} from './contextual-layout-fields.js';
 
 /** A possible typo in the requested legal-form suffix is a reference question,
  * never permission to silently repair the name or demand a document correction. */
@@ -36,6 +37,8 @@ export function qualifiedNameNeedsReview(key:string,found:string[],expected:stri
 /** Header "NAME (CNPJ)" without a legal form, as in Kedu proposals and annexes: the name is
  * how the school is known commercially, so a different razão social there proves nothing. */
 export function headerTradeName(text:string,value:string){
+ const school=repricingSchoolName(text||'');
+ if(school&&sameRequestedValue('razaoSocial',school,value))return true;
  if(/\b(?:LTDA|EIRELI|EPP|ME|MEI|S\/?A|SOCIEDADE|ASSOCIA[ÇC][ÃA]O|FUNDA[ÇC][ÃA]O|COOPERATIVA|INSTITUTO|EMPRESA INDIVIDUAL)\b\.?/i.test(value))return false;
  const fold=(s:string)=>s.normalize('NFD').replace(/\p{Diacritic}/gu,'').toUpperCase().replace(/\s+/g,' ').trim();
  const name=fold(value);

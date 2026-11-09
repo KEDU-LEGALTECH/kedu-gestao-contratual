@@ -18,6 +18,10 @@ test('only confirmed differences require correction; missing readings and admini
  assert.equal(processingStatus([{field:'processing'}],[]),'Aguardando análise');
  assert.equal(processingStatus([],[]),'Aguardando análise');
  assert.equal(processingStatus([],[{status:'matches'}]),'Sem erros');
+ assert.equal(processingStatus([],[{status:'matches'}],true),'Sem erros');
+ assert.equal(processingStatus([],[{status:'matches'},{status:'missing'}],true),'Conferência parcial');
+ assert.equal(processingStatus([],[{status:'not_applicable'}],false),'Aguardando análise');
+ assert.equal(processingStatus([],[{status:'matches'},{status:'missing'},{status:'different'}],true),'Aguardando correção');
 });
 test('registration labels and OCR table separators retain document evidence',()=>{
  const fields=fieldsFromLines(['TÍTULO DO ESTABELECIMENTO (NOME DE FANTASIA)','Escolinha Pequenos Passos','MUNICÍPIO | Maceió','CNPJ Nº: 24.745.095/0001-30']);

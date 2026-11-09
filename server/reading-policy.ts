@@ -18,6 +18,7 @@ export function complementaryOcrFields(preferred:Record<string,string[]>,other:R
 export function attachmentRole(name:string,text='') {
  const s=(name+'\n'+text.slice(0,2000)).normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().replace(/_/g,' ');
  if(receivedDocumentKind(name,text)==='Contraproposta')return 'counterproposal';
+ if(/\.xlsx$/i.test(name)&&/^PLANILHA:[^\r\n]+\r?\n[ \t]*DESCREDENCIAMENTO[ \t]*(?:\r?\n|$)/i.test(text))return 'report';
  if(receivedDocumentKind(name,text)==='Relatório')return 'report';
  const sourceKind=documentSourceKind({name,text});
  if(sourceKind==='registration'||sourceKind==='bank')return sourceKind;

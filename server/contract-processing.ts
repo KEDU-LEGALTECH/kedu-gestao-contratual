@@ -47,7 +47,7 @@ export function receivedDocumentTypes(did:string) {
  const docs=JSON.parse(ticket.payload).documents||[];
  return [...new Set<string>(docs.map((doc:any)=>{const file=files.find(f=>f.document_id===String(doc.id));return receivedDocumentKind(file?.name||doc.name,file?JSON.parse(file.extracted).text||'':'');}))];
 }
-export const processingStates=["Analisando","Aguardando análise","Aguardando correção","Sem erros"];
+export const processingStates=["Analisando","Aguardando análise","Conferência parcial","Aguardando correção","Sem erros"];
 type Issue={field:string;label:string;message:string;found?:string;expected?:string;source?:string;missingReason?:string};
 /** A registered human resolution applies only while the ticket shows the same reference or finding. */
 export const resolutionSignature=(field:string,value:string)=>sha256(Buffer.from(JSON.stringify([field,value])));
@@ -57,7 +57,7 @@ const activeFiles=new Map<string,{documentId:string;targeted?:boolean;page?:numb
 function fingerprint(did:string) {
  const d=one("SELECT school_id,contract_id,data_version FROM demands WHERE id=?",did);
  return sha256(Buffer.from(JSON.stringify([
-  'hybrid-local-ocr-v27-conversation-corrections-error-list',
+  'hybrid-local-ocr-v31-visible-identity-evidence',
   all('SELECT kind,field,signature,value FROM processing_resolutions WHERE demand_id=? ORDER BY kind,field',did),
   d,
   all("SELECT v.id,v.status,s.template_hash,h.template_hash AS approved_hash,i.version_id AS inactive FROM template_sources s JOIN template_versions v ON v.id=s.version_id LEFT JOIN template_homologations h ON h.version_id=v.id LEFT JOIN inactive_template_versions i ON i.version_id=v.id ORDER BY v.id"),
@@ -117,6 +117,8 @@ export function buildProcessingPlan(did:string) {
  const systemLabels:Record<string,string>={template:"Modelo do contrato",templateApproval:"Validação do modelo",history:"Numeração do aditivo",organization:"Organização",files:"Documentos",generation:"Geração do contrato",consistency:"Consistência dos dados"};
  const add=(field:string,message:string,extra:Partial<Issue>={})=>issues.push({field,label:field.startsWith("review:")?"Conferência da leitura":inputLabels[field]||systemLabels[field]||field,message,...extra});
  const {fields:request,corrections:conversationCorrections}=conversationReferences(raw,analysis.fields),candidates:Record<string,{value:string;source:string;fileId:string}[]>={};
+ const invalidIdentifiers:Record<string,{fileId:string;fileName:string;value:string;excerpt:string;page?:number;available:boolean}[]>={};
+ const filesWithQualifiedParties=new Set<string>();
  const resolutions=all('SELECT * FROM processing_resolutions WHERE demand_id=?',did),references:Record<string,{value:string;note:string;original:string}>={};
  for(const r of resolutions)if(r.kind==='reference'&&request[r.field]?.length&&resolutionSignature(r.field,request[r.field].join("; "))===r.signature){references[r.field]={value:r.value,note:r.note,original:request[r.field].join("; ")};request[r.field]=[r.value];}
  // All versions stay available, but a clearly replaced document no longer speaks for the demand.
@@ -133,6 +135,7 @@ export function buildProcessingPlan(did:string) {
   const fields={...saved.fields,...recoverTextFields(saved.text||'',saved.fields||{})};
   const enriched={...saved,fields:Object.fromEntries(Object.entries(fields).map(([key,vs])=>[key,(vs as string[]).map(v=>normalizeValue(key,v)).filter(Boolean)]))};
   const partyScope=scopePartyReading(enriched,request.cnpj?.length===1?request.cnpj[0]:undefined);
+  if(partyScope.parties.length)filesWithQualifiedParties.add(f.id);
   const extracted:any={...partyScope.reading,fields:withDocumentAddress(partyScope.reading.fields||{})};
   const role=attachmentRole(f.name,extracted.text||'');
   const extractedHash=sha256(Buffer.from(f.extracted)),wholeReviewed=!!one('SELECT file_id FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?',f.id,extractedHash);
@@ -144,7 +147,16 @@ export function buildProcessingPlan(did:string) {
   if(extracted.needsReview && role!=='report' && !automaticReadingCheck(extracted,role,request) && !wholeReviewed && !checkedAllFields)add("review:"+f.id,readingGuidance(extracted,role),{label:"Conferência de leitura: "+f.name,source:f.name});
   if(extracted.needsReview&&extracted.formulaCount>0&&checkedAllFields&&!wholeReviewed)add('review:formulas:'+f.id,'Os campos foram conferidos individualmente, mas a planilha contém fórmulas. Confira o original e confirme a leitura completa; cálculos não foram executados pelo portal.',{label:'Cálculos da planilha',source:f.name});
   // Implausible values (labels, malformed numbers) and this portal's own identity are reading artifacts, not document data.
-  for(const [key,vs] of Object.entries(fieldsForRole(role,extracted.fields)) as [string,string[]][])for(const value of vs)if(plausibleFieldValue(key,value)&&!(ownIdentity(key,value)&&!request[key]?.some(r=>ownIdentity(key,r))))(candidates[key]||=[]).push({value,source:f.name+(partyScope.selected&&['cnpj','razaoSocial'].includes(key)?' — parte '+partyScope.selected.role:''),fileId:f.id});
+  for(const [key,vs] of Object.entries(scopedFields))for(const value of vs){
+   if(ownIdentity(key,value)&&!request[key]?.some(r=>ownIdentity(key,r)))continue;
+   if(plausibleFieldValue(key,value)){
+    (candidates[key]||=[]).push({value,source:f.name+(partyScope.selected&&['cnpj','razaoSocial'].includes(key)?' — parte '+partyScope.selected.role:''),fileId:f.id});
+    continue;
+   }
+   if(!['cnpj','representanteCpf','documentoTitular'].includes(key)||!/^\d[\d.\/\s-]+\d$/.test(value)||!(key==='representanteCpf'?[11]:[11,14]).includes(value.replace(/\D/g,'').length))continue;
+   const excerpt=key==='cnpj'&&partyScope.selected?partyScope.selected.excerpt:fieldExcerpt(extracted.text||'',[value]);
+   if(excerpt)(invalidIdentifiers[key]||=[]).push({fileId:f.id,fileName:f.name,value,excerpt,page:extracted.pages===1?1:undefined,available:!!f.byteLength});
+  }
   // Settlement reports identify the school; their figures are never adopted.
   if(role==='report'&&/descredenciamento/i.test(demandType)){const id=reportIdentity(extracted.text||'');if(id)for(const [key,value] of Object.entries(id))if(value)(candidates[key]||=[]).push({value,source:f.name+' — identificação no relatório',fileId:f.id});}
   if(analysis.suggestion.type==="Parcelamento"){
@@ -184,7 +196,7 @@ export function buildProcessingPlan(did:string) {
   }
  }
  for(const key of ["cnpj","razaoSocial","nomeFantasia","endereco","remuneracao"])if(analysis.fields[key]?.value){
-  const value=normalizeValue(key,analysis.fields[key].value);
+  const value=key==='cnpj'&&request.cnpj?.length===1?request.cnpj[0]:normalizeValue(key,analysis.fields[key].value);
   if(candidates[key]?.some(c=>!sameRequestedValue(key,c.value,value)) && !Object.hasOwn(overrides,key) && !issues.some(i=>i.field===key))add(key,"O valor no anexo difere do solicitado. Confira e salve o valor correto.",{found:candidates[key].map(c=>c.value).join("; "),expected:value,source:analysis.fields[key].origin});
   values[key]=value;origins[key]=analysis.fields[key].origin;
  }
@@ -202,11 +214,18 @@ export function buildProcessingPlan(did:string) {
  const comparisons:any[]=Object.entries(request).filter(([key])=>comparable.has(key)).map(([key,expected])=>{
   const located=distinctRequestedValues(key,(candidates[key]||[]).map(c=>c.value));
   // No extractor captured the field, but the exact requested value is printed in an attachment.
-  const guided=!located.length&&expected.length===1?guidedConfirmation(key,expected[0],files):undefined;
+  const guided=!located.length&&expected.length===1?guidedConfirmation(key,expected[0],['cnpj','razaoSocial'].includes(key)?files.filter(f=>!filesWithQualifiedParties.has(f.id)):files):undefined;
   const found=guided?[guided.value]:located;
   const companies=key==='cnpj'&&expected.length>1?requestCompanyReferences(raw.content):[];
   const invalidReference=expected.length===1&&['cnpj','representanteCpf','documentoTitular'].includes(key)&&!plausibleFieldValue(key,expected[0]);
   const corrected=expected.length===1 && Object.hasOwn(overrides,key) && sameRequestedValue(key,String(overrides[key]),expected[0]);
+  const invalidEvidence=invalidIdentifiers[key];
+  if(!found.length&&!corrected&&invalidEvidence?.length){
+   const message=invalidReference?'O identificador foi lido no documento e a referência do GLPI também é inválida. Confirme ambos com a fonte cadastral.':'O identificador foi lido no documento, mas os dígitos verificadores são inválidos. Confira a fonte cadastral antes de corrigir o preenchimento.';
+   return {field:key,label:inputLabels[key]||key,status:invalidReference||expected.length>1?'ambiguous':'review',readingPending:true,
+    expected:expected.join('; '),found:distinctRequestedValues(key,invalidEvidence.map(item=>item.value)).join('; '),
+    evidence:invalidEvidence,message,reviewReason:{code:'invalid_identifier',message}};
+  }
   const matches=expected.length===1 && found.length>0 && found.every(v=>sameRequestedValue(key,v,expected[0]));
   const tradeName=key==='razaoSocial'&&!matches&&!guided&&!!candidates[key]?.length&&candidates[key].every(c=>headerTradeName(JSON.parse(files.find(f=>f.id===c.fileId)!.extracted).text,c.value));
   // Several values where one equals the request (branches, partners, witnesses) need a check, not a correction.
@@ -215,7 +234,7 @@ export function buildProcessingPlan(did:string) {
   const visuallyAbsent=!found.length&&files.length>0&&files.every(f=>!f.problem&&assistedVisualAbsence(JSON.parse(f.extracted),key));
   const fieldEvidence=missingFieldEvidence(key,evidenceFiles,incompleteCoverage);
   // Shows where the value is printed so a person can check it; the field stays pending.
-  const valueSource=!found.length&&expected.length===1&&['not_located','source_unidentified','not_sent','coverage_partial'].includes(fieldEvidence.reason)?attachmentWithValue(key,expected[0],files):undefined;
+  const valueSource=!found.length&&expected.length===1?attachmentWithValue(key,expected[0],files):undefined;
   const evidence=previousVersion?{...fieldEvidence,reason:'awaiting_version',message:'O chamado foi atualizado. A leitura disponível pertence à versão anterior; aguardando obter e conferir os anexos da versão atual.'}:visuallyAbsent?{...fieldEvidence,reason:'not_printed',message:'Os anexos foram conferidos visualmente e este dado não está informado. Solicite um documento que o contenha ou esclareça o pedido; não se trata de falha de OCR.'}:valueSource?{...fieldEvidence,reason:'value_unassociated',message:`O valor aparece em "${valueSource}", mas sem rótulo ou entidade que o ligue a este campo. Confira o trecho no original; isto não confirma o campo.`}:fieldEvidence;
   const notApplicable=!found.length&&!corrected&&expected.length===1?notApplicableReason(demandType,key,profileFiles):'';
   if(!found.length && !corrected && !notApplicable && !issues.some(i=>i.field===key))add(key,evidence.message,{expected:expected.join("; "),source:evidence.expectedDocument});
@@ -239,7 +258,8 @@ export function buildProcessingPlan(did:string) {
    const reading=JSON.parse(files.find(f=>f.id===c.fileId)!.extracted);
    return referenceTradeNameNeedsReview(key,found,expected,request.cnpj||[],{...reading.fields,...recoverTextFields(reading.text||'',{})});
   });
-  const needsFieldReview=referenceTradeName||legalFormReferenceNeedsReview(key,found,expected)||tradeName||!!guided&&!guided.associated||qualifiedNameNeedsReview(key,found,expected)||!trustedReading&&(candidates[key]||[]).some(c=>{
+  const confirmedMatch=matches&&!invalidReference&&(!guided||guided.associated);
+  const needsFieldReview=!confirmedMatch&&(referenceTradeName||legalFormReferenceNeedsReview(key,found,expected)||tradeName||!!guided&&!guided.associated||qualifiedNameNeedsReview(key,found,expected)||!trustedReading&&(candidates[key]||[]).some(c=>{
    const pending=issues.filter(i=>i.field.startsWith('review:')&&i.field.endsWith(c.fileId));
    if(!pending.length)return false;
    // Structural, partial and legal reviews remain independent of OCR certainty.
@@ -249,7 +269,7 @@ export function buildProcessingPlan(did:string) {
    const confirmed=one('SELECT value FROM processing_field_reviews WHERE file_id=? AND field=? AND extraction_hash=?',file.id,key,sha256(Buffer.from(file.extracted)));
    if(!reading.incomplete&&confirmed&&sameRequestedValue(key,confirmed.value,c.value))return false;
    return !automaticReadingCheck({...reading,fields:{[key]:[c.value]}},role,request);
-  });
+  }));
   const bankHolderContext=key==='razaoSocial'&&guided&&!guided.associated?distinctRequestedValues('titularConta',(candidates.titularConta||[]).map(c=>c.value)):[];
   const reviewReason=bankHolderContext.length===1?{code:'commercial_name_bank_holder',message:'O nome aparece no comunicado, mas não como razão social. O titular bancário declarado é '+bankHolderContext[0]+'. Confirme o vínculo entre o nome comercial e a pessoa jurídica; não foi presumida equivalência.'}:needsFieldReview||partlyMatches?comparisonReviewReason({referenceTradeName,referenceNameTypo:legalFormReferenceNeedsReview(key,found,expected),tradeName,guided:!!guided&&!guided.associated,qualifiedName:qualifiedNameNeedsReview(key,found,expected),conflictingValues:partlyMatches,readings:(candidates[key]||[]).map(c=>JSON.parse(files.find(f=>f.id===c.fileId)!.extracted)),field:key}):undefined;
   if(reviewReason&&['reference_trade_name','reference_name_typo'].includes(reviewReason.code))for(const issue of issues.filter(i=>i.field===key))issue.message=reviewReason.message;
@@ -359,8 +379,9 @@ export function buildProcessingPlan(did:string) {
 }
 export function saveProcessingResult(did:string) {
  const plan=buildProcessingPlan(did);if(!plan)return null;
- const result={values:plan.values,origins:plan.origins,issues:plan.issues,comparisons:plan.comparisons.map(row=>({...row,evidence:comparisonSources(row,plan.files)})),validationFindings:plan.validationFindings,typeIdentification:plan.typeIdentification,template:plan.template,templates:plan.templates,files:plan.files,type:plan.type,subtype:plan.subtype,fingerprint:fingerprint(did)};
- const status=processingStatus(plan.issues,plan.comparisons);
+ const result={values:plan.values,origins:plan.origins,issues:plan.issues,comparisons:plan.comparisons.map(row=>({...row,evidence:row.evidence||comparisonSources(row,plan.files)})),validationFindings:plan.validationFindings,typeIdentification:plan.typeIdentification,template:plan.template,templates:plan.templates,files:plan.files,type:plan.type,subtype:plan.subtype,fingerprint:fingerprint(did)};
+ const hasReadableDocument=plan.files.some(file=>file.available&&!!file.text?.trim()&&!file.supersededBy);
+ const status=processingStatus(plan.issues,plan.comparisons,hasReadableDocument);
  run("UPDATE contract_processing SET status=?,result=?,updated=? WHERE demand_id=?",status,JSON.stringify(result),now(),did);
  return {status,revision:plan.job.revision,ticket_hash:plan.ticket.hash,...result};
 }
