@@ -53,7 +53,7 @@ export function registerProcessingRoutes(app:Express,process:(did:string,userId?
    try{access(req.user,d);}catch(error:any){if(error.status===403)continue;throw error;}
    const plan=d.glpi_id?processingView(d.id):null;
    const status=plan?.status||d.stage;
-   if(status===stage)rows.push({...d,status,school:d.school||'Organização não informada',issues:plan?.issues||[]});
+   if(status===stage)rows.push({...d,status,school:d.school||'Organização não informada',issues:plan?.issues||[],comparisons:plan&&'comparisons' in plan?plan.comparisons:[]});
   }
   res.setHeader('Cache-Control','no-store');res.json(processingSummaryReport(stage,rows));
  });

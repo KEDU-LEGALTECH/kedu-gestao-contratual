@@ -1,4 +1,4 @@
-import {distinctFieldValues} from '../shared/value-comparison.js';
+import {distinctFieldValues,sameFieldValue} from '../shared/value-comparison.js';
 import {htmlToText,extractFields} from './glpi-analysis.js';
 import {fieldsFromLines,normalizeValue} from './processing-extract.js';
 export function requestCompanyReferences(content:string){
@@ -65,14 +65,31 @@ export function conversationText(ticket: TicketConversation) {
  return [initial, ...messages].filter(Boolean).join('\n\n');
 }
 
-/** Read each message independently so a field label cannot consume the next message. */
-export function conversationExpectations(ticket: TicketConversation, explicitFields: Record<string,{value:string}> = {}) {
- const fields = requestExpectations(ticket.content, explicitFields);
- for (const message of ticket.followups || []) {
-  if (message.private) continue;
+// Words with which a message announces that it replaces a value given earlier in the ticket.
+const correctionMarker = /\b(?:corre[çc][ãa]o|corrigid[oa]s?|corrigindo|corrigir|retific\w*|correto|correta|na verdade|o certo|a certa|onde se l[êe]|substitu\w*)\b/i;
+export type ReferenceCorrection = {previous: string[]; value: string; date?: string; message?: string};
+/** Read each message independently so a field label cannot consume the next message.
+ * Messages are taken in date order. A message that explicitly corrects a field with a single
+ * value replaces the earlier reference, which stays recorded; without that wording the values
+ * are kept together, so the reference remains ambiguous for a person to decide. */
+export function conversationReferences(ticket: TicketConversation, explicitFields: Record<string,{value:string}> = {}) {
+ const fields = requestExpectations(ticket.content, explicitFields), corrections: Record<string, ReferenceCorrection> = {};
+ const messages = (ticket.followups || []).map((message, index) => ({message, index})).filter(({message}) => !message.private)
+  .sort((a, b) => String(a.message.date || '').localeCompare(String(b.message.date || '')) || a.index - b.index).map(({message}) => message);
+ for (const message of messages) {
+  const corrects = correctionMarker.test(htmlToText(message.content).join(' '));
   for (const [key, values] of Object.entries(requestExpectations(message.content))) {
-   fields[key] = distinctFieldValues(key, [...(fields[key] || []), ...values]);
+   const earlier = fields[key] || [];
+   if (corrects && values.length === 1 && earlier.length && earlier.some(v => !sameFieldValue(key, v, values[0]))) {
+    corrections[key] = {previous: earlier.filter(v => !sameFieldValue(key, v, values[0])), value: values[0], date: message.date, message: message.id};
+    fields[key] = [values[0]];
+    continue;
+   }
+   fields[key] = distinctFieldValues(key, [...earlier, ...values]);
   }
  }
- return fields;
+ return {fields, corrections};
+}
+export function conversationExpectations(ticket: TicketConversation, explicitFields: Record<string,{value:string}> = {}) {
+ return conversationReferences(ticket, explicitFields).fields;
 }
