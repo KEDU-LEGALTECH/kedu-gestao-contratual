@@ -113,7 +113,7 @@ async function releaseWorker(current:Worker) {
  * Failures, partial readings and readings without the configured OCR engine are always repeated. */
 let cache:DatabaseSync|null|undefined,fingerprint="";
 // The worker never imports these files: changing them must not discard saved OCR pages.
-const outsideReader=/^server[\\/](?:index|glpi|glpi-sync|glpi-download|glpi-intake|glpi-schedule|contract-processing|processing-routes|reading-job-queue)\.ts$/;
+const outsideReader=/^server[\\/](?:index|glpi|glpi-sync|glpi-download|glpi-intake|glpi-schedule|glpi-check|contract-processing|processing-routes|reading-job-queue|backup|backup-service)\.ts$/;
 function readerFingerprint() {
  const root=fileURLToPath(new URL("..",import.meta.url)),hash=createHash("sha256");
  const files=[...["server","shared"].flatMap(folder=>(readdirSync(join(root,folder),{recursive:true}) as string[]).filter(f=>/\.(ts|py)$/.test(f)).map(f=>join(folder,f)).filter(f=>!outsideReader.test(f))),"package-lock.json","data/ocr-runtime.json"].sort();

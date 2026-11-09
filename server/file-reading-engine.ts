@@ -13,6 +13,7 @@ import {extractContractParties} from './contract-parties.js';
 import { preflight } from "./documents.js";
 import { readerVersion,validReadingRegion,cachedPdfPage,storePdfPage,type Reading,type ReadingRegion } from "./file-reading.js";
 import { prepareImage } from "./image-input.js";
+import {lacksVisibleContent} from "./image-content.js";
 import {needsPdfOcr,pdfPageBudget} from './pdf-reading-policy.js';
 import {recognizeWithPaddle,combineOcrFields,paddleConfigured,closePaddle} from './paddle-ocr.js';
 import {withinBudget} from './ocr-budget.js';
@@ -21,6 +22,7 @@ import {recoverTextFields} from './text-recovery.js';
 import {captureFieldOrigins,type FieldOrigin} from './identity-evidence.js';
 const require=createRequire(import.meta.url);
 const maxPages=30,maxPdfPages=200,maxText=500000;
+const emptyEmbeddedImage='Imagem incorporada sem conteúdo legível (fundo, marca d’água ou área em branco), sem dados para ler: ';
 function result(text:string,method:string,ocr=false,confidence?:number,pages=1):Reading {
  text=text.normalize("NFC").replace(/\x00/g,"");
  if(text.length>maxText)throw Error("Documento excede 500 mil caracteres; separe em partes.");
@@ -316,7 +318,8 @@ async function office(bytes:Buffer,name:string,progress?:(reading:Reading)=>void
   if(!meta.width||!meta.height||meta.width*meta.height<60000||meta.height<100||meta.width<150)continue;
   progress?.({...native,digitalFields,needsReview:true,incomplete:true});
   const read=await image(data,entry.name);usedOcr=true;
-  if(read.problem){native.incomplete=true;native.warnings.push('Imagem incorporada não pôde ser lida: '+entry.name);}
+  if(read.problem&&await lacksVisibleContent(data))native.warnings.push(emptyEmbeddedImage+entry.name);
+  else if(read.problem){native.incomplete=true;native.warnings.push('Imagem incorporada não pôde ser lida: '+entry.name);}
   else{mergeExtractedFields(native.fields,read.fields);native.text+='\n\nIMAGEM INCORPORADA: '+entry.name+'\n'+read.text;native.problem='';}
   if(native.text.length>maxText)throw Error('Arquivo excede o limite de texto. Divida o documento.');
  }
@@ -364,7 +367,8 @@ export async function readDocument(bytes:Buffer,name:string,progress?:(reading:R
    if(meta.width*meta.height<60000||meta.height<100||meta.width<150)continue;
    usedOcr=true;
    const reading=await image(data,entry.name);
-   if(reading.problem){incomplete=true;warnings.push('Imagem incorporada não pôde ser lida: '+entry.name);}
+   if(reading.problem&&await lacksVisibleContent(data))warnings.push(emptyEmbeddedImage+entry.name);
+   else if(reading.problem){incomplete=true;warnings.push('Imagem incorporada não pôde ser lida: '+entry.name);}
    else{mergeExtractedFields(fields,reading.fields);texts.push('IMAGEM INCORPORADA: '+entry.name+'\n'+reading.text);}
    if(texts.join('\n').length>maxText)throw Error('Word excede o limite de texto. Divida o arquivo.');
    progress?.({...native,version:readerVersion,fields,text:texts.join('\n\n'),digitalFields,needsReview:true,incomplete:true,method:'DOCX com OCR'});

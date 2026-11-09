@@ -23,9 +23,11 @@ export class ReadingJobQueue {
    WHERE state IN('queued','retry') AND available_at<=? ORDER BY available_at,demand_id LIMIT 1)
    AND state IN('queued','retry') AND NOT EXISTS(SELECT 1 FROM reading_jobs WHERE state='running') RETURNING *`).get(this.owner,at,at) as {demand_id:string;ticket_hash:string;attempts:number;progress:number;last_error?:string}|undefined;
  }
- finish(job:{demand_id:string;ticket_hash:string;attempts:number;progress?:number;last_error?:string},outcome:'done'|'retry'|'superseded',reason='',progress?:number) {
+ /** temporary: the machine, not the file, prevented the reading (low memory, reader unavailable).
+  * Such an attempt is retried later without counting towards exhaustion. */
+ finish(job:{demand_id:string;ticket_hash:string;attempts:number;progress?:number;last_error?:string},outcome:'done'|'retry'|'superseded',reason='',progress?:number,temporary=false) {
   if(outcome==='retry'&&job.last_error==='targeted-fields')reason='targeted-fields';
-  const advanced=progress!==undefined&&progress>(job.progress||0),attempts=advanced?0:job.attempts;
+  const advanced=progress!==undefined&&progress>(job.progress||0),attempts=advanced?0:temporary&&outcome==='retry'?Math.max(0,job.attempts-1):job.attempts;
   const state=outcome==='retry'&&attempts>=3?'exhausted':outcome;
   const at=this.time(),due=at+10*60000*2**Math.max(0,attempts-1);
   this.db.prepare("UPDATE reading_jobs SET state=?,attempts=?,progress=max(progress,?),available_at=?,owner=NULL,updated=?,last_error=? WHERE demand_id=? AND ticket_hash=? AND owner=? AND state='running'").run(state,attempts,progress||0,due,at,reason.slice(0,1000),job.demand_id,job.ticket_hash,this.owner);

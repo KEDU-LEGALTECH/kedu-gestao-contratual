@@ -489,6 +489,8 @@ function failureDetail(error:any){
  return (message+status).slice(0,200);
 }
 const lastProcessingError=new Map<string,string>();
+/** Every pending file was held back by the machine (memory, reader start), not by the file itself. */
+export const onlyTemporary=(reason:string)=>!!reason&&reason.split(' | ').every(part=>/Memória disponível insuficiente|falha temporária do leitor|temporariamente indisponível|não pôde ser iniciado/.test(part));
 /** Why each document of the demand still needs recovery, recorded on the reading job. */
 export function recoveryReason(did:string,hash:string,ignorePause=false){
  if(!ignorePause&&recoveryPaused())return 'Leitura automática pausada (documentReadingPaused).';
@@ -534,7 +536,10 @@ async function drainReadingQueue() {
     const after=recoveryProgress(job.demand_id,job.ticket_hash);
     const current=processingSource(job.demand_id);
     if(current.ticket?.hash!==job.ticket_hash)durableQueue!.finish(job,'superseded');
-    else if(targetedOnly?targetedRecovery(job.demand_id,job.ticket_hash).length>0:needsDemandRecovery(job.demand_id,job.ticket_hash))durableQueue!.finish(job,'retry',targetedOnly?'targeted-fields':recoveryReason(job.demand_id,job.ticket_hash),after>before?after:undefined);
+    else if(targetedOnly?targetedRecovery(job.demand_id,job.ticket_hash).length>0:needsDemandRecovery(job.demand_id,job.ticket_hash)){
+     const reason=targetedOnly?'targeted-fields':recoveryReason(job.demand_id,job.ticket_hash);
+     durableQueue!.finish(job,'retry',reason,after>before?after:undefined,!targetedOnly&&onlyTemporary(reason));
+    }
     else durableQueue!.finish(job,'done','',after>before?after:undefined);
    }catch(error){durableQueue!.finish(job,'retry','Tentativa interrompida; resultados anteriores preservados. '+failureDetail(error));}
   }
