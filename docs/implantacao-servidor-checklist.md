@@ -50,7 +50,8 @@ O comando só lê: abre uma sessão no GLPI, confere grupos e um vínculo de cha
 
 - O servidor faz um backup verificado ao iniciar e a cada 6 horas.
 - Definir quantos backups manter no servidor e uma cópia externa diária. Cópia no mesmo disco não protege contra perda do servidor.
-- Testar uma restauração antes de usar em produção.
+- Indicar o destino da cópia externa diária (`BACKUP_COPY_DIR`): outro disco ou pasta de rede montada no servidor.
+- Testar uma restauração antes de usar em produção: `npm run db:verify-backup` abre uma cópia do backup e confere integridade e contagens, sem tocar no banco em uso.
 
 ## 5. LGPD e Supabase (decisão da empresa)
 
@@ -62,6 +63,8 @@ Os documentos contêm dados pessoais e bancários. Antes de levar banco e arquiv
 - Bucket de arquivos privado e credencial de servidor de menor privilégio.
 
 Até essa aprovação, o Kedu continua com SQLite no servidor e nenhum dado vai para o Supabase.
+
+Decisão registrada em `docs/decisao-banco-de-dados.md`: o banco fica em SQLite no servidor; o Supabase será reavaliado depois da aprovação.
 
 ## 6. Sequência de implantação
 

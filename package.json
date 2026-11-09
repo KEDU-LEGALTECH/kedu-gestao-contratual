@@ -11,6 +11,7 @@
     "db:prepare": "tsx server/seed.ts",
     "admin:prepare": "tsx server/provision-admin.ts",
     "db:backup": "tsx server/backup.ts",
+    "db:verify-backup": "tsx server/backup-verify.ts",
     "documents:reextract": "tsx server/reextract-fields.ts",
     "reading:benchmark": "tsx server/reading-benchmark.ts",
     "migration:prepare": "tsx server/migration-inventory.ts",

@@ -17,6 +17,8 @@ services:
     volumes:
       - kedu-production-data:/app/data
       - kedu-production-backups:/app/backups
+      # Cópia externa diária: monte aqui outro disco ou pasta de rede e defina BACKUP_COPY_DIR=/app/backups-externos.
+      # - /caminho/do/disco-externo:/app/backups-externos
     security_opt: ["no-new-privileges:true"]
     cap_drop: ["ALL"]
   proxy:

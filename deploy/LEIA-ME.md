@@ -31,7 +31,13 @@ Os diretórios de migração e backup contêm dados internos, hashes de autentic
 
 ## Backups automáticos
 
-`BACKUP_INTERVAL_HOURS=6` executa uma cópia ao iniciar e a cada seis horas, enquanto o servidor estiver rodando. `BACKUP_DIR` define a pasta. `last-success.json` registra a última cópia validada. Falhas são registradas no log, e uma cópia que falha não deixa arquivo `.partial`. `BACKUP_KEEP` define quantos backups automáticos manter (por exemplo, 28 = 7 dias a cada 6 horas); os mais antigos são removidos só depois de um novo backup verificado. Backups com outro nome nunca são removidos. Sem `BACKUP_KEEP`, ou com 0, todos são mantidos. Defina capacidade e retenção com o TI. Uma cópia no mesmo computador/servidor não substitui cópia externa.
+`BACKUP_INTERVAL_HOURS=6` executa uma cópia ao iniciar e a cada seis horas, enquanto o servidor estiver rodando. `BACKUP_DIR` define a pasta. `last-success.json` registra a última cópia validada. Falhas são registradas no log, e uma cópia que falha não deixa arquivo `.partial`. `BACKUP_KEEP` define quantos backups automáticos manter (por exemplo, 28 = 7 dias a cada 6 horas); os mais antigos são removidos só depois de um novo backup verificado. Backups com outro nome nunca são removidos. Sem `BACKUP_KEEP`, ou com 0, todos são mantidos. Defina capacidade e retenção com o TI.
+
+`BACKUP_COPY_DIR` ativa a cópia externa: uma vez por dia, o backup verificado mais recente é copiado para esse destino, conferido por checksum e limitado a `BACKUP_COPY_KEEP` cópias (padrão 14). Use outro disco ou uma pasta de rede montada no contêiner (veja o exemplo comentado em `compose.production.yaml`). Se a cópia falhar, o backup local é mantido e a falha aparece no log.
+
+`npm run db:verify-backup` testa a restauração: abre uma cópia do backup mais recente numa pasta temporária, confere integridade, referências e contagens, e apaga a cópia. Use `-- --copy` para testar a cópia externa ou `-- caminho.sqlite` para um arquivo específico. Não toca no banco em uso.
+
+Decisão sobre o banco (SQLite agora, Supabase depois): [docs/decisao-banco-de-dados.md](../docs/decisao-banco-de-dados.md). Uma cópia no mesmo computador/servidor não substitui cópia externa.
 
 Para testar restauração, abra uma cópia do snapshot em uma pasta separada, configure `DATABASE_PATH` para essa cópia e execute as verificações em ambiente isolado, sem tokens reais do GLPI. Não sobrescreva o banco em uso. O backup é reaberto em modo somente leitura e validado automaticamente a cada execução.
 
