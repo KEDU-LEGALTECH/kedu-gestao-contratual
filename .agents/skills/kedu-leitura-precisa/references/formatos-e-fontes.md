@@ -13,6 +13,8 @@ Confirmar as capacidades na implementação disponível; não prometer suporte u
 - ODT: texto e tabelas com seção/parágrafo; paginação pode não existir. Imagens embutidas precisam de inspeção específica.
 - TXT/CSV: confirmar codificação, delimitador, cabeçalhos, aspas e linhas. Preservar zeros de identificadores e strings de datas. Não executar fórmulas ao exportar CSV. Citar linha/coluna ou registro.
 - Extensão desconhecida, arquivo protegido, truncado ou acima do limite: explicar bloqueio e solicitar versão acessível; não fabricar extração.
+- ZIP: sem leitor no motor integrado. Pedir os documentos separados; não repetir tentativa.
+- Motor integrado (conferido em 09/11/2026): PDF lê toda a camada digital antes do OCR; página com pouco texto ou imagem cobrindo mais de 15% da área vai para OCR, com orçamento de cerca de 35 s por página (70 s em cartão CNPJ) e 140 s por arquivo; páginas não concluídas ficam listadas em `pendingPages`. OCR complementar de página que já tem texto digital pode ser pulado com aviso, sem marcar o arquivo como parcial. DOCX/XLSX/PPTX/ODT: imagens incorporadas grandes passam por OCR; as sem contraste são registradas como sem conteúdo.
 
 Para extração direta de PDF/Office carregar a skill do formato e sua referência pertinente. No MCP atual o limite é 20 MB por arquivo, até seis páginas PDF por chamada e corte de texto de 60.000 caracteres. Esses limites não são os limites universais do motor integrado. Confirmar código/schema atual. Persistir progresso fora dos originais.
 

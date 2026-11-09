@@ -37,6 +37,14 @@ Quando SQLite no WSL falhar com `sqlite3.OperationalError: disk I/O error` sobre
 
 Para ler originais armazenados, exportar apenas os anexos da coorte autorizada para relatório local, com hash de bytes e versão/extraction_hash. Conferir depois status/revision/result, hashes dos originais/extrações e contagens de revisões humanas. Uma leitura assistida fica separada do sistema. O renderer já existente `server/hermes_pdf_pages.mjs` pode ser executado com Node nativo Windows quando o canvas instalado não tem binding Linux; não reinstalar nem apagar node_modules/package-lock para um piloto.
 
+## Medição consistente no Windows (verificado em 05 a 09/11/2026)
+
+- Python nativo do Windows com `file:...kedu.sqlite?mode=ro`, `PRAGMA query_only=ON` e uma única transação de leitura (`BEGIN` ... `rollback`) por medição. Funciona com o servidor ativo e o WAL.
+- Para simular uma mudança de regra: copiar o banco com a API de backup do SQLite (`sqlite3.connect(ro).backup(dest)`), nunca copiando o arquivo `.sqlite` sozinho. Recalcular cada demanda com `saveProcessingResult` primeiro no código atual e depois no novo (dois worktrees), sem OCR, e comparar status e campos por chamado. Apagar a cópia ao final.
+- Scripts que importam `server/db.ts` aplicam migrações: só rodar contra a cópia (`DATABASE_PATH`), nunca contra o banco em uso.
+- Informar a janela da medição: o banco muda durante a análise com a fila ativa.
+- LGPD: não exibir imagens ou trechos com dados pessoais ao modelo. Para conferir um anexo, usar OCR local e devolver só sim/não por campo.
+
 ## Simulações com servidor já em execução
 
 Antes de alterar leitores em uma pasta compartilhada com servidor em modo watch, descobrir se há rotina automática ativa e preferir worktree/cópia isolada do código para a simulação. Não pausar ou reiniciar o servidor sem autorização. Alterar código pode fazer uma rotina existente reavaliar resultados mesmo sem executar um comando --apply. Comparar tabelas operacionais, bytes dos originais, revisões e gabaritos antes/depois; distinguir alterações em updated, result e metadados de tentativas de alterações no conteúdo ou status. Registrar auditoria e concorrência observadas; não atribuir ganhos à intervenção nem alegar banco intacto quando o comparativo estrito divergir.

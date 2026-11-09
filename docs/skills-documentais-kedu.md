@@ -32,6 +32,16 @@ Relatório por demanda e documento: campos encontrados e esperados separados, en
 
 Ausências reais exigem pedir documentos ou esclarecimentos; OCR repetido não resolve falta de fonte. A redução da fila depende de execução e validação no fluxo oficial. Criar skills não executa automaticamente essa fila, não altera o motor de OCR e não comprova acurácia.
 
+## Atualização 1.1.0 (09/11/2026)
+
+As três skills foram revisadas com o que mudou no sistema e o que as medições de 05 a 09/11 mostraram:
+
+- Triagem: anexos da conversa e cobertura do GLPI; encerrados fora da leitura automática; novas causas (`nao_importado`, `versao_substituida`, `sem_conteudo`, `valor_sem_associacao`, `cobertura_parcial`); comportamento da fila; medição somente leitura e simulação em cópia do banco.
+- Conferência: referência do formulário e da conversa, com correção explícita valendo; correspondência entre estados do sistema e classificações; decisões humanas registradas; lista de erros para tipos sem modelo.
+- Leitura: estouro de tempo não é arquivo em branco; imagem sem contraste não é falha; ZIP sem leitor; limites atuais do motor; OCR local para conferir anexos (LGPD).
+
+Somente as cópias deste projeto foram atualizadas. As cópias instaladas no perfil Hermes não foram alteradas: sincronize-as se quiser o mesmo comportamento no Hermes.
+
 ## Validação do pacote
 
 Verificar frontmatter, referências locais, schemas MCP usados e equivalência entre cópias do perfil e do projeto. Validar o JSON Schema com casos fictícios de teste identificados como tais: aprovação com lacuna deve falhar; correção sem divergência comprovada deve falhar; campo confirmado sem trecho/localizador deve falhar.
