@@ -148,7 +148,7 @@ async function api(path: string, body?: any, method?: string) {
   return data;
 }
 const Badge = ({ stage }: { stage: string }) => (
-  <span className={"badge " + (stage==="Sem erros"?"conference-clean":stage==="Aguardando correção"?"conference-correction":stage==="Aguardando análise"?"conference-analysis":"stage-" + stages.indexOf(stage))}>
+  <span className={"badge " + (stage==="Sem erros"?"conference-clean":stage==="Aguardando correção"?"conference-correction":["Aguardando análise","Conferência parcial"].includes(stage)?"conference-analysis":"stage-" + stages.indexOf(stage))}>
     <i />
     {stage}
   </span>
@@ -1478,7 +1478,7 @@ export function App() {
                                 <div
                                   className={"bar bar-" + i}
                                   style={{
-                                    background:s==="Sem erros"?"#58a879":s==="Aguardando correção"?"#d86b62":s==="Aguardando análise"?"#d5ab44":undefined,
+                                    background:s==="Sem erros"?"#58a879":s==="Aguardando correção"?"#d86b62":s==="Aguardando análise"?"#d5ab44":s==="Conferência parcial"?"#e2c675":undefined,
                                     height:
                                       Math.max(
                                         8,
@@ -1675,7 +1675,7 @@ export function App() {
                     </details>
                   </section>
                   <ProcessingProgress demands={filtered} api={api} allowed={!!can('files')&&!!can('bank')}/>
-                  {['Aguardando análise','Aguardando correção'].includes(stage)&&can('files')&&can('bank')&&<ProcessingSummary stage={stage} demands={filtered} api={api}/>}
+                  {['Aguardando análise','Conferência parcial','Aguardando correção'].includes(stage)&&can('files')&&can('bank')&&<ProcessingSummary stage={stage} demands={filtered} api={api}/>}
                   <section className="panel">{table(filtered)}</section>
                   <p className="muted">
                     {filtered.length} demandas encontradas. Etapas são alteradas

@@ -1531,7 +1531,7 @@ app.get("/api/reports", (req: any, res) => {
   for (const d of rows) {
     const processing=processingSummary(d.id);
     if(processing && !["Concluído","Cancelado","Em assinatura"].includes(d.workflow_stage)){
-      if(["Aguardando análise","Aguardando correção"].includes(processing.status))(isOpenDemand(d)?divergences:closedPendencies).push({id:d.id,school:d.school,status:processing.status,count:processing.issues||0,glpiStage:d.stage});
+      if(["Aguardando análise","Conferência parcial","Aguardando correção"].includes(processing.status))(isOpenDemand(d)?divergences:closedPendencies).push({id:d.id,school:d.school,status:processing.status,count:processing.issues||0,glpiStage:d.stage});
       continue;
     }
     const doc = latest(d.id);

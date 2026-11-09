@@ -1,7 +1,7 @@
 const escapeHtml=(value:unknown)=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 /** A standalone, script-free document. All ticket and attachment text stays escaped. */
 export function summaryDocument(report:any){
- const analysis=report.stage==='Aguardando análise';
+ const analysis=report.stage!=='Aguardando correção';
  const title=analysis?'Pendências de leitura e conferência':'Pendências de correção';
  const sections=(report.demands||[]).map((d:any)=>`<section><h2>${escapeHtml(d.glpi_id?'GLPI #'+d.glpi_id:d.id)} — ${escapeHtml(d.type)}</h2><p class="school">${escapeHtml(d.school)}</p><p class="meta">${escapeHtml(d.id)} · ${escapeHtml(d.status)}</p><ul>${d.issues.map((issue:any)=>{
  const file=/^file:/.test(issue.label||'');

@@ -5,8 +5,8 @@ const line=(value:unknown)=>String(value??'').replace(/[\r\n]+/g,' ').replace(/(
 /** Where the wrong value is printed: file, page and the excerpt read from it. */
 const where=(evidence:Evidence[]=[])=>evidence.map(e=>[e.fileName&&`arquivo "${line(e.fileName)}"`,e.page&&`página ${e.page}`,e.excerpt&&`trecho: “${line(e.excerpt).slice(0,240)}”`].filter(Boolean).join(', ')).filter(Boolean);
 export function processingSummaryReport(stage:string,demands:SummaryDemand[],date=new Date()) {
- const analysis=stage==='Aguardando análise';
- const filename=analysis?'Pendencias_de_analise.md':'Pendencias_de_correcao.md';
+ const analysis=stage!=='Aguardando correção';
+ const filename=stage==='Conferência parcial'?'Conferencia_parcial.md':analysis?'Pendencias_de_analise.md':'Pendencias_de_correcao.md';
  const rows=demands.filter(d=>d.status===stage);
  const lines=[`# ${analysis?'Pendências de leitura e conferência':'Pendências de correção'}`,'',`Gerado em ${date.toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})} (Brasília). ${rows.length} demanda(s).`,
   'Escopo: demandas da etapa selecionada que atendem aos filtros atuais.',

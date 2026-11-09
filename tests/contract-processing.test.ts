@@ -150,7 +150,7 @@ test('relatório de apoio não fornece condições comerciais nem substitui cont
  assert.ok(plan.issues.some(i=>i.field==='contractMissing'));
  assert.equal(plan.issues.some(i=>i.field==='review:'+file.id),false);
  assert.equal(plan.origins.rua,undefined);
- assert.equal(plan.status,'Aguardando análise');
+ assert.equal(plan.status,'Conferência parcial');
 });
 test('comparação usa a parte do chamado em vez de misturar CNPJ da Kedu e da contratada',async()=>{
  fixture('party-comparison');
@@ -292,12 +292,12 @@ test("OCR permanece bloqueado até conferência humana; confirmação respeita r
  await processContract("ocr","u",(async()=>({bytes,name:"contrato.png",mime:"image/png"})) as any);
  // A legacy single-pass reading still requires explicit confirmation.
  run("UPDATE processing_files SET extracted=json_remove(extracted,'$.verifiedFields') WHERE demand_id='ocr'");
- const result=completed("ocr");assert.equal(result.status,"Aguardando análise");assert.equal(result.values.remuneracao,"11,84%");assert.equal(result.files[0].needsReview,true);
+ const result=completed("ocr");assert.equal(result.status,"Conferência parcial");assert.equal(result.values.remuneracao,"11,84%");assert.equal(result.files[0].needsReview,true);
  const url=base+"/ocr/processing/files/"+result.files[0].id+"/confirm";
  const post=(revision:number,role="Administrador")=>fetch(url,{method:"POST",headers:{"Content-Type":"application/json","x-role":role},body:JSON.stringify({revision,confirmed:true})});
  assert.equal((await post(result.revision,"Consulta")).status,403);
  assert.equal((await post(result.revision-1)).status,409);
- const response=await post(result.revision);assert.equal(response.status,200);const confirmed=await response.json();assert.equal(confirmed.files[0].needsReview,false);assert.equal(confirmed.status,"Aguardando análise","campos ainda não lidos continuam pendentes");
+ const response=await post(result.revision);assert.equal(response.status,200);const confirmed=await response.json();assert.equal(confirmed.files[0].needsReview,false);assert.equal(confirmed.status,"Conferência parcial","campos ainda não lidos continuam pendentes");
  assert.equal((await post(result.revision)).status,409);
  assert.deepEqual(Buffer.from(one("SELECT bytes FROM processing_files WHERE demand_id='ocr'").bytes),bytes);
 });
@@ -352,7 +352,7 @@ test('campo digital confere individualmente, mas o PDF parcial mantém a demanda
  run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify(e),file.id);
  const result=saveProcessingResult('digital-partial')!;
  for(const key of ['cnpj','razaoSocial','endereco'])assert.equal(result.comparisons.find(c=>c.field===key)?.status,'matches',key);
- assert.equal(result.status,'Aguardando análise');
+ assert.equal(result.status,'Conferência parcial');
  assert.ok(result.issues.some(i=>i.field==='review:partial:'+file.id));
  assert.equal(result.comparisons.find(c=>c.field==='remuneracao')?.status,'review');
 });
@@ -364,7 +364,7 @@ test('campos solicitados comprovados não herdam revisão de campos OCR não usa
  run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify(e),f.id);
  let r=saveProcessingResult('field-certainty')!;assert.equal(r.status,'Sem erros');assert.ok(!r.issues.some(i=>i.field==='review:'+f.id));
  e.incomplete=true;run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify(e),f.id);
- r=saveProcessingResult('field-certainty')!;assert.equal(r.status,'Aguardando análise');assert.ok(r.issues.some(i=>i.field==='review:partial:'+f.id));
+ r=saveProcessingResult('field-certainty')!;assert.equal(r.status,'Conferência parcial');assert.ok(r.issues.some(i=>i.field==='review:partial:'+f.id));
 });
 
 test('frase capturada como taxa não vira percentual inválido, mas taxa numérica fora da faixa é sinalizada',async()=>{
@@ -381,7 +381,7 @@ test('CNPJ inválido no GLPI pede confirmação da referência, não correção 
  run('UPDATE glpi_tickets SET payload=? WHERE external_id=?',JSON.stringify(raw),'invalid-reference');
  await processContract('invalid-reference','u',mock());const result=saveProcessingResult('invalid-reference')!;
  assert.equal(result.comparisons.find(c=>c.field==='cnpj')?.status,'ambiguous');
- assert.equal(result.status,'Aguardando análise');
+ assert.equal(result.status,'Conferência parcial');
 });
 
 test('nova versão sem anexo atual informa atualização pendente, sem reutilizar leitura antiga',async()=>{

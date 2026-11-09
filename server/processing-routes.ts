@@ -45,7 +45,7 @@ export function registerProcessingRoutes(app:Express,process:(did:string,userId?
  });
  app.get('/api/processing/summary',(req:any,res)=>{
   permit(req.user,'files');permit(req.user,'bank');
-  const stage=z.enum(['Aguardando análise','Aguardando correção']).parse(req.query.stage);
+  const stage=z.enum(['Aguardando análise','Conferência parcial','Aguardando correção']).parse(req.query.stage);
   const ids=z.string().max(100000).parse(req.query.ids).split(',');
   const selected=new Set(ids),rows=[];
   for(const d of all('SELECT d.*,s.name AS school FROM demands d LEFT JOIN schools s ON s.id=d.school_id ORDER BY d.glpi_id DESC,d.id')){

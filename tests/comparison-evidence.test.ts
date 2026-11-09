@@ -34,3 +34,9 @@ test('nome do cabeçalho NOME (CNPJ) sem forma jurídica não comprova razão so
  assert.equal(headerTradeName('ESCOLA ALFA LTDA (61.724.963/0001-22)','ESCOLA ALFA LTDA'),false);
  assert.equal(headerTradeName('Contratante: COLEGIO ERON, CNPJ 61.724.963/0001-22','COLEGIO ERON'),false);
 });
+test('sigla da escola no resumo de descredenciamento não comprova razão social diferente',async()=>{
+ const {headerTradeName}=await import('../server/comparison-evidence.js');
+ const text='PLANILHA: Resumo\nRECISÃO\nA PAGAR PELA ESCOLA\n[DADO CALCULADO: conferir na planilha original]\nCEX\n41.301.376/0001-13\nDados gerais';
+ assert.equal(headerTradeName(text,'CEX'),true);
+ assert.equal(headerTradeName(text.replace('CEX','CENTRO EXEMPLO LTDA'),'CENTRO EXEMPLO LTDA'),false);
+});

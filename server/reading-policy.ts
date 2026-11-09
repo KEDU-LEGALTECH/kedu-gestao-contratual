@@ -15,10 +15,14 @@ export function complementaryOcrFields(preferred:Record<string,string[]>,other:R
  if(confidence<85)return {};
  return Object.fromEntries(Object.entries(other).filter(([key,values])=>!preferred[key]?.length&&values.length===1));
 }
+/** Settlement spreadsheet summary: "Descredenciamento" or the exit reason followed by "A PAGAR PELA ESCOLA". */
+export function settlementReport(name:string,text:string){
+ return /\.xlsx$/i.test(name)&&/^PLANILHA:[^\r\n]+\r?\n[ \t]*(?:DESCREDENCIAMENTO|[^\r\n]{3,40}\r?\n[ \t]*A PAGAR PEL[AO] ESCOLA)[ \t]*(?:\r?\n|$)/i.test(text);
+}
 export function attachmentRole(name:string,text='') {
  const s=(name+'\n'+text.slice(0,2000)).normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().replace(/_/g,' ');
  if(receivedDocumentKind(name,text)==='Contraproposta')return 'counterproposal';
- if(/\.xlsx$/i.test(name)&&/^PLANILHA:[^\r\n]+\r?\n[ \t]*DESCREDENCIAMENTO[ \t]*(?:\r?\n|$)/i.test(text))return 'report';
+ if(settlementReport(name,text))return 'report';
  if(receivedDocumentKind(name,text)==='Relatório')return 'report';
  const sourceKind=documentSourceKind({name,text});
  if(sourceKind==='registration'||sourceKind==='bank')return sourceKind;

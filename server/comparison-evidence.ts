@@ -1,5 +1,6 @@
 import {sameRequestedValue,distinctRequestedValues} from './request-expectations.js';
 import {repricingSchoolName} from './contextual-layout-fields.js';
+import {reportIdentity} from './comparison-profile.js';
 
 /** A possible typo in the requested legal-form suffix is a reference question,
  * never permission to silently repair the name or demand a document correction. */
@@ -40,6 +41,9 @@ export function headerTradeName(text:string,value:string){
  const school=repricingSchoolName(text||'');
  if(school&&sameRequestedValue('razaoSocial',school,value))return true;
  if(/\b(?:LTDA|EIRELI|EPP|ME|MEI|S\/?A|SOCIEDADE|ASSOCIA[ÇC][ÃA]O|FUNDA[ÇC][ÃA]O|COOPERATIVA|INSTITUTO|EMPRESA INDIVIDUAL)\b\.?/i.test(value))return false;
+ // A settlement summary names the school as it is known (often an abbreviation) above its CNPJ.
+ const report=reportIdentity(text||'');
+ if(report?.razaoSocial&&sameRequestedValue('razaoSocial',report.razaoSocial,value))return true;
  const fold=(s:string)=>s.normalize('NFD').replace(/\p{Diacritic}/gu,'').toUpperCase().replace(/\s+/g,' ').trim();
  const name=fold(value);
  return String(text||'').split(/\r?\n/).slice(0,40).some(line=>{const m=/^(.+?)\s*\(\s*(?:CNPJ\s*:?\s*)?[\d./-]{14,18}\s*\)\s*$/.exec(fold(line));return !!m&&m[1]===name;});

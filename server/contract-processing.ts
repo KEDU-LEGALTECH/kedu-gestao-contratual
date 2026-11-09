@@ -13,7 +13,7 @@ import { invalidate } from "./workflow.js";
 import {conversationReferences,requestCompanyReferences,sameRequestedValue,distinctRequestedValues} from './request-expectations.js';
 import {installmentTableFields} from './installment-table.js';
 import {identifyDocumentHeading,receivedDocumentKind} from '../shared/document-heading.js';
-import {attachmentRole,fieldsForRole,automaticReadingCheck,unusedPersonalId} from './reading-policy.js';
+import {attachmentRole,fieldsForRole,automaticReadingCheck,unusedPersonalId,settlementReport} from './reading-policy.js';
 import {scopePartyReading,extractContractParties,selectContractParty} from './contract-parties.js';
 import {fieldExcerpt,readingGuidance,proposedChanges} from './reading-guidance.js';
 import {processingStatus} from './processing-status.js';
@@ -57,7 +57,7 @@ const activeFiles=new Map<string,{documentId:string;targeted?:boolean;page?:numb
 function fingerprint(did:string) {
  const d=one("SELECT school_id,contract_id,data_version FROM demands WHERE id=?",did);
  return sha256(Buffer.from(JSON.stringify([
-  'hybrid-local-ocr-v31-visible-identity-evidence',
+  'hybrid-local-ocr-v32-settlement-summary-identity',
   all('SELECT kind,field,signature,value FROM processing_resolutions WHERE demand_id=? ORDER BY kind,field',did),
   d,
   all("SELECT v.id,v.status,s.template_hash,h.template_hash AS approved_hash,i.version_id AS inactive FROM template_sources s JOIN template_versions v ON v.id=s.version_id LEFT JOIN template_homologations h ON h.version_id=v.id LEFT JOIN inactive_template_versions i ON i.version_id=v.id ORDER BY v.id"),
@@ -158,7 +158,7 @@ export function buildProcessingPlan(did:string) {
    if(excerpt)(invalidIdentifiers[key]||=[]).push({fileId:f.id,fileName:f.name,value,excerpt,page:extracted.pages===1?1:undefined,available:!!f.byteLength});
   }
   // Settlement reports identify the school; their figures are never adopted.
-  if(role==='report'&&/descredenciamento/i.test(demandType)){const id=reportIdentity(extracted.text||'');if(id)for(const [key,value] of Object.entries(id))if(value)(candidates[key]||=[]).push({value,source:f.name+' — identificação no relatório',fileId:f.id});}
+  if(role==='report'&&(/descredenciamento/i.test(demandType)||settlementReport(f.name,extracted.text||''))){const id=reportIdentity(extracted.text||'');if(id)for(const [key,value] of Object.entries(id))if(value)(candidates[key]||=[]).push({value,source:f.name+' — identificação no relatório',fileId:f.id});}
   if(analysis.suggestion.type==="Parcelamento"){
    const count=request.parcelas?.length===1?request.parcelas[0]:undefined;
    const table=installmentTableFields(extracted.text||"",count);
@@ -258,8 +258,7 @@ export function buildProcessingPlan(did:string) {
    const reading=JSON.parse(files.find(f=>f.id===c.fileId)!.extracted);
    return referenceTradeNameNeedsReview(key,found,expected,request.cnpj||[],{...reading.fields,...recoverTextFields(reading.text||'',{})});
   });
-  const confirmedMatch=matches&&!invalidReference&&(!guided||guided.associated);
-  const needsFieldReview=!confirmedMatch&&(referenceTradeName||legalFormReferenceNeedsReview(key,found,expected)||tradeName||!!guided&&!guided.associated||qualifiedNameNeedsReview(key,found,expected)||!trustedReading&&(candidates[key]||[]).some(c=>{
+  const needsFieldReview=(referenceTradeName||legalFormReferenceNeedsReview(key,found,expected)||tradeName||!!guided&&!guided.associated||qualifiedNameNeedsReview(key,found,expected)||!trustedReading&&(candidates[key]||[]).some(c=>{
    const pending=issues.filter(i=>i.field.startsWith('review:')&&i.field.endsWith(c.fileId));
    if(!pending.length)return false;
    // Structural, partial and legal reviews remain independent of OCR certainty.

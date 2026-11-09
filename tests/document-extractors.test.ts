@@ -112,10 +112,22 @@ test('contrato educacional: cláusula de cessão à Kedu é conferida',()=>{
 });
 test('relatório de descredenciamento identifica a escola pelo nome acima do CNPJ',()=>{
  assert.deepEqual(reportIdentity('DESCREDENCIAMENTO\n[DADO CALCULADO]\nCOLEGIO INVICTOS: JULHO/2026\n49.172.814/0001-00\nData'),{cnpj:'49.172.814/0001-00',razaoSocial:'COLEGIO INVICTOS'});
+ // The reference month is never part of the school name, whatever the separator.
+ for(const header of ['COLEGIO INVICTOS - QI: MAIO 2025','COLEGIO INVICTOS - QI   JULHO 2025','COLEGIO INVICTOS - QI: Agosto/2025'])
+  assert.equal(reportIdentity(`DESCREDENCIAMENTO\n${header}\n49.172.814/0001-00`)?.razaoSocial,'COLEGIO INVICTOS - QI',header);
+ assert.equal(reportIdentity('DESCREDENCIAMENTO\nESCOLA MAIO\n49.172.814/0001-00')?.razaoSocial,'ESCOLA MAIO');
 });
 test('planilha de descredenciamento usa a identidade da escola no resumo',()=>{
  const text='PLANILHA: Resumo\nDescredenciamento\n[DADO CALCULADO]\nColégio Exemplo: Julho\n41.301.376/0001-13\nPLANILHA: Operadora\nKedu\n45.543.580/0001-00';
  assert.equal(attachmentRole('planilha.xlsx',text),'report');
  assert.deepEqual(reportIdentity(text),{cnpj:'41.301.376/0001-13',razaoSocial:'Colégio Exemplo'});
  assert.equal(reportIdentity(text.replace('41.301.376/0001-13','')),null);
+});
+test('resumo de descredenciamento com o motivo da saída também identifica a escola',()=>{
+ const text='PLANILHA: Resumo\nRECISÃO\nA PAGAR PELA ESCOLA\n[DADO CALCULADO: conferir na planilha original]\nCOLEGIO EXEMPLO\n41.301.376/0001-13\nDados gerais';
+ assert.equal(attachmentRole('DESCREDENCIAMENTO - COLEGIO EXEMPLO.xlsx',text),'report');
+ assert.deepEqual(reportIdentity(text),{cnpj:'41.301.376/0001-13',razaoSocial:'COLEGIO EXEMPLO'});
+ // The same words in a contract or a PDF do not turn it into a settlement report.
+ assert.notEqual(attachmentRole('contrato.pdf',text),'report');
+ assert.notEqual(attachmentRole('planilha.xlsx','PLANILHA: Dados\nValores\nTotal geral'),'report');
 });
