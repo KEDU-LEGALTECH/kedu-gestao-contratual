@@ -3,6 +3,14 @@ import assert from 'node:assert/strict';
 import {needsReadingRecovery,preservePreviousReading} from '../server/reading-recovery-policy.js';
 import {automaticReadingCheck} from '../server/reading-policy.js';
 import {captureFieldOrigins,identityEvidence} from '../server/identity-evidence.js';
+
+test('registration card associates the CNPJ even when OCR replaces its hyphen with a space',()=>{
+ const text='NÚMERO DE INSCRIÇÃO   DATA DE ABERTURA\n65.836.998/0001 04 COMPROVANTE DE INSCRIÇÃO\nMATRIZ CADASTRAL';
+ assert.equal(identityEvidence({text,pages:1},'cnpj','65.836.998/0001-04','registration')?.page,1);
+ assert.equal(identityEvidence({text:text.replace('0001 04','0001.04'),pages:1},'cnpj','65.836.998/0001-04','registration')?.page,1);
+ assert.equal(identityEvidence({text,pages:1},'cnpj','65.836.998/0001-04','document'),null);
+ assert.equal(identityEvidence({text:text+'\nCNPJ 11.444.777/0001-61',pages:1},'cnpj','65.836.998/0001-04','registration'),null);
+});
 test('version alone never schedules successful readings; faults, partials and empty fields do',()=>{
  const extracted=JSON.stringify({version:1,text:'CNPJ legível',fields:{cnpj:['11.444.777/0001-61']}});
  assert.equal(needsReadingRecovery({byteLength:100,problem:'',extracted}),false);

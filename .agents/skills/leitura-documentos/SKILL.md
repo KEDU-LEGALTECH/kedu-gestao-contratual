@@ -45,9 +45,10 @@ Esta skill orienta análise. Ela não autoriza editar o chamado GLPI, a base de 
 
 ## Identificação e associação
 
-- Identifique primeiro o tipo do arquivo pelo nome e pelo conteúdo visível: contrato, aditivo, contraproposta, proposta, cartão CNPJ, contrato social, procuração, comprovante bancário, planilha ou documento de apoio. Se não houver evidência, escreva “tipo não identificado”; não infira somente pelo nome da empresa.
+- Identifique primeiro o tipo e o papel do arquivo (`attachmentRole`: `document`, `registration`, `bank`, `report`, `simulation`, `counterproposal`) pelo nome e pelo conteúdo visível: contrato, aditivo, contraproposta, proposta, cartão CNPJ, contrato social, procuração, comprovante bancário, planilha ou documento de apoio. Se não houver evidência, escreva “tipo não identificado”; não infira somente pelo nome da empresa.
+- Restrinja os campos extraídos ao papel do anexo (`fieldsForRole`) e ao tipo da demanda: cartão CNPJ (`registration`) fornece apenas dados cadastrais/endereço; comprovante (`bank`) fornece apenas dados bancários; planilha de descredenciamento (`report`) fornece apenas a identificação da escola (`razaoSocial` e `cnpj`); contrapropostas e simulações não aprovam valores automaticamente; contratos `Pais x Escola` exigem conferência da cláusula de cessão à Kedu (`clausulaCessao`); modelos em branco (`{{...}}`) não fornecem dados preenchidos.
 - Associe cada valor à entidade e ao papel corretos: escola/contratada, Kedu/contratante, representante legal, titular da conta ou terceiro. Não use o CNPJ da Kedu como CNPJ da escola; não confunda representante com titular bancário.
-- Considere o conjunto de anexos, pois campos diferentes podem estar em documentos diferentes. A ausência num arquivo não significa ausência em todos os anexos.
+- Considere o conjunto de anexos, pois campos diferentes podem estar em documentos diferentes. A ausência num arquivo não significa ausência em todos os anexos. Quando um anexo de apoio com OCR for integralmente corroborado pela camada digital do contrato, não repetir OCR nele.
 - Para dados bancários, identifique instituição/código bancário, agência, conta e titular separadamente. Não associe dados do pagador ao beneficiário.
 
 ## Comparação com a solicitação GLPI

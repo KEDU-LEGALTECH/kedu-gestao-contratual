@@ -32,6 +32,22 @@ Relatório por demanda e documento: campos encontrados e esperados separados, en
 
 Ausências reais exigem pedir documentos ou esclarecimentos; OCR repetido não resolve falta de fonte. A redução da fila depende de execução e validação no fluxo oficial. Criar skills não executa automaticamente essa fila, não altera o motor de OCR e não comprova acurácia.
 
+## Atualização 1.6.0
+
+- O CNPJ da contratada recebe **Confere** quando os 14 dígitos coincidem e o documento comprova a associação à parte. A checagem cadastral é separada.
+
+## Atualização 1.5.0
+
+- Separar correção de referência no GLPI de erro no documento. Registrar as origens das taxas conflitantes e a evidência do valor lido.
+- Preservar identificadores lidos com dígitos inválidos, conferir cartões de CNPJ com pontuação alterada pelo OCR e aceitar um zero inicial perdido pela formatação decimal do GLPI quando a planilha de descredenciamento comprovar o número válido.
+- Priorizar demandas com poucas pendências e distinguir alteração simulada de etapa confirmada no painel.
+
+## Atualização 1.4.0 (09/11/2026)
+
+- **Escopo estrito do que é necessário ler (`kedu-leitura-precisa`)**: filtro prévio por papel do anexo (`attachmentRole` / `fieldsForRole`: `registration`, `bank`, `report`, `counterproposal`, `simulation`, `document`), matriz de campos exigidos por tipo/subtipo de demanda (`officialRequired`, `Descredenciamento`, `Pais x Escola` com `clausulaCessao`, modelos em branco `{{...}}`) e releitura direcionada (`targetedReadingTargets` e `Docling — estrutura do PDF`) apenas para campos `missing`/`review` pertinentes.
+- **Descarte de falsos bloqueios na fila (`kedu-triagem-documental`)**: dispensa de revisão de anexo de apoio (`registration`, `bank`, `XLSX`) quando todos os seus campos já estão corroborados na camada digital de um instrumento contratual (`document`), dispensa de `CNH`/`RG` quando representante não foi solicitado (`unusedPersonalId`), exclusão de logos pequenos sem texto (`logoImage`) e detecção imediata de `contractMissing`.
+- **Regras de revisão e evidência de OCR (`kedu-conferencia-documental`)**: distinção entre divergência real e revisão de nome/referência (`legalFormReferenceNeedsReview`, `referenceTradeNameNeedsReview`, `qualifiedNameNeedsReview`, `headerTradeName`), composição de endereço restrita ao mesmo documento (`withDocumentAddress`), critérios de validação automática de OCR (`verifiedFieldEvidence` com `Tesseract` + `PaddleOCR` e `identityEvidence`) e atualização de `esquema-relatorio.json` com `docling_estrutura_pdf` e `papel_anexo`.
+
 ## Atualização 1.3.0
 
 - Identificar cada parte no preâmbulo de contratos e aditivos, com razão social, CNPJ e papel associados.

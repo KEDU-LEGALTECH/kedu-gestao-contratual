@@ -16,6 +16,9 @@ export class ReadingJobQueue {
   if(reopenCompleted)this.db.prepare("UPDATE reading_jobs SET state='queued',attempts=0,available_at=?,updated=?,last_error='targeted-fields' WHERE demand_id=? AND ticket_hash=? AND state IN('done','exhausted')").run(at,at,demand,hash);
   if(reopenFailed)this.db.prepare("UPDATE reading_jobs SET state='queued',attempts=0,available_at=?,updated=?,last_error='' WHERE demand_id=? AND ticket_hash=? AND (state='done' OR (state='exhausted' AND updated<=?))").run(at,at,demand,hash,at-24*3600000);
  }
+ settleIdle(demand:string,hash:string){
+  this.db.prepare("UPDATE reading_jobs SET state='done',owner=NULL,updated=?,last_error='' WHERE demand_id=? AND ticket_hash=? AND state IN('queued','retry')").run(this.time(),demand,hash);
+ }
  claim() {
   const at=this.time();
   return this.db.prepare(`UPDATE reading_jobs SET state='running',owner=?,attempts=attempts+1,updated=?

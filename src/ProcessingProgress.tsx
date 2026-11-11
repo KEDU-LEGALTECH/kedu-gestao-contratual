@@ -1,5 +1,5 @@
 import {useEffect,useState} from 'react';
-const labels:Record<string,string>={queued:'Na fila',running:'Em leitura',completed:'Leitura concluída',failed:'Com falha',waiting:'Não agendados'};
+const labels:Record<string,string>={queued:'Na fila',running:'Em leitura',completed:'Leitura concluída',failed:'Com falha',waiting:'Não agendados',skipped:'Fora da leitura automática',unidentified:'Tipo a confirmar'};
 export function ProcessingProgress({demands,api,detail=false,allowed=true}:{demands:{id:string}[];api:(path:string)=>Promise<any>;detail?:boolean;allowed?:boolean}){
  const ids=demands.map(d=>d.id).sort().join(',');
  const [progress,setProgress]=useState<any>(null),[error,setError]=useState('');
@@ -21,8 +21,8 @@ export function ProcessingProgress({demands,api,detail=false,allowed=true}:{dema
   {allowed&&!progress&&!error&&<p role="status">Consultando processamento…</p>}
   {error&&<p role="alert">{error}{progress?' Os números abaixo são da última consulta bem-sucedida.':''}</p>}
   {progress&&<>
-   <div className="processing-progress-counts">{Object.entries(labels).filter(([key])=>key!=='waiting'||progress.counts.waiting>0).map(([key,label])=><div className={'progress-count progress-'+key} key={key}><strong>{progress.counts[key]}</strong><span>{label}</span></div>)}</div>
-   <p className="muted">{progress.total} arquivo(s). Leitura concluída não significa que os dados estejam sem erros.</p>
+   <div className="processing-progress-counts">{Object.entries(labels).filter(([key])=>!['waiting','skipped','unidentified'].includes(key)||progress.counts[key]>0).map(([key,label])=><div className={'progress-count progress-'+key} key={key}><strong>{progress.counts[key]}</strong><span>{label}</span></div>)}</div>
+   <p className="muted">{progress.total} arquivo(s). Contratos entram na leitura completa. Anexos de apoio ficam disponíveis na conversa do GLPI.</p>
    {progress.paused&&<p className="inline-warning">A leitura automática está pausada. Os arquivos na fila aguardam a retomada.</p>}
    {progress.attachmentsUnavailable>0&&<p className="inline-warning">Não foi possível obter a lista de anexos de {progress.attachmentsUnavailable} demanda(s). Esses arquivos não entram na contagem.</p>}
    {!progress.total&&<p>Nenhum anexo disponível neste recorte.</p>}

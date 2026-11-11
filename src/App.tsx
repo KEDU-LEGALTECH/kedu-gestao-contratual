@@ -42,7 +42,7 @@ import { OfficialPanel } from "./OfficialPanel";
 import { GlpiPage } from "./GlpiPage";
 import { OfficialTemplates } from "./OfficialTemplates";
 import { TemplateViewer } from "./TemplateViewer";
-import {glpiStatusLabel,glpiPriorityLabel,demandPriorityRank,matchesDemandQueue,demandDisplayStage,isGlpiSolved,isOpenDemand,type DemandQueue} from "../shared/glpi-ticket-meta";
+import {glpiStatusLabel,glpiPriorityLabel,demandPriorityRank,matchesDemandQueue,demandContractStage,demandStageLabel,isGlpiSolved,isOpenDemand,type DemandQueue} from "../shared/glpi-ticket-meta";
 import { officialInputs } from "../shared/official-fields";
 import { organizationAllowed } from "../shared/organization-policy";
 import { Organizations } from "./Organizations";
@@ -148,9 +148,9 @@ async function api(path: string, body?: any, method?: string) {
   return data;
 }
 const Badge = ({ stage }: { stage: string }) => (
-  <span className={"badge " + (stage==="Sem erros"?"conference-clean":stage==="Aguardando correção"?"conference-correction":["Aguardando análise","Conferência parcial"].includes(stage)?"conference-analysis":"stage-" + stages.indexOf(stage))}>
+  <span className={"badge " + (stage==="Sem erros"?"conference-clean":stage==="Aguardando correção"?"conference-correction":["Aguardando análise","Conferência parcial","Contrato não encontrado","Contrato não lido","Tipo a confirmar"].includes(stage)?"conference-analysis":"stage-" + stages.indexOf(stage))}>
     <i />
-    {stage}
+    {demandStageLabel(stage)}
   </span>
 );
 const nav = [
@@ -188,6 +188,8 @@ export function App() {
     [owner, setOwner] = useState(""),
     [priority, setPriority] = useState(""),
     [demandQueue,setDemandQueue]=useState<DemandQueue>("all"),
+    [dashboardQueue, setDashboardQueue] = useState<"all"|"open"|"pending">("all"),
+    [showAllDashboardDemands, setShowAllDashboardDemands] = useState(false),
     [type, setType] = useState(""),
     [deadline, setDeadline] = useState(""),
     [mobile, setMobile] = useState(false);
@@ -382,9 +384,39 @@ export function App() {
         </div>
       </div>
     );
-  const displayStage = (d: any) => demandDisplayStage(d);
+  const displayStage = (d: any) => demandContractStage(d);
   const listStages=[...new Set<string>(["Analisando","Aguardando análise","Conferência parcial","Aguardando correção","Sem erros",...data.demands.map(displayStage)])];
-  const flowStages=data.demands.some((d:any)=>d.processing)?listStages:stages.slice(0,7);
+  const dashboardQueues = [
+    ["all", "Todos"],
+    ["open", "Em andamento no GLPI"],
+    ["pending", "Pendentes no GLPI"],
+  ] as const;
+  const dashboardGroups = dashboardQueues.map(([key,label])=>({
+    key,label,demands:data.demands.filter((d:any)=>matchesDemandQueue(d,key)),
+  }));
+  const dashboardGroup = dashboardGroups.find(group=>group.key===dashboardQueue)!;
+  const stageCounts=new Map<string,number>();
+  for(const demand of dashboardGroup.demands){
+    const stage=displayStage(demand);
+    stageCounts.set(stage,(stageCounts.get(stage)||0)+1);
+  }
+  const flowStages=listStages.filter(s=>stageCounts.has(s));
+  const largestStage=Math.max(1,...stageCounts.values());
+  const dashboardDemands=[...dashboardGroup.demands].sort((a:any,b:any)=>
+    Number(matchesDemandQueue(b,"open"))-Number(matchesDemandQueue(a,"open"))
+    || Number(isOpenDemand(b))-Number(isOpenDemand(a))
+    || (a.due||"9999").localeCompare(b.due||"9999"),
+  );
+  function openDashboardDemands(selectedStage=""){
+    setDemandQueue(dashboardQueue);
+    setStage(selectedStage);
+    setQuery("");
+    setOwner("");
+    setPriority("");
+    setType("");
+    setDeadline("");
+    setPage("Demandas");
+  }
   const filtered = data.demands.filter(
     (d: any) =>
       matchesDemandQueue(d,demandQueue) &&
@@ -1454,61 +1486,50 @@ export function App() {
                       <div className="panel-heading">
                         <div>
                           <h2>O fluxo da operação</h2>
-                          <p>Distribuição das demandas por etapa</p>
+                          <p>Situação dos contratos e dos chamados no GLPI</p>
                         </div>
                         <span className="counter">
-                          {data.demands.length} demandas
+                          {dashboardGroup.demands.length} demandas
                         </span>
                       </div>
-                      <div className="flow-bars">
-                        {flowStages.map((s, i) => {
-                          const n = data.demands.filter(
-                            (d: any) => displayStage(d) === s,
-                          ).length;
+                      <div className="dashboard-glpi-queues" role="group" aria-label="Selecionar chamados para o gráfico e a lista">
+                        {dashboardGroups.map(({key,label,demands})=>(
+                          <button type="button" key={key} className={dashboardQueue===key?"primary":"secondary"}
+                            aria-pressed={dashboardQueue===key} onClick={()=>{
+                              setDashboardQueue(key);
+                              setShowAllDashboardDemands(false);
+                            }}>
+                            {label} <span className="queue-count">{demands.length}</span>
+                          </button>
+                        ))}
+                      </div>
+                      {flowStages.length ? <div className="flow-bars" aria-label={"Etapas · "+dashboardGroup.label}>
+                        {flowStages.map(s => {
+                          const n = stageCounts.get(s)||0;
                           return (
                             <button
                               key={s}
-                              onClick={() => {
-                                setDemandQueue("all");
-                                setStage(s);
-                                setPage("Demandas");
-                              }}
+                              type="button"
+                              onClick={() => openDashboardDemands(s)}
                             >
                               <div className="bar-space">
                                 <div
-                                  className={"bar bar-" + i}
+                                  className={"bar bar-" + listStages.indexOf(s)}
                                   style={{
-                                    background:s==="Sem erros"?"#58a879":s==="Aguardando correção"?"#d86b62":s==="Aguardando análise"?"#d5ab44":s==="Conferência parcial"?"#e2c675":undefined,
-                                    height:
-                                      Math.max(
-                                        8,
-                                        (n /
-                                          Math.max(
-                                            1,
-                                            ...flowStages.map(
-                                              (x) =>
-                                                data.demands.filter(
-                                                  (d: any) => displayStage(d) === x,
-                                                ).length,
-                                            ),
-                                          )) *
-                                          72,
-                                      ) + "%",
+                                    background:s==="Sem erros"?"#58a879":s==="Aguardando correção"?"#d86b62":s==="Contrato não lido"?"#cd8848":["Aguardando análise","Contrato não encontrado"].includes(s)?"#d5ab44":s==="Conferência parcial"?"#e2c675":undefined,
+                                    height:Math.max(8,(n/largestStage)*72)+"%",
                                   }}
                                 >
                                   <span>{n}</span>
                                 </div>
                               </div>
                               <small>
-                                {s.replace(
-                                  "Aguardando informações",
-                                  "Aguardando info.",
-                                )}
+                                {demandStageLabel(s)}
                               </small>
                             </button>
                           );
                         })}
-                      </div>
+                      </div> : <p className="muted" role="status">Nenhuma demanda neste grupo.</p>}
                     </section>
                     <section className="summary-panel">
                       <span className="summary-symbol">
@@ -1542,29 +1563,21 @@ export function App() {
                   <section className="panel demand-panel">
                     <div className="panel-heading">
                       <div>
-                        <h2>Demandas que precisam de atenção</h2>
-                        <p>
-                          Priorize pendências e mantenha o fluxo em movimento.
-                        </p>
+                        <h2>{dashboardQueue==="all"?"Todas as demandas":dashboardGroup.label}</h2>
+                        <p>{dashboardDemands.length} demandas no grupo selecionado no gráfico.</p>
                       </div>
-                      <button
-                        className="text-button"
-                        onClick={() => {
-                          setPage("Demandas");
-                          setStage("");
-                          setDemandQueue("all");
-                        }}
-                      >
-                        Ver todas as demandas <ChevronRight size={16} />
+                      <button className="text-button" type="button" onClick={() => openDashboardDemands()}>
+                        Abrir lista de demandas <ChevronRight size={16} />
                       </button>
                     </div>
-                    {table(
-                      data.demands
-                        .filter(isOpenDemand)
-                        .sort((a: any, b: any) => a.due.localeCompare(b.due))
-                        .slice(0, 5),
+                    {dashboardDemands.length ? table(
+                      showAllDashboardDemands ? dashboardDemands : dashboardDemands.slice(0,5),
                       true,
-                    )}
+                    ) : <p className="muted">Nenhuma demanda para exibir neste grupo.</p>}
+                    {dashboardDemands.length>5&&<button className="text-button dashboard-list-more" type="button"
+                      aria-expanded={showAllDashboardDemands} onClick={()=>setShowAllDashboardDemands(value=>!value)}>
+                      {showAllDashboardDemands?"Mostrar só as 5 primeiras":`Mostrar todas as ${dashboardDemands.length} demandas`}
+                    </button>}
                   </section>
                   <div className="dashboard-note">
                     <ShieldCheck size={15} /> Dados fictícios para demonstração.
@@ -1576,7 +1589,7 @@ export function App() {
                 <>
                   <section className="panel filters">
                     <div className="glpi-queue-tabs" role="group" aria-label="Separar demandas pelo status do GLPI">
-                      {([ ["all","Todas"],["active","Abertas"],["open","Em andamento"],["pending","Pendentes no GLPI"],["solved","Solucionados"],["closed","Fechados"] ] as const).map(([key,label])=><button key={key} type="button" className={demandQueue===key?"primary":"secondary"} aria-pressed={demandQueue===key} onClick={()=>setDemandQueue(key)}>{label} ({data.demands.filter((d:any)=>matchesDemandQueue(d,key)).length})</button>)}
+                      {([ ["all","Todas"],["active","Abertas"],["open","Em andamento no GLPI"],["pending","Pendentes no GLPI"],["solved","Solucionados"],["closed","Fechados"] ] as const).map(([key,label])=><button key={key} type="button" className={demandQueue===key?"primary":"secondary"} aria-pressed={demandQueue===key} onClick={()=>setDemandQueue(key)}>{label} ({data.demands.filter((d:any)=>matchesDemandQueue(d,key)).length})</button>)}
                     </div>
                     <div className="filter-top">
                       <div className="search">
@@ -1594,11 +1607,11 @@ export function App() {
                       >
                         <option value="">Todas as etapas</option>
                         {listStages.map((s) => (
-                          <option key={s}>{s}</option>
+                          <option key={s} value={s}>{demandStageLabel(s)}</option>
                         ))}
                       </select>
                     </div>
-                    <p className="muted">Aguardando análise: nenhum documento lido. Conferência parcial: há leitura, mas ainda faltam dados ou verificações. Aguardando correção: erro identificado no preenchimento.</p>
+                    <p className="muted">Contrato não encontrado: nenhum contrato foi identificado nos anexos lidos. Contrato não lido: há um possível contrato, mas falta obter ou ler o arquivo.</p>
                     <details className="more-filters" open={!!(owner||priority||type||deadline)}>
                     <summary>Mais filtros</summary>
                     <div className="filter-row">
@@ -1675,7 +1688,7 @@ export function App() {
                     </details>
                   </section>
                   <ProcessingProgress demands={filtered} api={api} allowed={!!can('files')&&!!can('bank')}/>
-                  {['Aguardando análise','Conferência parcial','Aguardando correção'].includes(stage)&&can('files')&&can('bank')&&<ProcessingSummary stage={stage} demands={filtered} api={api}/>}
+                  {['Aguardando análise','Contrato não encontrado','Contrato não lido','Conferência parcial','Aguardando correção'].includes(stage)&&can('files')&&can('bank')&&<ProcessingSummary stage={['Contrato não encontrado','Contrato não lido'].includes(stage)?'Aguardando análise':stage} demands={filtered} api={api}/>}
                   <section className="panel">{table(filtered)}</section>
                   <p className="muted">
                     {filtered.length} demandas encontradas. Etapas são alteradas

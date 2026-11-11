@@ -21,6 +21,12 @@ export function recoverTextFields(text:string,existing:Fields):Fields {
  const locations=[...text.matchAll(/(?:^|\n)\s*(?:Cidade|Munic[íi]pio)\s*\/\s*UF\s*:?\s+([\p{L}][\p{L} .'-]{1,70}?)\s*\/\s*([A-Z]{2})(?=\s|$)/giu)]
   .map(m=>({city:m[1].trim(),uf:m[2].toUpperCase()})).filter(m=>!!fullStateName(m.uf));
  if(locations.length===1){found.cidade=[locations[0].city+' - '+locations[0].uf];found.estado=[fullStateName(locations[0].uf)!];}
+ // Some rental addenda print the supplier only in the signature table.
+ const signatures=[...text.matchAll(/(?:^|\n)[ \t]*_{8,}[ \t]{3,}_{8,}[ \t]*\r?\n[ \t]*KEDU[^\r\n]*?[ \t]{3,}([^\r\n]+)(?:\r?\n[ \t]*([^\r\n]+?))?\r?\n[ \t]*LOCAT[ÁA]RI[OA][ \t]{3,}LOCADOR[A]?[ \t]*(?:\r?\n|$)/gi)];
+ if(signatures.length===1){
+  const name=[signatures[0][1],signatures[0][2]].filter(Boolean).join(' ').replace(/\s+/g,' ').trim();
+  if(/\b(?:LTDA\.?|EIRELI|EPP|ME|S\s*\.\s*A\.?)$/i.test(name)&&plausibleFieldValue('razaoSocial',name))found.razaoSocial=[name];
+ }
  const totals=explicitContractTotals(text);if(totals.length&&!existing.valorTotal?.some(v=>v.trim()))found.valorTotal=totals;
  for(const part of [contextualLayoutFields(text),bankFields(text),qualificationFields(text,cnpj=>ownIdentity('cnpj',cnpj))])for(const [key,values] of Object.entries(part))found[key]=distinctRequestedValues(key,[...(found[key]||[]),...values]);
  const socialNames=distinctRequestedValues('razaoSocial',[

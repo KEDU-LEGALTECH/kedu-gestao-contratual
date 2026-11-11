@@ -17,17 +17,17 @@ export type Reading={version:number;text:string;fields:Record<string,string[]>;p
 export function readingFailure(problem:string):Reading{return {version:readerVersion,text:"",fields:{},problem,method:"inconclusiva",needsReview:false};}
 let queue:Promise<unknown>=Promise.resolve();
 /** Parsers and OCR run in a bounded child process; no remote OCR service. */
-export type ReadingRegion={page:number;x:number;y:number;width:number;height:number;rotation:number};
+export type ReadingRegion={page:number;x:number;y:number;width:number;height:number;rotation:number;identification?:boolean};
 export function validReadingRegion(region:ReadingRegion) {
  return region && Number.isInteger(region.page)&&region.page>=1&&region.page<=200&&[0,90,180,270].includes(region.rotation)&&[region.x,region.y,region.width,region.height].every(Number.isFinite)&&region.x>=0&&region.y>=0&&region.width>=0.02&&region.height>=0.02&&region.x+region.width<=1.000001&&region.y+region.height<=1.000001;
 }
-export async function readProcessingFile(bytes:Buffer,name:string,region?:ReadingRegion):Promise<Reading> {
+export async function readProcessingFile(bytes:Buffer,name:string,region?:ReadingRegion,identification=false):Promise<Reading> {
  const queued=performance.now();
  const task=async()=>{
   let release:(()=>void)|undefined,started:number|undefined;
   try{
    release=await acquireReadingLease();started=performance.now();
-   const reading=await readSingleFile(bytes,name,region);
+   const reading=await readSingleFile(bytes,name,region,identification);
    if(!reading.problem){
     const recovered=recoverTextFields(reading.text,reading.fields||{});
     reading.fields={...reading.fields,...recovered};
@@ -40,7 +40,7 @@ export async function readProcessingFile(bytes:Buffer,name:string,region?:Readin
  };
  const pending=queue.then(task,task);queue=pending.then(()=>{},()=>{});return pending;
 }
-async function readSingleFile(bytes:Buffer,name:string,region?:ReadingRegion):Promise<Reading> {
+async function readSingleFile(bytes:Buffer,name:string,region?:ReadingRegion,identification=false):Promise<Reading> {
  if(!bytes.length)return readingFailure("O arquivo recebido está vazio. Obtenha uma cópia legível.");
  if(bytes.length>20*1024*1024)return readingFailure("O arquivo excede o limite de leitura de 20 MB. Separe o documento em partes para conferência.");
  const detected=readingFilename(bytes,name);if(detected!==name)name=name.replace(/\.[^./\\]+$/,'')+'.'+detected.split('.').pop();
@@ -57,7 +57,7 @@ async function readSingleFile(bytes:Buffer,name:string,region?:ReadingRegion):Pr
   if(text.length>500000 || /\x00|\uFFFD/.test(text))return readingFailure("Texto muito grande ou codificação não reconhecida. Salve como UTF-8.");
   return {version:readerVersion,text,fields:fieldsFromLines(text.split(/\r?\n/).map(x=>x.replace(/[;\t]/g,": "))),problem:text.trim()?"":"Nenhum texto legível foi encontrado.",method:"Texto",needsReview:false};
  }
- const key=region?undefined:createHash("sha256").update(bytes).digest("hex")+"\0"+name;
+ const key=region||identification?undefined:createHash("sha256").update(bytes).digest("hex")+"\0"+name;
  const cached=key?cachedReading(key):undefined;
  if(cached)return {...cached,timings:{queueMs:0,readMs:0,shutdownMs:0,totalMs:0,cacheHit:true}};
  if(process.env.NODE_ENV!=='test'&&!process.env.NODE_TEST_CONTEXT&&freemem()<512*1024*1024)return {...readingFailure('Memória disponível insuficiente; leitura adiada para preservar a estabilidade.'),transient:true};
@@ -79,7 +79,7 @@ async function readSingleFile(bytes:Buffer,name:string,region?:ReadingRegion):Pr
   const onError=()=>finish({...readingFailure("O leitor local não pôde ser iniciado. Tente novamente."),transient:true},false);
   const onExit=()=>finish(partial?.text?{...interruptedReading(partial,'Leitura parcial: o leitor foi interrompido antes de concluir o arquivo.'),transient:true}:{...readingFailure("Não foi possível concluir a leitura deste arquivo. Confira se está íntegro e sem senha."),transient:true},false);
   child.on("message",onMessage);child.on("error",onError);child.on("exit",onExit);
-  child.send({bytes,name,region},error=>{if(error)onError();});
+  child.send({bytes,name,region,identification},error=>{if(error)onError();});
  });
  return task();
 }

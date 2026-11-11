@@ -1,8 +1,10 @@
 import {needsReadingRecovery} from './reading-recovery-policy.js';
 /** Exclusive file counts: a queued retry is not counted a second time as a failure. */
-export function fileProgress(doc:any,file:any,queue:any,active:any,targeted=false){
+export function fileProgress(doc:any,file:any,queue:any,active:any,targeted=false,excluded?:'support'|'superseded'|'unknown',needsWork?:boolean){
  let reading:any={};try{reading=JSON.parse(file?.extracted||'{}');}catch{}
- const recovery=needsReadingRecovery(file);
+ if(excluded)return {documentId:String(doc.id),name:file?.name||doc.name||'Anexo',state:excluded==='unknown'?'unidentified':'skipped',
+  detail:excluded==='unknown'?'Confira o tipo do arquivo na conversa do GLPI. A identificação inicial não confirmou um contrato.':excluded==='support'?'Anexo de apoio disponível na conversa do GLPI.':'Versão substituída, disponível na conversa do GLPI.'};
+ const recovery=needsWork??needsReadingRecovery(file);
  const state=active?.documentId===String(doc.id)?'running':
   (recovery||targeted)&&['queued','retry','running'].includes(queue?.state)?'queued':
   !recovery?'completed':file?.problem||reading.problem||reading.incomplete||queue?.state==='exhausted'?'failed':'waiting';

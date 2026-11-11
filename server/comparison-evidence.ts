@@ -1,3 +1,4 @@
+import {qualifiedCompanyName} from './qualification-reading.js';
 import {sameRequestedValue,distinctRequestedValues} from './request-expectations.js';
 import {repricingSchoolName} from './contextual-layout-fields.js';
 import {reportIdentity} from './comparison-profile.js';
@@ -61,7 +62,8 @@ export function hasDigitalField(reading:any,key:string,value:string) {
  if(!reading.problem&&/^XLSX(?: com OCR)?$/.test(reading.method||'')&&['cnpj','razaoSocial','nomeFantasia'].includes(key)&&reading.literalIdentityFields?.[key]?.length===1&&sameRequestedValue(key,reading.literalIdentityFields[key][0],value))return true;
  if(reading.problem||(reading.formulaCount||0)>0||!['Texto do PDF','PDF com OCR','DOCX','DOCX com OCR','ODT','ODT com OCR','PPTX','PPTX com OCR','XLSX','XLSX com OCR','Texto'].includes(reading.method||''))return false;
  const fields=withDocumentAddress(reading.digitalFields||{});
- return fields[key]?.length===1&&sameRequestedValue(key,fields[key][0],value);
+ const observed=key==='razaoSocial'?distinctRequestedValues(key,(fields[key]||[]).map(qualifiedCompanyName).filter(Boolean)):fields[key];
+ return observed?.length===1&&sameRequestedValue(key,observed[0],value);
 }
 
 /** Page/quote recovered from the original digital layer, not an OCR guess. */

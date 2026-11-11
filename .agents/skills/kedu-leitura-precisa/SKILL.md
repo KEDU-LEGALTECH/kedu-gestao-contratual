@@ -1,7 +1,7 @@
 ---
 name: kedu-leitura-precisa
 description: Use em anexos Kedu. Leia por campo, página e entidade.
-version: 1.3.0
+version: 1.6.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -18,20 +18,31 @@ Para ler contrato, aditivo, proposta, contraproposta, documento societário/cada
 
 ## Procedimento
 
-1. Confirmar demanda/GLPI, versão do chamado, anexos e campos aplicáveis. Para fila, carregar `kedu-triagem-documental`. Carregar `references/formatos-e-fontes.md` para escolher leitor e documento de origem.
-2. Preservar original. Identificar extensão, tipo real, tamanho, proteção e contagem de páginas/abas/slides/quadros quando disponível. Não contornar senha, rejeição de conteúdo ativo ou limite de segurança. Conferir no código os limites do leitor escolhido; não aplicar indiscriminadamente limites antigos do README.
-3. Recuperar texto digital com localização antes de OCR. Usar OCR/visão local somente nas páginas e regiões necessárias, respeitando a trava/fila existente; não disparar leitores pesados em paralelo. Não substituir leitura saudável ou revisão humana por tentativa nova sem evidência de ganho.
-4. No MCP: usar `read_project_document` com path e rótulos de campos; em PDF fornecer no máximo seis page_numbers por chamada e registrar cobertura. Para lote usar read_pending_batch em grupos de 1 a 3 e os offsets definidos pela triagem. O MCP é auxiliar e somente leitura do banco.
-5. Extrair sem ver os valores esperados do GLPI quando possível. Pedir apenas os nomes dos campos ao leitor. Depois vincular cada valor ao rótulo/contexto, entidade e papel. Nunca preencher encontrado a partir do solicitado, nem selecionar candidato porque coincide com o GLPI.
-6. Registrar campo, valor literal, entidade, papel, arquivo/document_id, versão/hash conhecido, localizador real, trecho, método e limitações. Se hash/página não estiver disponível, registrar null ou desconhecido, não inventar. Página conhecida não substitui prova visual de OCR duvidoso.
-7. Conferir candidatos no original quando houver OCR incerto, tabela, imagem, nome comercial, carimbo, manuscrito ou conflito. Concordância de duas respostas do mesmo modelo não constitui prova independente. Resposta com citação fabricada ou sem valor verificável deve ser recusada.
-8. Seguir os blocos mínimos: identificação das partes; sede/endereço cadastral; representante e poderes; titular e dados bancários; condições financeiras; vigência e datas; tipo de instrumento e vínculo matriz/aditivo; anexos e assinatura declarada. Ler apenas campos aplicáveis ao pedido, mas não ignorar páginas que alterem seu significado.
-9. Conferir anexos complementares e versões antes de declarar não localizado. Distinguir não baixado, página pendente, fonte ilegível, valor sem associação e dado não informado após exame completo das fontes pertinentes. Nenhum deles equivale a zero, vazio confirmado ou divergência.
-10. Encaminhar a extração para `kedu-conferencia-documental` com duas informações separadas: se há ao menos um anexo vigente com texto aproveitável e quais campos/páginas/trechos ainda precisam de leitura. Uma busca dirigida pode resolver o campo e servir de evidência para **Confere** sem comprovar leitura integral do anexo. Para OCR, registrar o trecho original da extração e a associação ao campo para que a comparação possa resolver a pendência automaticamente.
+1. Confirmar demanda/GLPI, versão do chamado, anexos e campos aplicáveis. Para fila, carregar `kedu-triagem-documental`. Carregar `references/formatos-e-fontes.md` para escolher leitor, papel do anexo (`attachmentRole`) e matriz de campos por tipo de demanda.
+2. Preservar original. Identificar extensão, tipo real, tamanho, proteção e contagem de páginas/abas/slides/quadros quando disponível. Não contornar senha, rejeição de conteúdo ativo ou limite de segurança. Conferir no código os limites do leitor escolhido; não aplicar indiscriminadamente limites antigos do README. Reconhecer modelos em branco com marcadores (`{{...}}` ou `<%...%>`, 3 ou mais ocorrências; `server/comparison-profile.ts`) sem tentar extrair deles dados cadastrais ou bancários.
+3. Filtrar o que precisa ser lido pelo papel do anexo (`server/reading-policy.ts`) antes de gastar OCR:
+   - Quando a tarefa for conferir o contrato, use `server/contract-reading-scope.ts` para distinguir instrumento, candidato a contrato e apoio. Use o título e o conteúdo inicial para classificar o anexo. Contrato social, cartão CNPJ, propostas e comprovantes ficam como apoio. Preserve o acesso a eles e à conversa do GLPI. Extraia campos para comparação somente do instrumento contratual vigente.
+   - Quando o escopo incluir leitura de apoio, aplique as regras por papel abaixo. Para `registration` (Cartão CNPJ), leia apenas `cnpj`, `razaoSocial`, `nomeFantasia`, `endereco`, `rua`, `numero`, `bairro`, `cep`, `cidade`, `estado`.
+   - `bank` (Comprovante bancário / tela de conta): ler apenas `banco`, `agencia`, `conta`, `titularConta`, `documentoTitular`, `pix`.
+   - `report` (Planilha de descredenciamento / relatório): ler apenas a identificação da escola (`razaoSocial` e `cnpj`); nunca adotar valores financeiros ou fórmulas do relatório como cláusula contratual.
+   - `counterproposal` e `simulation`: não adotar valores automaticamente como condição contratada; em demandas de `Parcelamento`, ler na tabela de simulação apenas a linha correspondente à quantidade de parcelas solicitada (`server/installment-table.ts`) e exigir conferência com o instrumento contratual.
+4. Recuperar texto digital (`hasDigitalField` / `Docling — estrutura do PDF`) com localização antes de OCR. Usar OCR/visão local somente nas páginas e regiões necessárias (`targetedReadingTargets` em `server/targeted-reading.ts`), apenas para campos com status `missing` ou `review` que pertençam ao anexo, ignorando revisões estruturais (`conflicting_values`, `trade_name`, `qualified_name`, `spreadsheet_calculation`, `invalid_identifier`). Respeitar a trava/fila existente; não disparar leitores pesados em paralelo nem substituir leitura digital/humana saudável por tentativa nova sem evidência de ganho.
+5. No MCP: usar `read_project_document` com path e rótulos de campos; em PDF fornecer no máximo seis page_numbers por chamada e registrar cobertura. Para lote usar read_pending_batch em grupos de 1 a 3 e os offsets definidos pela triagem. O MCP é auxiliar e somente leitura do banco.
+6. Extrair sem ver os valores esperados do GLPI quando possível. Pedir apenas os nomes dos campos ao leitor. Depois vincular cada valor ao rótulo/contexto, entidade, papel da parte e papel do anexo (`role`). Nunca preencher encontrado a partir do solicitado, nem selecionar candidato porque coincide com o GLPI.
+7. Registrar campo, valor literal, entidade, papel, `papel_anexo`, arquivo/document_id, versão/hash conhecido, localizador real, trecho, método e limitações. Se hash/página não estiver disponível, registrar null ou desconhecido, não inventar. Página conhecida não substitui prova visual de OCR duvidoso.
+8. Conferir candidatos no original quando houver OCR incerto, tabela, imagem, nome comercial, carimbo, manuscrito ou conflito. Concordância de duas respostas do mesmo modelo não constitui prova independente. Resposta com citação fabricada ou sem valor verificável deve ser recusada.
+9. Restringir a leitura aos campos exigidos pelo tipo/subtipo da demanda (ver matriz em `references/formatos-e-fontes.md`):
+   - **Descredenciamento**: apenas `razaoSocial` e `cnpj`.
+   - **Contrato educacional / Pais x Escola**: verificar a cláusula de cessão de créditos à Kedu (`clausulaCessao`), distinguindo cessão expressa à Kedu de cessão genérica a terceiros, sem exigir dados cadastrais ausentes da escola.
+   - **Aditivo** e **Contrato de garantia**: ler os blocos exigidos pelo subtipo/modalidade em `shared/official-fields.ts` e as páginas que alterem seu significado.
+10. Conferir as versões e as fontes pertinentes ao escopo antes de declarar não localizado. Na conferência contratual, examine o instrumento vigente e mantenha os apoios disponíveis para consulta. Distinguir não baixado, página pendente, fonte ilegível, valor sem associação e dado não informado após exame completo das fontes pertinentes. Nenhum deles equivale a zero, vazio confirmado ou divergência.
+11. Encaminhar a extração para `kedu-conferencia-documental` com duas informações separadas: se há ao menos um anexo vigente com texto aproveitável e quais campos/páginas/trechos ainda precisam de leitura. Uma busca dirigida pode resolver o campo e servir de evidência para **Confere** sem comprovar leitura integral do anexo. Para OCR, registrar o trecho original da extração e a associação ao campo para que a comparação possa resolver a pendência automaticamente.
 
 ## Identidade em contratos e planilhas
 
 Quando o mesmo anexo trouxer mais de uma empresa ou o identificador aparecer no texto mas faltar na tabela, consulte **Identidade por parte ou aba** em [Formatos e documentos de origem](references/formatos-e-fontes.md). Entregue à conferência um par de razão social e CNPJ por entidade, com os respectivos trechos ou células.
+
+Em cartão cadastral, leia o cabeçalho e a linha de valores em conjunto. O OCR pode trocar o hífen do CNPJ por ponto ou espaço. Use o contexto de **Número de inscrição** para localizar a ocorrência e preserve os dígitos na transcrição.
 
 ## Armadilhas
 

@@ -12,6 +12,8 @@ test('only confirmed differences require correction; missing readings and admini
  assert.equal(processingStatus([{field:'templateApproval'}],[{status:'matches'}]),'Sem erros');
  assert.equal(processingStatus([{field:'template'}],[{status:'matches'}]),'Sem erros');
  assert.equal(processingStatus([],[{status:'ambiguous'}]),'Aguardando análise');
+ assert.equal(processingStatus([],[{status:'ambiguous',reviewReason:{code:'reference_conflict'}}],true),'Aguardando correção');
+ assert.equal(processingStatus([],[{status:'ambiguous',reviewReason:{code:'invalid_identifier'}}],true),'Conferência parcial');
  assert.equal(processingStatus([{field:'cnpj'}],[{status:'missing'}]),'Aguardando análise');
  assert.equal(processingStatus([],[{status:'different',readingPending:true}]),'Aguardando análise');
  assert.equal(processingStatus([{field:'review:another'}],[{status:'different',readingPending:false}]),'Aguardando correção');

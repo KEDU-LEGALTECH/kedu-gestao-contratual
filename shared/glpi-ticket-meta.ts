@@ -15,6 +15,17 @@ export const demandDisplayStage=(d:DemandOrigin&{processing?:{status?:string}|nu
  if(isGlpiClosed(d.glpiOrigin?.status))return "Fechado no GLPI";
  return d.processing?.status||d.stage||'';
 };
+export function demandContractStage(d:DemandOrigin&{processing?:{status?:string;contractStage?:string}|null}){
+ const stage=demandDisplayStage(d);
+ return stage==="Aguardando análise" && d.processing?.contractStage ? d.processing.contractStage : stage;
+}
+const stageLabels:Record<string,string>={
+ "Solucionado no GLPI":"Chamado solucionado",
+ "Fechado no GLPI":"Chamado finalizado",
+ "Conferência parcial":"Contrato com pendências",
+ "Analisando":"Contrato em análise",
+};
+export const demandStageLabel=(stage:string)=>stageLabels[stage]||stage;
 export type DemandQueue="all"|"active"|"open"|"pending"|"solved"|"closed";
 export const matchesDemandQueue=(d:DemandOrigin,queue:DemandQueue)=>queue==="all" || (queue==="active"?isOpenDemand(d):queue==="pending"?isGlpiPending(d.glpiOrigin?.status):queue==="solved"?isGlpiSolved(d.glpiOrigin?.status):queue==="closed"?isGlpiClosed(d.glpiOrigin?.status):["1","2","3"].includes(String(d.glpiOrigin?.status)));
 export const glpiPriorityRank=(value:unknown)=>priorities[String(value)]?Number(value):0;

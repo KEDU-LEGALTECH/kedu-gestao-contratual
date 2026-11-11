@@ -3,7 +3,7 @@ import React, { useEffect, useState, useRef } from "react";
 import { RefreshCw, TriangleAlert, Link2, Inbox } from "lucide-react";
 import { organizationAllowed } from "../shared/organization-policy";
 import {fieldLabels,officialInputs} from '../shared/official-fields';
-import {glpiStatusLabel,glpiPriorityLabel,isGlpiPending,isGlpiSolved,glpiPriorityRank} from "../shared/glpi-ticket-meta";
+import {glpiStatusLabel,glpiPriorityLabel,matchesDemandQueue,glpiPriorityRank,type DemandQueue} from "../shared/glpi-ticket-meta";
 type Props = {
   data: any;
   can: (p: string) => boolean;
@@ -28,7 +28,7 @@ const inWeek = () => new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 
 /** Read-only GLPI queue: a person confirms school, type and contract before a demand exists. */
 export function GlpiPage({ data, can, action, api, busy, open }: Props) {
   const [search,setSearch]=useState('');
-  const [queue,setQueue]=useState<"regular"|"pending"|"solved">("regular");
+  const [queue,setQueue]=useState<Exclude<DemandQueue,"active">>("open");
   const [syncing,setSyncing]=useState(false),[statusError,setStatusError]=useState('');
   const refreshing=useRef(false);
   const [status, setStatus] = useState<any>(null),
@@ -60,7 +60,15 @@ export function GlpiPage({ data, can, action, api, busy, open }: Props) {
   }
   const ticket = tickets.find((t) => t.external_id === selected);
   const normalize=(value:string)=>value.normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase();
-  const visible=tickets.filter(t=>(queue==="pending"?isGlpiPending(t.status):queue==="solved"?isGlpiSolved(t.status):!isGlpiPending(t.status)&&!isGlpiSolved(t.status))&&normalize([t.external_id,t.title,t.analysis.fields.razaoSocial?.value,t.analysis.fields.cnpj?.value].join(' ')).includes(normalize(search.trim()))).sort((a,b)=>glpiPriorityRank(b.priority)-glpiPriorityRank(a.priority)||b.external_id.localeCompare(a.external_id,undefined,{numeric:true}));
+  const groups = [
+    ["open","Em andamento no GLPI"],
+    ["pending","Pendentes no GLPI"],
+    ["solved","Chamados solucionados"],
+    ["closed","Chamados finalizados"],
+    ["all","Todos os chamados"],
+  ] as const;
+  const inQueue=(ticket:any,key:typeof queue)=>matchesDemandQueue({glpiOrigin:ticket},key);
+  const visible=tickets.filter(t=>inQueue(t,queue)&&normalize([t.external_id,t.title,t.analysis.fields.razaoSocial?.value,t.analysis.fields.cnpj?.value].join(' ')).includes(normalize(search.trim()))).sort((a,b)=>glpiPriorityRank(b.priority)-glpiPriorityRank(a.priority)||b.external_id.localeCompare(a.external_id,undefined,{numeric:true}));
   return (
     <>
       <section className="panel glpi-sync-panel">
@@ -105,14 +113,15 @@ export function GlpiPage({ data, can, action, api, busy, open }: Props) {
       <div className="detail-grid">
         <section className="panel">
           <div className="panel-heading">
-            <h2>{queue==="pending"?"Chamados pendentes no GLPI":queue==="solved"?"Chamados solucionados":"Demais chamados"}</h2>
+            <h2>{groups.find(([key])=>key===queue)?.[1]}</h2>
             <span className="counter">{visible.length}</span>
           </div>
           <div className="glpi-queue-tabs" role="group" aria-label="Separar chamados por status do GLPI">
-            <button className={queue==="regular"?"primary":"secondary"} aria-pressed={queue==="regular"} onClick={()=>{setQueue("regular");setSelected("");}}>Demais chamados ({tickets.filter(t=>!isGlpiPending(t.status)&&!isGlpiSolved(t.status)).length})</button>
-            <button className={queue==="pending"?"primary":"secondary"} aria-pressed={queue==="pending"} onClick={()=>{setQueue("pending");setSelected("");}}>Pendentes no GLPI ({tickets.filter(t=>isGlpiPending(t.status)).length})</button>
-            <button className={queue==="solved"?"primary":"secondary"} aria-pressed={queue==="solved"} onClick={()=>{setQueue("solved");setSelected("");}}>Solucionados ({tickets.filter(t=>isGlpiSolved(t.status)).length})</button>
+            {groups.map(([key,label])=><button type="button" key={key} className={queue===key?"primary":"secondary"} aria-pressed={queue===key} onClick={()=>{setQueue(key);setSelected("");}}>
+              {label} ({tickets.filter(t=>inQueue(t,key)).length})
+            </button>)}
           </div>
+          {queue==="open"&&<p className="muted">Chamados novos e em atendimento aparecem nesta lista, em ordem de prioridade do GLPI.</p>}
           <label>Buscar chamado<input type="search" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Número GLPI, organização ou CNPJ"/></label>
           <p className="muted">Selecione um chamado para ver o pedido e os documentos. A conferência do preenchimento fica na demanda vinculada.</p>
           {!visible.length&&<p role="status">Nenhum chamado encontrado neste filtro.</p>}

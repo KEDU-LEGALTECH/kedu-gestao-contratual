@@ -290,7 +290,7 @@ function xml(source:string) {
  if(/<!DOCTYPE|<!ENTITY/i.test(source))throw Error("XML com entidades não suportado.");
  return new DOMParser({onError:()=>{throw Error("XML inválido.");}}).parseFromString(source,"application/xml");
 }
-async function office(bytes:Buffer,name:string,progress?:(reading:Reading)=>void) {
+async function office(bytes:Buffer,name:string,progress?:(reading:Reading)=>void,identification=false) {
  preflight(bytes);const zip=new PizZip(bytes),extension=extname(name).toLowerCase();
  for(const f of Object.values(zip.files))if(/vbaProject|embeddings|activeX/i.test(f.name))throw Error("Arquivo com conteúdo ativo requer conferência manual.");
  let text="",formulaCount=0,sheet:ReturnType<typeof readSpreadsheet>|undefined;
@@ -309,6 +309,7 @@ async function office(bytes:Buffer,name:string,progress?:(reading:Reading)=>void
  const incomplete=text.length>maxText;
  if(incomplete)text=text.slice(0,maxText).replace(/\n[^\n]*$/,'');
  const native={...result(text,extension.slice(1).toUpperCase()),needsReview:!!text.trim(),incomplete,warnings:[...(incomplete?['Leitura parcial: o documento excedeu o limite de texto. O trecho já lido foi preservado; envie o restante em partes para concluir a conferência.']:[]),...(formulaCount?[`${formulaCount} célula(s) com fórmulas foram omitidas da extração. As fórmulas não foram executadas e seus resultados salvos não foram adotados${sheet&&Object.keys(sheet.calculatedFields).length?'; os resultados salvos aparecem separados apenas para conferência':''}. Confira a planilha original; para analisar os resultados, envie uma cópia com valores conferidos.`]:[]),...(sheet?.hiddenSheets.length?[`Aba(s) oculta(s) não usadas para identificar campos: ${sheet.hiddenSheets.join(', ')}. O texto delas aparece abaixo para consulta.`]:[])],formulaCount};
+ if(identification)return {...native,text:native.text.slice(0,10000),fields:{}};
  if(sheet)native.fields=sheet.fields;
  const embedded=Object.values(zip.files).filter(f=>/^(?:Pictures|ppt\/media|xl\/media)\/.+\.(png|jpe?g|webp|bmp|tiff?)$/i.test(f.name));
  if(embedded.length>30)throw Error('Arquivo contém mais de 30 imagens. Divida o documento.');
@@ -336,7 +337,13 @@ export async function readDocumentRegion(bytes:Buffer,name:string,region:Reading
   try {
    const document=await loading.promise;
    if(document.numPages>maxPdfPages||region.page>document.numPages)throw Error('Página indisponível. Use um PDF com até 200 páginas.');
-   const page=await document.getPage(region.page),base=page.getViewport({scale:1});
+   const page=await document.getPage(region.page);
+   if(region.identification){
+    const content=await page.getTextContent();
+    const text=content.items.map(item=>'str' in item?item.str+(item.hasEOL?'\n':' '):'').join('').trim().slice(0,10000);
+    if(text.length>=80)return {version:readerVersion,text,fields:{},problem:'',method:'Identificação por texto do PDF',needsReview:false};
+   }
+   const base=page.getViewport({scale:1});
    const viewport=page.getViewport({scale:Math.min(3,3200/Math.max(base.width,base.height))});
    const canvas=createCanvas(Math.ceil(viewport.width),Math.ceil(viewport.height));
    await page.render({canvas:canvas as any,canvasContext:canvas.getContext('2d') as any,viewport}).promise;
@@ -352,7 +359,7 @@ export async function readDocumentRegion(bytes:Buffer,name:string,region:Reading
  const reading=await image(cropped);
  return {...reading,needsReview:true,method:'OCR de região',warnings:[`Trecho da página ${region.page}. Resultado auxiliar: confira no original antes de corrigir qualquer campo.`]};
 }
-export async function readDocument(bytes:Buffer,name:string,progress?:(reading:Reading)=>void):Promise<Reading> {
+export async function readDocument(bytes:Buffer,name:string,progress?:(reading:Reading)=>void,identification=false):Promise<Reading> {
  const extension=extname(name).toLowerCase();
  if(extension==='.docx'){
   const native=extractProcessingFile(bytes,name);
@@ -380,12 +387,12 @@ export async function readDocument(bytes:Buffer,name:string,progress?:(reading:R
   return pdf(bytes,progress,false,false,name);
  }
  if(/\.(png|jpe?g|webp|tiff?|bmp|gif)$/i.test(extension))return image(bytes,name);
- if([".odt",".xlsx",".pptx"].includes(extension))return office(bytes,name,progress);
+ if([".odt",".xlsx",".pptx"].includes(extension))return office(bytes,name,progress,identification);
  if(extension===".doc") {
   if(bytes.subarray(0,8).toString("hex")!=="d0cf11e0a1b11ae1")throw Error("Arquivo DOC antigo inválido. Não basta renomear a extensão.");
   const WordExtractor=require("word-extractor"),doc=await new WordExtractor().extract(bytes);
   const text=[doc.getBody(),doc.getHeaders(),doc.getFootnotes(),doc.getEndnotes()].filter(Boolean).join("\n");
-  return {...result(text,"Word DOC"),needsReview:!!text.trim()};
+  return {...result(identification?text.slice(0,10000):text,"Word DOC"),needsReview:!!text.trim()};
  }
  throw Error("Formato sem leitor disponível.");
 }

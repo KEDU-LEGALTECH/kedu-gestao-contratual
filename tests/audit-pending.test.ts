@@ -8,7 +8,7 @@ import express from 'express';
 process.env.DATABASE_PATH=join(mkdtempSync(join(tmpdir(),'kedu-audit-')),'test.sqlite');
 process.env.NODE_ENV='test';process.env.DEMO_SEED='false';process.env.GLPI_MODE='demo';
 const {all,one,run,now}=await import('../server/db.js');
-const {buildProcessingPlan,ensureProcessing,scheduleContractProcessing}=await import('../server/contract-processing.js');
+const {buildProcessingPlan,ensureProcessing,scheduleContractProcessing,processContract,processingFileProgress}=await import('../server/contract-processing.js');
 const {processingStatus}=await import('../server/processing-status.js');
 const {registerProcessingRoutes}=await import('../server/processing-routes.js');
 const {supersededDocuments}=await import('../server/document-versions.js');
@@ -30,26 +30,120 @@ function file(did:string,documentId:string,name:string,reading:any,problem=''){
  const extracted={version:4,text:'',fields:{},problem,method:'Texto do PDF',pages:1,needsReview:false,...reading};
  run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)',did+'-'+documentId,did,documentId,'hash-'+did,name,'application/pdf',Buffer.from('conteudo '+documentId),JSON.stringify(extracted),problem,now());
 }
-const contract={text:'CONTRATADA: Escola Teste Ltda, inscrita no CNPJ '+VALID,fields:{razaoSocial:['Escola Teste Ltda'],cnpj:[VALID]},digitalFields:{razaoSocial:['Escola Teste Ltda'],cnpj:[VALID]}};
+const contract={text:'CONTRATO DE PRESTAÇÃO DE SERVIÇOS\nCONTRATADA: Escola Teste Ltda, inscrita no CNPJ '+VALID,fields:{razaoSocial:['Escola Teste Ltda'],cnpj:[VALID]},digitalFields:{razaoSocial:['Escola Teste Ltda'],cnpj:[VALID]}};
 const ocrPhoto={text:'Foto de uma reunião, sem dados cadastrais.',method:'OCR de imagem',needsReview:true,confidence:90};
 
-test('CNPJ da contratada lido com dígitos inválidos aparece com evidência e continua pendente',()=>{
+test('CNPJ da contratada compara os 14 dígitos quando há evidência da parte',()=>{
  const invalid='11.444.777/0001-62';
- const text=`CONTRATANTE: KEDU LTDA, inscrita no CNPJ 45.543.580/0001-00.
+ const text=`CONTRATO DE PRESTAÇÃO DE SERVIÇOS
+CONTRATANTE: KEDU LTDA, inscrita no CNPJ 45.543.580/0001-00.
 CONTRATADA: Escola Teste Ltda, inscrita no CNPJ ${invalid}.
 AGENTE: Outra Empresa Ltda, inscrita no CNPJ 05.868.278/0001-07.`;
- for(const [id,expected,status] of [['printed-invalid-reference',invalid,'ambiguous'],['printed-invalid-document',VALID,'review']]){
+ for(const [id,expected,status] of [['printed-invalid-reference',invalid,'matches'],['printed-invalid-document',VALID,'review'],['printed-invalid-ocr',invalid,'ambiguous']]){
   demand(id,[{id:'1',name:'Contrato.docx'}],{cnpj:expected});
-  file(id,'1','Contrato.docx',{text,method:'DOCX'});
+  const uncertain=id==='printed-invalid-ocr';
+  file(id,'1','Contrato.docx',{text,method:uncertain?'DOCX com OCR':'DOCX',needsReview:uncertain});
   const plan=buildProcessingPlan(id)!;
   const row=plan.comparisons.find(c=>c.field==='cnpj')!;
   assert.equal(row.found,invalid);
   assert.equal(row.status,status);
-  assert.equal(pendingReason(row)?.code,'invalid_identifier');
+  assert.equal(pendingReason(row)?.code,status==='matches'?undefined:'invalid_identifier');
   assert.match(row.evidence[0].excerpt,/Escola Teste Ltda/);
   assert.equal(plan.issues.some(i=>i.field.startsWith('review:parties:')),false);
-  assert.equal(processingStatus(plan.issues,plan.comparisons,true),'Conferência parcial');
+  assert.equal(processingStatus(plan.issues,plan.comparisons,true),status==='matches'?'Sem erros':'Conferência parcial');
  }
+ demand('printed-invalid-other-party',[{id:'1',name:'Contrato.docx'}],{cnpj:invalid});
+ file('printed-invalid-other-party','1','Contrato.docx',{text:text.replace('CONTRATADA: Escola Teste Ltda','CONTRATADA: Outra Escola Ltda'),method:'DOCX'});
+ assert.equal(buildProcessingPlan('printed-invalid-other-party')!.comparisons.find(c=>c.field==='cnpj')?.status,'ambiguous');
+});
+
+test('Conferência contratual: apoio com valores iguais não substitui o contrato',()=>{
+ demand('only-support',[{id:'1',name:'Contrato social.pdf'}]);
+ file('only-support','1','Contrato social.pdf',{...contract,text:'CONTRATO SOCIAL\n'+contract.text});
+ const plan=buildProcessingPlan('only-support')!;
+ assert.equal(plan.issues.find(i=>i.field==='contractMissing')?.label,'Contrato não encontrado');
+ assert.equal(plan.comparisons.length,0);
+ assert.equal(plan.files[0].contractForComparison,false);
+});
+
+test('Conferência contratual: só o contrato fornece valores para a comparação',()=>{
+ demand('contract-and-support',[{id:'1',name:'instrumento.pdf'},{id:'2',name:'Cartão CNPJ.pdf'}]);
+ file('contract-and-support','1','instrumento.pdf',contract);
+ file('contract-and-support','2','Cartão CNPJ.pdf',{...contract,text:'CARTÃO CNPJ\n'+contract.text,fields:{...contract.fields,razaoSocial:['Outra Empresa Ltda']}});
+ const plan=buildProcessingPlan('contract-and-support')!;
+ assert.deepEqual(plan.files.filter(f=>f.contractForComparison).map(f=>f.name),['instrumento.pdf']);
+ assert.equal(plan.comparisons.find(c=>c.field==='razaoSocial')?.status,'matches');
+ assert.equal(plan.comparisons.find(c=>c.field==='cnpj')?.status,'matches');
+});
+
+test('Conferência contratual: contrato não obtido é diferente de contrato não encontrado',()=>{
+ demand('contract-pending',[{id:'1',name:'1º Termo Aditivo.pdf'}]);
+ const plan=buildProcessingPlan('contract-pending')!;
+ assert.equal(plan.issues.find(i=>i.field==='file:1')?.label,'Contrato não lido');
+ assert.ok(!plan.issues.some(i=>i.field==='contractMissing'));
+});
+
+test('Fila contratual: planilha e aditivo societário ficam disponíveis sem download automático',async()=>{
+ const id='support-outside-queue';
+ demand(id,[{id:'1',name:'Proposta de Adiantamento.xlsx'},{id:'2',name:'9º Aditivo ao Contrato Social.pdf'},{id:'3',name:'Termo Anexo.pdf'}]);
+ file(id,'3','Termo Anexo.pdf',{text:'ANEXO I - Demonstrativo de Antecipação'});
+ await processContract(id,null,async()=>{assert.fail('Anexo de apoio não deve ser baixado pela fila');});
+ const plan=buildProcessingPlan(id)!;
+ assert.equal(plan.issues.find(i=>i.field==='contractMissing')?.label,'Contrato não encontrado');
+ assert.equal(plan.files.length,1);
+ const progress=processingFileProgress(id);
+ assert.deepEqual(progress.files.map((f:{state:string})=>f.state),['skipped','skipped','skipped']);
+ assert.equal(JSON.parse(one('SELECT payload FROM glpi_tickets WHERE external_id=?',id).payload).documents.length,3);
+});
+
+test('Fila contratual: prioriza contrato, identifica genéricos e evita repetir tipo incerto',async()=>{
+ const id='scoped-reading-queue';
+ demand(id,[{id:'1',name:'arquivo.txt'},{id:'2',name:'Contrato.txt'},{id:'3',name:'planilha.xlsx'}]);
+ const visited:string[]=[];
+ const download=async(_ticket:string,doc:string)=>{
+  visited.push(doc);
+  const text=doc==='2'?contract.text+'\nRAZÃO SOCIAL: Escola Teste Ltda\nCNPJ: '+VALID:'Texto sem identificação do documento.';
+  return {bytes:Buffer.from(text),name:doc==='2'?'Contrato.txt':'arquivo.txt',mime:'text/plain'};
+ };
+ await processContract(id,null,download);
+ await processContract(id,null,download);
+ assert.deepEqual(visited,['2','1']);
+ assert.deepEqual(processingFileProgress(id).files.map((f:{state:string})=>f.state),['unidentified','completed','skipped']);
+ assert.equal(buildProcessingPlan(id)!.comparisons.find(c=>c.field==='cnpj')?.status,'matches');
+});
+
+test('Fila contratual: arquivo genérico com título de contrato entra na conferência',async()=>{
+ const id='generic-contract';
+ demand(id,[{id:'1',name:'arquivo.txt'}]);
+ await processContract(id,null,async()=>({bytes:Buffer.from(contract.text+'\nRAZÃO SOCIAL: Escola Teste Ltda\nCNPJ: '+VALID),name:'arquivo.txt',mime:'text/plain'}));
+ assert.equal(buildProcessingPlan(id)!.files[0].contractForComparison,true);
+});
+
+test('Qualificação digital separa título do distrato e nome da empresa',()=>{
+ const id='fused-qualification';
+ const name='Escola Teste Ltda';
+ const fused='Cláusula Primeira – Do objeto INSTRUMENTO PARTICULAR DE RESCISÃO CONTRATUAL '+name;
+ demand(id,[{id:'1',name:'Distrato.pdf'}]);
+ file(id,'1','Distrato.pdf',{text:'INSTRUMENTO PARTICULAR DE RESCISÃO CONTRATUAL '+name+', sociedade, inscrita no CNPJ sob o nº '+VALID,fields:{razaoSocial:[fused],cnpj:[VALID]},digitalFields:{razaoSocial:[fused],cnpj:[VALID]}});
+ const row=buildProcessingPlan(id)!.comparisons.find(c=>c.field==='razaoSocial');
+ assert.equal(row?.found,name);
+ assert.equal(row?.status,'matches');
+});
+test('CNPJ em duas linhas mantém o vínculo com a contratada',()=>{
+ const id='wrapped-party';
+ demand(id,[{id:'1',name:'Contrato.pdf'}]);
+ file(id,'1','Contrato.pdf',{text:'CONTRATO DE PRESTAÇÃO DE SERVIÇOS\nCONTRATADA: Escola Teste Ltda, inscrita no CNPJ sob nº 11.444.777/0001-\n61.\nCONTRATANTE: KEDU, inscrita no CNPJ 45.543.580/0001-00.\nCLÁUSULA PRIMEIRA – OBJETO\nCNPJ da testemunha: 05.868.278/0001-07'});
+ const plan=buildProcessingPlan(id)!;
+ assert.equal(plan.files[0].selectedParty?.name,'Escola Teste Ltda');
+ assert.equal(plan.comparisons.find(c=>c.field==='cnpj')?.status,'matches');
+});
+test('Assinatura da locadora recupera o nome sem usar o CNPJ da locatária',()=>{
+ const id='rental-signature';
+ demand(id,[{id:'1',name:'Aditivo.pdf'}]);
+ file(id,'1','Aditivo.pdf',{text:'ADITIVO DE LOCAÇÃO\nLOCATÁRIO KEDU CNPJ: 45.543.580/0001-00\n____________   ____________\nKEDU SERVIÇOS LTDA   Escola Teste\nLtda\nLOCATÁRIO   LOCADOR\nTestemunhas:'});
+ const plan=buildProcessingPlan(id)!;
+ assert.equal(plan.comparisons.find(c=>c.field==='razaoSocial')?.status,'matches');
+ assert.equal(plan.comparisons.find(c=>c.field==='cnpj')?.status,'missing');
 });
 
 test('Versão: só substitui com mesmo nome e extensão e declaração explícita de revisão',()=>{
@@ -80,7 +174,7 @@ test('Versão clara: o arquivo antigo fica visível, mas não gera divergência 
 test('Versão sem vínculo claro continua como escolha humana',()=>{
  const docs=[{id:'1',name:'Contrato A.docx'},{id:'2',name:'Minuta B.docx'}];
  demand('no-link',docs);
- file('no-link','1','Contrato A.docx',{text:'x',method:'DOCX',fields:{razaoSocial:['Outra Escola Ltda']},digitalFields:{razaoSocial:['Outra Escola Ltda']}});
+ file('no-link','1','Contrato A.docx',{text:'CONTRATO DE PRESTAÇÃO DE SERVIÇOS\nRAZÃO SOCIAL: Outra Escola Ltda',method:'DOCX',fields:{razaoSocial:['Outra Escola Ltda']},digitalFields:{razaoSocial:['Outra Escola Ltda']}});
  file('no-link','2','Minuta B.docx',{...contract,method:'DOCX'});
  const row=buildProcessingPlan('no-link')!.comparisons.find((c:any)=>c.field==='razaoSocial');
  assert.equal(row.status,'review');assert.equal(row.reviewReason.code,'conflicting_values');
@@ -91,21 +185,21 @@ test('Arquivo lido sem campo aproveitado não bloqueia se os campos estão resol
  const plan=buildProcessingPlan('unused')!;
  assert.ok(plan.comparisons.every((c:any)=>c.status==='matches'),JSON.stringify(plan.comparisons.map((c:any)=>[c.field,c.status])));
  assert.ok(!plan.issues.some((i:any)=>i.field==='review:unused-2'));
- assert.equal(plan.files.find((f:any)=>f.id==='unused-2')!.notUsed,true);
+ assert.equal(plan.files.find((f:any)=>f.id==='unused-2')!.contractForComparison,false);
  assert.equal(plan.files.find((f:any)=>f.id==='unused-1')!.notUsed,false);
  assert.equal(processingStatus(plan.issues,plan.comparisons),'Sem erros');
  assert.equal(one('SELECT count(*) n FROM processing_file_reviews').n,0,'nenhuma conferência humana é criada');
 });
-test('Arquivo sem campo aproveitado continua bloqueando enquanto há campo pedido sem resolver',()=>{
+test('Foto de tipo incerto fica fora de novas tentativas automáticas',()=>{
  demand('unused-open',[{id:'2',name:'foto.jpeg'}]);
  file('unused-open','2','foto.jpeg',ocrPhoto);
  const plan=buildProcessingPlan('unused-open')!;
- assert.ok(plan.issues.some((i:any)=>i.field==='review:unused-open-2'));
+ assert.equal(plan.issues.find(i=>i.field==='file:2')?.label,'Tipo a confirmar');
  assert.equal(processingStatus(plan.issues,plan.comparisons),'Aguardando análise');
 });
-test('Leitura parcial sem campo aproveitado nunca é tratada como não utilizada',()=>{
+test('Leitura parcial de um contrato ainda bloqueia a conferência',()=>{
  demand('unused-partial',[{id:'1',name:'Contrato.pdf'},{id:'2',name:'scan.pdf'}]);
- file('unused-partial','1','Contrato.pdf',contract);file('unused-partial','2','scan.pdf',{...ocrPhoto,incomplete:true,pendingPages:[2],pages:2});
+ file('unused-partial','1','Contrato.pdf',contract);file('unused-partial','2','scan.pdf',{...ocrPhoto,text:'CONTRATO DE PRESTAÇÃO DE SERVIÇOS',incomplete:true,pendingPages:[2],pages:2});
  const plan=buildProcessingPlan('unused-partial')!;
  assert.ok(plan.issues.some((i:any)=>i.field==='review:partial:unused-partial-2'));
  assert.equal(plan.files.find((f:any)=>f.id==='unused-partial-2')!.notUsed,false);
@@ -119,7 +213,7 @@ test('Valor no texto sem associação recebe estado próprio, sem contar como co
  run("UPDATE glpi_tickets SET payload=json_set(payload,'$.content',?) WHERE external_id='unassociated'",`<p>RAZÃO SOCIAL: Escola Teste Ltda</p><p>CNPJ: ${VALID}</p><p>CPF/CNPJ DO TITULAR: ${VALID}</p>`);
  file('unassociated','1','Contrato.pdf',contract);
  const row=buildProcessingPlan('unassociated')!.comparisons.find((c:any)=>c.field==='documentoTitular');
- assert.equal(row.status,'missing');assert.equal(row.missingReason,'value_unassociated');assert.match(row.expectedDocument,/bancário/i);
+ assert.equal(row.status,'missing');assert.equal(row.missingReason,'value_unassociated');assert.equal(row.expectedDocument,'Contrato');
  assert.equal(pendingReason(row)!.label,'Valor encontrado sem associação');
 });
 test('Cobertura incompleta não afirma que o arquivo não foi enviado',()=>{
@@ -130,11 +224,10 @@ test('Cobertura incompleta não afirma que o arquivo não foi enviado',()=>{
  assert.equal(pendingReason({status:'missing',missingReason:'download_pending'})!.label,'Arquivo ainda não importado');
  demand('coverage',[],{coverage:{approvalCoverage:'partial',timelineCoverage:'complete'}});
  const plan=buildProcessingPlan('coverage')!;
- assert.equal(plan.comparisons.find((c:any)=>c.field==='cnpj').missingReason,'coverage_partial');
- const files=plan.issues.find((i:any)=>i.field==='files')!;
- assert.equal(files.pendingReason!.code,'coverage_partial');assert.doesNotMatch(files.message,/não contém contrato/);
+ assert.equal(plan.comparisons.length,0);
+ assert.match(plan.issues.find(i=>i.field==='contractMissing')!.message,/por consultar/);
  demand('coverage-ok',[],{coverage:{approvalCoverage:'not_required',timelineCoverage:'complete'}});
- assert.equal(buildProcessingPlan('coverage-ok')!.comparisons.find((c:any)=>c.field==='cnpj').missingReason,'not_sent');
+ assert.equal(buildProcessingPlan('coverage-ok')!.issues.find(i=>i.field==='contractMissing')?.label,'Contrato não encontrado');
 });
 test('Formato sem leitor não é repetido e tem motivo próprio',()=>{
  const problem='Formato sem leitor disponível. O original foi preservado; envie PDF.';
@@ -216,7 +309,7 @@ test('Validação: conferência registrada tira o bloqueio; valor novo volta a b
  const OTHER='22.333.444/0001-81';
  demand('validation',[{id:'1',name:'Contrato.pdf'},{id:'2',name:'Aditivo.pdf'}]);
  file('validation','1','Contrato.pdf',contract);
- file('validation','2','Aditivo.pdf',{text:'CNPJ '+OTHER,fields:{cnpj:[OTHER]},digitalFields:{cnpj:[OTHER]}});
+ file('validation','2','Aditivo.pdf',{text:'TERMO ADITIVO\nCNPJ '+OTHER,fields:{cnpj:[OTHER]},digitalFields:{cnpj:[OTHER]}});
  run("UPDATE contract_processing SET status='Aguardando análise' WHERE demand_id='validation'");
  assert.ok(buildProcessingPlan('validation')!.issues.some((i:any)=>i.field==='review:validation:cnpj'));
  const saved=await post('validation',{revision:revision('validation'),kind:'validation',field:'cnpj',note:'Filial da mesma organização, conferida'});
@@ -226,6 +319,6 @@ test('Validação: conferência registrada tira o bloqueio; valor novo volta a b
  assert.equal(plan.validationFindings.find((f:any)=>f.field==='cnpj')!.resolution!.note,'Filial da mesma organização, conferida');
  assert.ok(one("SELECT id FROM audit WHERE demand_id='validation' AND action LIKE 'Achado de validação conferido%'"));
  const THIRD='33.444.555/0001-81';
- run("UPDATE processing_files SET extracted=? WHERE id='validation-2'",JSON.stringify({version:4,text:'CNPJ '+THIRD,fields:{cnpj:[THIRD]},digitalFields:{cnpj:[THIRD]},problem:'',method:'Texto do PDF',pages:1,needsReview:false}));
+ run("UPDATE processing_files SET extracted=? WHERE id='validation-2'",JSON.stringify({version:4,text:'TERMO ADITIVO\nCNPJ '+THIRD,fields:{cnpj:[THIRD]},digitalFields:{cnpj:[THIRD]},problem:'',method:'Texto do PDF',pages:1,needsReview:false}));
  assert.ok(buildProcessingPlan('validation')!.issues.some((i:any)=>i.field==='review:validation:cnpj'),'valor diferente exige nova conferência');
 });

@@ -37,8 +37,8 @@ export function extractContractParties(text:string):ContractParty[] {
   const match=declarations[i],start=match.index!+match[0].length;
   // Auxiliary roles end the previous qualification without becoming the contracting party.
   if(/^(?:anuente|palestrante|agente|interveniente)/i.test(match[1]))continue;
-  const block=text.slice(start,Math.min(declarations[i+1]?.index??text.length,start+1800)).split(/\n\s*(?:DADOS (?:DE PAGAMENTO|BANC[ÁA]RIOS)|OBSERVA[ÇC][ÕO]ES|CL[ÁA]USULA|OBJETO DO CONTRATO)\s*[:\-]/i)[0];
-  const ids=[...block.matchAll(/\bCNPJ(?:\/(?:MF|ME))?\s*(?:sob\s*(?:o\s*)?)?(?:n[º°o.]?\s*)?[:\s]*(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})(?!\d)/gi)].map(m=>mask(m[1]));
+  const block=text.slice(start,Math.min(declarations[i+1]?.index??text.length,start+1800)).split(/\n\s*(?:DADOS (?:DE PAGAMENTO|BANC[ÁA]RIOS)|OBSERVA[ÇC][ÕO]ES|CL[ÁA]USULA|OBJETO DO CONTRATO)\b/i)[0];
+  const ids=[...block.matchAll(/\bCNPJ(?:\/(?:MF|ME))?\s*(?:sob\s*(?:o\s*)?)?(?:n[º°o.]?\s*)?[:\s]*(\d{2}\.?\d{3}\.?\d{3}\s*\/?\s*\d{4}\s*[-–—]?\s*\d{2})(?!\d)/gi)].map(m=>mask(m[1]));
   if(!ids.length){
    const personal=/^\s*([^\n]+)\n\s*CPF\s*(?:n[º°o.]?\s*)?[:\s]*(\d{3}\.?\d{3}\.?\d{3}-?\d{2})(?!\d)/i.exec(block);
    if(personal&&!/\b(?:LTDA|EIRELI|SOCIEDADE|REPRESENTANTE|CNPJ)\b/i.test(personal[1]))ids.push(personal[2]);

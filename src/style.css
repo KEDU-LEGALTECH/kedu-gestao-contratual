@@ -1875,4 +1875,22 @@ input[type="checkbox"] {
 .template-row > .template-viewer { width: 100%; min-width: 0; flex: 0 0 100%; }
 .template-text-preview { margin-top: 16px; padding: 20px; border: 1px solid var(--border, #718895); border-radius: 10px; max-height: 65vh; overflow: auto; overflow-wrap: anywhere; }
 .template-text-preview p { white-space: pre-wrap; line-height: 1.7; margin-bottom: 14px; }
+.dashboard-glpi-queues {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0 0;
+}
+.dashboard-glpi-queues > button {
+  gap: 8px;
+  justify-content: space-between;
+  text-align: left;
+}
+.dashboard-glpi-queues .queue-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+.dashboard-list-more {
+  margin: 14px 18px;
+}
 .glpi-queue-tabs {display:flex;flex-wrap:wrap;gap:12px;margin:16px 0;}

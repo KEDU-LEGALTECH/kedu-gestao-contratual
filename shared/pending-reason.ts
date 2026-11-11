@@ -1,6 +1,7 @@
 /** Describes uncertainty without changing the result of the document comparison. */
 export function pendingReason(row:any):{code:string;label:string;action:string}|undefined {
  if(row.reviewReason?.code==='invalid_identifier')return {code:'invalid_identifier',label:'Identificador lido com dígitos inválidos',action:'Confira o identificador no documento cadastral. Se o número estiver incorreto no GLPI, esclareça a referência no chamado.'};
+ if(row.reviewReason?.code==='reference_conflict')return {code:'reference_conflict',label:'Corrigir referência no GLPI',action:'Confirme a taxa aplicável no chamado e registre a referência correta.'};
  if(row.status==='not_applicable'||row.status==='ambiguous')return;
  const reason=row.missingReason;
  const make=(code:string,label:string,action:string)=>({code,label,action});

@@ -39,7 +39,7 @@ export function registerProcessingRoutes(app:Express,process:(did:string,userId?
    demands.push(processingFileProgress(d.id));
   }
   const files=demands.flatMap(d=>d.files.map((f:any)=>({...f,demandId:d.demandId})));
-  const counts={queued:0,running:0,completed:0,failed:0,waiting:0};
+  const counts={queued:0,running:0,completed:0,failed:0,waiting:0,skipped:0,unidentified:0};
   for(const file of files)counts[file.state as keyof typeof counts]++;
   res.setHeader('Cache-Control','no-store');res.json({counts,total:files.length,paused:demands.some(d=>d.paused),attachmentsUnavailable:demands.filter(d=>d.attachmentsUnavailable).length,files,updatedAt:now()});
  });

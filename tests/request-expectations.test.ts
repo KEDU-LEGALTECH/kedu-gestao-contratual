@@ -1,6 +1,23 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {conversationEntries,conversationExpectations,requestExpectations} from '../server/request-expectations.js';
+import {conversationEntries,conversationExpectations,requestExpectations,corroboratedDecimalCnpj} from '../server/request-expectations.js';
+
+test('separa taxa geral da taxa da simulação aprovada de antecipação',()=>{
+ const title='JURIDICO : SOLICITAÇÃO DE ANTECIPAÇÃO DE RECEBÍVEIS PARA ESCOLAS';
+ const content=['*APROVADA - SOLICITAÇÃO DE ADIANTAMENTO DE REPASSE*','*Informações Gerais*','Taxa Kedu: 14,9%','*Motivo da Solicitação:*','Adiantamento de repasse','*Simulação 1x*','Taxa: 4,50%'].map(l=>`<p>${l}</p>`).join('');
+ assert.deepEqual(conversationExpectations({title,content}).remuneracao,['4,50%']);
+ assert.deepEqual(conversationExpectations({title,content:content.replace('APROVADA','PENDENTE')}).remuneracao,['14,90%','4,50%']);
+ assert.deepEqual(conversationExpectations({title,content,followups:[{content:'<p>Taxa: 5,00%</p>'}]}).remuneracao,['4,50%','5,00%']);
+});
+
+test('CNPJ decimal só recupera zero inicial com identificador válido e corroborado',()=>{
+ const printed='02.188.157/0001-18';
+ assert.equal(corroboratedDecimalCnpj('2.188.157.000.118,00',printed),printed);
+ for(const reference of ['2188157000118','2.188.157.000.118,01','2.188.157.000.119,00']){
+  assert.equal(corroboratedDecimalCnpj(reference,printed),undefined);
+ }
+ assert.equal(corroboratedDecimalCnpj('2.188.157.000.119,00','02.188.157/0001-19'),undefined);
+});
 
 test('normaliza o CNPJ exibido como inteiro decimal no GLPI apenas se os dígitos forem válidos',()=>{
  assert.deepEqual(requestExpectations('<p>CNPJ: 41.301.376.000.113,00</p>').cnpj,['41.301.376/0001-13']);

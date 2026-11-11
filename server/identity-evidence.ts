@@ -34,7 +34,12 @@ export function identityEvidence(reading:IdentityReading,key:string,value:string
   if(parties.length){if(parties.filter(p=>sameRequestedValue(key,p.cnpj,value)).length!==1)return null;}
   else {
    const label=role==='registration'?/(?:CNPJ|N[ÚU]MERO DE INSCRI[ÇC][ÃA]O)\s*(?:n[º°o.]?\s*)?:?\s*(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})(?!\d)/gi:/(?:^|\n)\s*CNPJ\s*(?:n[º°o.]?\s*)?:?\s*(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})(?!\d)/gi;
-   const ids=[...new Set([...reading.text.matchAll(label)].map(m=>compact(m[1])))];
+   const printed=[...reading.text.matchAll(label)];
+   if(role==='registration'){
+    // In the registration card the number starts the row immediately below the column heading.
+    printed.push(...reading.text.matchAll(/(?:^|\n)[ \t]*N[ÚU]MERO DE INSCRI[ÇC][ÃA]O[^\r\n]*\r?\n[ \t]*(\d{2}\.\d{3}\.\d{3}\/\d{4}[ \t]*[.-]?[ \t]*\d{2})(?!\d)/gi));
+   }
+   const ids=[...new Set(printed.map(m=>compact(m[1])))];
    if(ids.length!==1||ids[0]!==digits)return null;
   }
  }else{

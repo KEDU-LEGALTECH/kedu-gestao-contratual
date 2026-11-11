@@ -10,7 +10,7 @@ export function processingSummaryReport(stage:string,demands:SummaryDemand[],dat
  const rows=demands.filter(d=>d.status===stage);
  const lines=[`# ${analysis?'Pendências de leitura e conferência':'Pendências de correção'}`,'',`Gerado em ${date.toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})} (Brasília). ${rows.length} demanda(s).`,
   'Escopo: demandas da etapa selecionada que atendem aos filtros atuais.',
-  analysis?'Os avisos não comprovam erro no documento. Leituras inconclusivas precisam de conferência.':'Há divergência identificada entre o documento e o GLPI. Outras pendências da mesma demanda aparecem separadamente abaixo.',
+  analysis?'Os avisos não comprovam erro no documento. Leituras inconclusivas precisam de conferência.':'Confira as divergências do documento e as referências do GLPI que precisam de correção.',
   'Nenhuma aprovação ou alteração é realizada ao gerar este resumo.',''];
  for(const demand of rows){
   lines.push(`## ${line(demand.school)} — GLPI #${line(demand.glpi_id||'não vinculado')}`,`${line(demand.id)} · ${line(demand.type)} · ${stage}`,'');

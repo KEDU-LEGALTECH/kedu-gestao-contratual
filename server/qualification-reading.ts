@@ -9,6 +9,12 @@ const cnpjMask=(d:string)=>`${d.slice(0,2)}.${d.slice(2,5)}.${d.slice(5,8)}/${d.
 const cpfMask=(d:string)=>`${d.slice(0,3)}.${d.slice(3,6)}.${d.slice(6,9)}-${d.slice(9)}`;
 // Words that begin a party declaration; the company name follows the last one before "inscrita no CNPJ".
 const partyStart=/(?:[;:]|\b(?:contratante|contratad[ao]|locador[a]?|locat[áa]ri[ao]|outorgante|outorgad[ao]|cedente|cession[áa]ri[ao]|partes|de um lado|de outro lado|síntese do contrato)\b)/giu;
+const fusedTitle=/^[\s\S]*?\b(?:INSTRUMENTO PARTICULAR DE RESCIS[ÃA]O CONTRATUAL|(?:ADITIVO AO )?CONTRATO DE PRESTA[ÇC][ÃA]O DE SERVI[ÇC]OS T[ÉE]CNICOS E CONTINUADOS DE MARKETING E COMUNICA[ÇC][ÃA]O)\s+/i;
+/** PDF columns can concatenate a known instrument title with the qualified company name. */
+export function qualifiedCompanyName(value:string){
+ const name=value.trim().replace(fusedTitle,'').trim();
+ return /^(?:cl[áa]usula\b|par[áa]grafo\b|objeto do contrato\b|datas? de pagamento\b|instrumento particular\b)/i.test(name)?'':name;
+}
 const notName=/^(?:e|de|da|do|com|sede|endere[çc]o|nome fantasia|neste ato|pessoa jur[íi]dica|sociedade|contrato|instrumento|termo|aditivo|realiza[çc][ãa]o|procura[çc][ãa]o)\b/i;
 
 /**
@@ -36,7 +42,7 @@ export function qualificationFields(source:string,isOwn:(cnpj:string)=>boolean=(
   // PDF reading order can join the instrument title to the first party's name.
   // Strip only an explicit known title terminator, still anchored to this CNPJ.
   const namedLead=lead.replace(/^[\s\S]*\b(?:OUTORGA DE DIREITOS|IDENTIFICA[ÇC][ÃA]O DAS PARTES CONTRATANTES)\s+/i,'');
-  const name=namedLead.trim().replace(/^[,.\s]+/,'').replace(/^(?:a|o)\s+(?:empresa|sociedade)\s+(?=\p{Lu})/u,'').split(/\s*,|\s+(?:pessoa jur[íi]dica|sociedade|com sede|com endere[çc]o|inscrit[ao])\b/i)[0].trim();
+  const name=qualifiedCompanyName(namedLead).trim().replace(/^[,.\s]+/,'').replace(/^(?:a|o)\s+(?:empresa|sociedade)\s+(?=\p{Lu})/u,'').split(/\s*,|\s+(?:pessoa jur[íi]dica|sociedade|com sede|com endere[çc]o|inscrit[ao])\b/i)[0].trim();
   if(name.length>=3&&name.length<=150&&/\p{Lu}/u.test(name[0])&&!notName.test(name)&&name.split(/\s+/).length>=2)add('razaoSocial',name);
   // Address: "com sede na/em/à ..." or "com endereço em ..." on either side of the CNPJ.
   const address=/com\s+(?:sede|endere[çc]o)\s+(?:na|no|em|à|a)\s+(.{5,260}?)(?=,?\s*(?:neste ato|inscrit[ao]|doravante|telefone|e-mail|representad[ao])|$)/i.exec(block)?.[1];

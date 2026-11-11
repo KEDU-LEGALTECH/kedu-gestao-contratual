@@ -2,6 +2,13 @@ import {distinctFieldValues,sameFieldValue} from '../shared/value-comparison.js'
 import {htmlToText,extractFields} from './glpi-analysis.js';
 import {fieldsFromLines,normalizeValue} from './processing-extract.js';
 import {validCnpj} from './registration-reading.js';
+
+/** An Excel-style decimal with one lost leading zero can be reconciled with a proven identifier. */
+export function corroboratedDecimalCnpj(reference:string,documentValue:string){
+ if(!/^\d(?:\.\d{3}){4},00$/.test(reference)||!validCnpj(documentValue))return undefined;
+ const digits=reference.slice(0,-3).replaceAll('.','');
+ return documentValue.replace(/\D/g,'')==='0'+digits?normalizeValue('cnpj',documentValue):undefined;
+}
 export function requestCompanyReferences(content:string){
  return [...htmlToText(content).join('\n').matchAll(/(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})\s*\(([^)\n]{3,180})\)/g)].map(m=>({cnpj:m[1],name:m[2].trim()}));
 }
@@ -47,6 +54,7 @@ export {sameFieldValue as sameRequestedValue,distinctFieldValues as distinctRequ
 
 type TicketConversation = {
  content: string;
+ title?: string;
  created?: string;
  followups?: {id?: string; content: string; date?: string; private?: boolean}[];
  documentLinks?: Record<string, string[]>;
@@ -76,12 +84,29 @@ export function conversationText(ticket: TicketConversation) {
 // Words with which a message announces that it replaces a value given earlier in the ticket.
 const correctionMarker = /\b(?:corre[çc][ãa]o|corrigid[oa]s?|corrigindo|corrigir|retific\w*|correto|correta|na verdade|o certo|a certa|onde se l[êe]|substitu\w*)\b/i;
 export type ReferenceCorrection = {previous: string[]; value: string; date?: string; message?: string};
+
+function approvedAdvanceRates(ticket:TicketConversation,values:string[]){
+ if(!/solicita[çc][ãa]o de antecipa[çc][ãa]o de receb[íi]veis/i.test(ticket.title||'')||values.length!==2)return undefined;
+ const text=htmlToText(ticket.content).map(line=>line.replace(/^[*\s]+|[*\s]+$/g,'')).join('\n');
+ if(!/^APROVADA\s*[-–—]\s*SOLICITA[ÇC][ÃA]O DE ADIANTAMENTO DE REPASSE$/im.test(text))return undefined;
+ const general=/^Informa[çc][õo]es Gerais:?\s*\n([\s\S]*?)(?=^Motivo da Solicita[çc][ãa]o:?\s*$)/im.exec(text)?.[1];
+ const simulation=/^Simula[çc][ãa]o\s+\d+\s*x\s*:?\s*\n([\s\S]*)/im.exec(text)?.[1];
+ if(!general||!simulation)return undefined;
+ const generalRate=[...general.matchAll(/^Taxa Kedu:\s*(\d{1,3}(?:[.,]\d{1,2})?\s*%)\s*$/gim)];
+ const advanceRate=[...simulation.matchAll(/^Taxa:\s*(\d{1,3}(?:[.,]\d{1,2})?\s*%)\s*$/gim)];
+ if(generalRate.length!==1||advanceRate.length!==1)return undefined;
+ const existing=normalizeValue('remuneracao',generalRate[0][1]),advance=normalizeValue('remuneracao',advanceRate[0][1]);
+ if(existing===advance||!values.includes(existing)||!values.includes(advance))return undefined;
+ return {existing,advance};
+}
 /** Read each message independently so a field label cannot consume the next message.
  * Messages are taken in date order. A message that explicitly corrects a field with a single
  * value replaces the earlier reference, which stays recorded; without that wording the values
  * are kept together, so the reference remains ambiguous for a person to decide. */
 export function conversationReferences(ticket: TicketConversation, explicitFields: Record<string,{value:string}> = {}) {
  const fields = requestExpectations(ticket.content, explicitFields), corrections: Record<string, ReferenceCorrection> = {};
+ const advanceRates=approvedAdvanceRates(ticket,fields.remuneracao||[]);
+ if(advanceRates)fields.remuneracao=[advanceRates.advance];
  const messages = (ticket.followups || []).map((message, index) => ({message, index})).filter(({message}) => !message.private)
   .sort((a, b) => String(a.message.date || '').localeCompare(String(b.message.date || '')) || a.index - b.index).map(({message}) => message);
  for (const message of messages) {
@@ -96,7 +121,7 @@ export function conversationReferences(ticket: TicketConversation, explicitField
    fields[key] = distinctFieldValues(key, [...earlier, ...values]);
   }
  }
- return {fields, corrections};
+ return {fields, corrections, advanceRates};
 }
 export function conversationExpectations(ticket: TicketConversation, explicitFields: Record<string,{value:string}> = {}) {
  return conversationReferences(ticket, explicitFields).fields;
