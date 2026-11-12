@@ -8,7 +8,7 @@ export function codeSignature(root=process.cwd()) {
 }
 export const backendVersion={build:codeSignature(),started:new Date().toISOString(),pid:process.pid};
 /** One running API per database; ownership is checked before releasing the lease. */
-export function acquireBackendInstance(database=process.env.DATABASE_PATH||'data/kedu.sqlite') {
+export function acquireBackendInstance(database=process.env.KEDU_DATABASE==='postgres'?'postgres:'+(process.env.KEDU_PG_SCHEMA||'kedu'):process.env.DATABASE_PATH||'data/kedu.sqlite') {
  const root=resolve('data');mkdirSync(root,{recursive:true});
  const key=createHash('sha256').update(resolve(database).toLowerCase()).digest('hex').slice(0,16);
  const path=join(root,`backend-instance-${key}.json`);

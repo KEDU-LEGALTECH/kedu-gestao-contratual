@@ -11,6 +11,8 @@ test("tradução para PostgreSQL preserva literais e converte o dialeto do porta
   assert.equal(toPostgres("SELECT 1 WHERE a LIKE ? AND b NOT LIKE '%LIKE%'"), "SELECT 1 WHERE a ILIKE $1 AND b NOT ILIKE '%LIKE%'");
   assert.equal(toPostgres("SELECT json_extract(d.data,'$.matriz') AS m"), "SELECT ((d.data)::jsonb ->> 'matriz') AS m");
   assert.equal(toPostgres(`SELECT "rowid" FROM t`), `SELECT "rowid" FROM t`);
+  assert.equal(toPostgres("UPDATE t SET a=max(0,a-1),b=max(b,?) WHERE c=(SELECT max(c) FROM t)"),
+    "UPDATE t SET a=greatest(0,a-1),b=greatest(b,$1) WHERE c=(SELECT max(c) FROM t)");
   assert.throws(() => toPostgres("INSERT OR REPLACE INTO t VALUES(?)"), /conflito explícito/);
 });
 

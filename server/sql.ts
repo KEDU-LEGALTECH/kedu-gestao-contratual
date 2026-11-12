@@ -56,6 +56,8 @@ export function toPostgres(query: string) {
     if (part[0] === "'" || part[0] === '"') return part;
     return part
       .replace(/\?/g, () => "$" + ++n)
+      // Two-argument max/min are scalar in SQLite; the one-argument aggregates are left alone.
+      .replace(/\b(max|min)\(([^(),]+),([^(),]+)\)/gi, (_, fn: string, x: string, y: string) => (fn.toLowerCase() === "max" ? "greatest(" : "least(") + x + "," + y + ")")
       .replace(/\browid\b/gi, "_rowid")
       .replace(/\bINSERT\s+OR\s+IGNORE\s+INTO\b/gi, () => { ignore = true; return "INSERT INTO"; })
       .replace(/\bNOT\s+LIKE\b/gi, "NOT ILIKE")

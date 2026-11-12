@@ -39,7 +39,7 @@ test("DOCX com imagem de alto contraste que o OCR não lê continua como leitura
  if(!reading.warnings!.some(w=>/não pôde ser lida/.test(w)))return; // The OCR found text in the stripes: nothing to assert.
  assert.equal(reading.incomplete,true);
 });
-test("Falta de memória não esgota as tentativas; falha do arquivo sim",()=>{
+test("Falta de memória não esgota as tentativas; falha do arquivo sim",async ()=>{
  assert.equal(onlyTemporary("foto.jpeg: leitura falhou — Memória disponível insuficiente; leitura adiada para preservar a estabilidade."),true);
  assert.equal(onlyTemporary("a.jpeg: falha temporária do leitor | b.pdf: leitura falhou — Memória disponível insuficiente"),true);
  assert.equal(onlyTemporary("a.jpeg: falha temporária do leitor | c.pdf: leitura parcial (1/3 páginas)"),false);
@@ -47,8 +47,8 @@ test("Falta de memória não esgota as tentativas; falha do arquivo sim",()=>{
  const db=new DatabaseSync(":memory:");
  db.exec("CREATE TABLE reading_jobs(demand_id TEXT,ticket_hash TEXT,state TEXT,attempts INTEGER NOT NULL DEFAULT 0,available_at INTEGER,owner TEXT,updated INTEGER,last_error TEXT NOT NULL DEFAULT '',progress INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(demand_id,ticket_hash))");
  let clock=1000;const queue=new ReadingJobQueue(db,()=>clock);
- const run=(id:string,temporary:boolean)=>{for(let i=0;i<5;i++){clock+=10**9;const job=queue.claim();if(!job)break;queue.finish(job,"retry","motivo",undefined,temporary);}return db.prepare("SELECT state FROM reading_jobs WHERE demand_id=?").get(id) as any;};
- queue.enqueue("memoria","h");assert.equal(run("memoria",true).state,"retry");
+ const run=async (id:string,temporary:boolean)=>{for(let i=0;i<5;i++){clock+=10**9;const job=await queue.claim();if(!job)break;await queue.finish(job,"retry","motivo",undefined,temporary);}return db.prepare("SELECT state FROM reading_jobs WHERE demand_id=?").get(id) as any;};
+ await queue.enqueue("memoria","h");assert.equal((await run("memoria",true)).state,"retry");
  db.exec("DELETE FROM reading_jobs");
- queue.enqueue("arquivo","h");assert.equal(run("arquivo",false).state,"exhausted");
+ await queue.enqueue("arquivo","h");assert.equal((await run("arquivo",false)).state,"exhausted");
 });

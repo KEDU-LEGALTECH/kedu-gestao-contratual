@@ -240,7 +240,7 @@ test('Formato sem leitor não é repetido e tem motivo próprio',()=>{
  assert.equal(needsReadingRecovery({byteLength:10,problem:'Nenhum texto legível',extracted:JSON.stringify({})}),true);
  assert.equal(pendingReason({field:'file:1',message:problem})!.code,'unsupported');
 });
-test('Fila reabre leitura presa: concluída na hora e esgotada só uma vez por dia',()=>{
+test('Fila reabre leitura presa: concluída na hora e esgotada só uma vez por dia',async ()=>{
  const database=new DatabaseSync(':memory:');
  database.exec("CREATE TABLE reading_jobs(demand_id TEXT,ticket_hash TEXT,state TEXT,attempts INTEGER NOT NULL DEFAULT 0,available_at INTEGER,owner TEXT,updated INTEGER,last_error TEXT NOT NULL DEFAULT '',progress INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(demand_id,ticket_hash))");
  let clock=1000000000;
@@ -248,11 +248,11 @@ test('Fila reabre leitura presa: concluída na hora e esgotada só uma vez por d
  const state=(id:string)=>database.prepare('SELECT state,attempts,last_error FROM reading_jobs WHERE demand_id=?').get(id) as any;
  const put=(id:string,s:string,updated:number)=>database.prepare("INSERT INTO reading_jobs(demand_id,ticket_hash,state,attempts,available_at,updated) VALUES(?,'h',?,3,0,?)").run(id,s,updated);
  put('done','done',clock);put('recent','exhausted',clock-3600000);put('old','exhausted',clock-25*3600000);
- for(const id of ['done','recent','old'])queue.enqueue(id,'h',false,true);
+ for(const id of ['done','recent','old'])await queue.enqueue(id,'h',false,true);
  assert.equal(state('done').state,'queued');assert.equal(state('done').attempts,0);
  assert.equal(state('recent').state,'exhausted');
  assert.equal(state('old').state,'queued');
- put('quiet','done',clock);queue.enqueue('quiet','h');
+ put('quiet','done',clock);await queue.enqueue('quiet','h');
  assert.equal(state('quiet').state,'done','sem recuperação pendente nada muda');
 });
 test('Chamado encerrado sai da leitura automática, sem perder dados, e volta se for reaberto',async()=>{

@@ -149,6 +149,6 @@ for (const [i, role, email, name] of [
   [7, "Financeiro", "financeiro@demo.kedu.local", "Financeiro demonstrativo"],
 ] as const)
   await sql.run("INSERT OR IGNORE INTO users VALUES(?,?,?,?,?)", "u" + i, name, email, role, hash(process.env.DEMO_PASSWORD || "Kedu-demo-2026!"));
-for (const demand of db.prepare("SELECT id,data FROM demands").all() as any[])
+for (const demand of await sql.all("SELECT id,data FROM demands"))
   await saveTerms(demand.id, JSON.parse(demand.data));
 }

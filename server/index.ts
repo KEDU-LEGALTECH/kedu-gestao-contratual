@@ -9,7 +9,7 @@ import cookieParser from "cookie-parser";
 import multer from "multer";
 import { z } from "zod";
 import { randomBytes } from "node:crypto";
-import { db, all, one, run, id, now, verify, audit, hash, localDate, sql, auditAsync } from "./db.js";
+import { db, all, one, run, id, now, verify, audit, hash, localDate, sql, auditAsync, postgresMode } from "./db.js";
 import "./seed.js";
 import { fields, generate, review, paragraphs } from "./documents.js";
 import {
@@ -99,8 +99,9 @@ app.disable("x-powered-by");
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
-startBackups();
-app.get("/healthz",(_req,res)=>{res.set("Cache-Control","no-store");res.set('X-Kedu-Build',backendVersion.build);try{db.prepare("SELECT 1").get();res.json({status:"ok"});}catch{res.status(503).json({status:"unavailable"});}});
+// Supabase keeps PostgreSQL backups; the local job copies the SQLite file only.
+if(!postgresMode)startBackups();
+app.get("/healthz",async (_req,res)=>{res.set("Cache-Control","no-store");res.set('X-Kedu-Build',backendVersion.build);try{await sql.one("SELECT 1");res.json({status:"ok"});}catch{res.status(503).json({status:"unavailable"});}});
 app.use("/api", (req, res, next) => {
   if (
     !["GET", "HEAD"].includes(req.method) &&

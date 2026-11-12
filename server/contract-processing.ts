@@ -624,30 +624,30 @@ async function drainReadingQueue() {
  try {
   while(!await recoveryPaused()){
    await yieldToServer();
-   const job=durableQueue!.claim();if(!job)break;
+   const job=await durableQueue!.claim();if(!job)break;
    const source=await processingSource(job.demand_id);
    if(!source.ticket||source.ticket.hash!==job.ticket_hash||['Concluído','Cancelado','Em assinatura'].includes(source.demand?.stage)){
-    durableQueue!.finish(job,'superseded');continue;
+    await durableQueue!.finish(job,'superseded');continue;
    }
    // Tickets ended in GLPI are read only on request. Reopening changes the version and creates a new job.
-   if(closedInGlpi(source.ticket.status)){durableQueue!.finish(job,'superseded','Chamado encerrado no GLPI: leitura automática pausada; releitura manual disponível.');continue;}
+   if(closedInGlpi(source.ticket.status)){await durableQueue!.finish(job,'superseded','Chamado encerrado no GLPI: leitura automática pausada; releitura manual disponível.');continue;}
    try {
-    if(running.has(job.demand_id)){durableQueue!.finish(job,'retry','Leitura manual em andamento');continue;}
+    if(running.has(job.demand_id)){await durableQueue!.finish(job,'retry','Leitura manual em andamento');continue;}
     const fileRecovery=await needsFileRecovery(job.demand_id,job.ticket_hash);
     const targets=await targetedRecovery(job.demand_id,job.ticket_hash);
-    if(!fileRecovery&&!targets.length){durableQueue!.finish(job,'done');continue;}
+    if(!fileRecovery&&!targets.length){await durableQueue!.finish(job,'done');continue;}
     const before=await recoveryProgress(job.demand_id,job.ticket_hash);
     const targetedOnly=!fileRecovery;
     await processContract(job.demand_id,null,downloadGlpiAttachment,false,targetedOnly);
     const after=await recoveryProgress(job.demand_id,job.ticket_hash);
     const current=await processingSource(job.demand_id);
-    if(current.ticket?.hash!==job.ticket_hash)durableQueue!.finish(job,'superseded');
+    if(current.ticket?.hash!==job.ticket_hash)await durableQueue!.finish(job,'superseded');
     else if(await needsDemandRecovery(job.demand_id,job.ticket_hash)){
      const reason=targetedOnly?'targeted-fields':await recoveryReason(job.demand_id,job.ticket_hash);
-     durableQueue!.finish(job,'retry',reason,after>before?after:undefined,!targetedOnly&&onlyTemporary(reason));
+     await durableQueue!.finish(job,'retry',reason,after>before?after:undefined,!targetedOnly&&onlyTemporary(reason));
     }
-    else durableQueue!.finish(job,'done','',after>before?after:undefined);
-   }catch(error){durableQueue!.finish(job,'retry','Tentativa interrompida; resultados anteriores preservados. '+failureDetail(error));}
+    else await durableQueue!.finish(job,'done','',after>before?after:undefined);
+   }catch(error){await durableQueue!.finish(job,'retry','Tentativa interrompida; resultados anteriores preservados. '+failureDetail(error));}
   }
  }finally{draining=false;}
 }
@@ -656,7 +656,7 @@ export async function scheduleContractProcessing() {
  if(process.env.NODE_ENV==='test'||await recoveryPaused()||scanningRecovery)return;
  scanningRecovery=true;
  void (async()=>{
-  durableQueue??=new ReadingJobQueue(db);
+  durableQueue??=new ReadingJobQueue(sql);
   void drainReadingQueue();
   for(const d of await sql.all("SELECT d.id,t.status FROM demands d JOIN glpi_tickets t ON t.external_id=d.glpi_id WHERE t.mode='real' AND d.stage NOT IN('Concluído','Cancelado','Em assinatura')")){
    await yieldToServer();
@@ -669,8 +669,8 @@ export async function scheduleContractProcessing() {
     await saveProcessingResult(d.id);
    if(closedInGlpi(d.status))continue;
    const fileRecovery=await needsFileRecovery(d.id,job.ticket_hash),targeted=(await targetedRecovery(d.id,job.ticket_hash)).length>0;
-   if(fileRecovery||targeted)durableQueue.enqueue(d.id,job.ticket_hash,targeted&&!fileRecovery,fileRecovery);
-   else durableQueue.settleIdle(d.id,job.ticket_hash);
+   if(fileRecovery||targeted)await durableQueue.enqueue(d.id,job.ticket_hash,targeted&&!fileRecovery,fileRecovery);
+   else await durableQueue.settleIdle(d.id,job.ticket_hash);
   }
   void drainReadingQueue();
  })().catch(error=>console.error("Falha ao verificar a fila de leitura:",failureDetail(error)))
