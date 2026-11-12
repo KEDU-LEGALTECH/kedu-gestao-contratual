@@ -99,7 +99,10 @@ export function fieldsFromLines(lines:string[]) {
   const label=index.find(x=>n===x.name || n.startsWith(x.name+":") || n.startsWith(x.name+" :") || n.startsWith(x.name+" |"));
   if(!label)continue;
   const separator=clean.slice(label.name.length).search(/[:|]/),raw=separator>=0?clean.slice(label.name.length+separator+1).trim():"";
-  const next=raw || (lines[i+1] && !/^[^:]{1,100}:\s*$/.test(lines[i+1].trim()) && !index.some(x=>norm(lines[i+1])===x.name || norm(lines[i+1]).startsWith(x.name+":"))?lines[i+1]:"");
+  const nextLine=lines[i+1]?.trim()||"";
+  const validNext=nextLine && !/^[^:]{1,100}:\s*$/.test(nextLine) && !index.some(x=>norm(nextLine)===x.name || norm(nextLine).startsWith(x.name+":"));
+  const wrappedName=raw && validNext && !/[:|]/.test(nextLine) && ["titularConta","razaoSocial","nomeFantasia"].includes(label.key) && (/\b(?:de|da|do|dos|das|e)$/i.test(raw) || /^(?:[\p{Lu}\s.'-]{1,40}\s+)?(?:LTDA\.?|LIMITADA|EIRELI|S\s*\.?\s*A\.?|ME|EPP)$/u.test(nextLine)) ? `${raw} ${nextLine}` : "";
+  const next=wrappedName || raw || (validNext?nextLine:"");
   const value=normalizeValue(label.key,next||"");
   if(label.key==="parcelas" && value && !/^\d+$/.test(value))continue;
   if(value)add(label.key,value);

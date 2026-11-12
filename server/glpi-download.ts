@@ -30,16 +30,25 @@ export async function downloadGlpiAttachment(ticketId: string, documentId: strin
     const hasDocument = (items: any[]) => items.some(l => String(l.documents_id) === documentId);
     let linked = hasDocument(links);
     const origins = Object.entries(payload.documentLinks ?? {}).filter(([, ids]) => Array.isArray(ids) && ids.includes(documentId));
+    let approval403 = false;
     for (const [origin] of origins) {
       if (linked) break;
       const match = /^(?:(TicketTask|ITILSolution|TicketValidation):)?(\d+)$/.exec(origin);
       if (!match) continue;
       const [, type = "ITILFollowup", id] = match;
-      const entries = await client.list(`Ticket/${ticketId}/${type}`, {}, Infinity, signal);
-      if (!entries.some(entry => String(entry.id) === id && Number(entry.is_private) !== 1)) continue;
-      linked = hasDocument(await client.list(`${type}/${id}/Document_Item`, {}, Infinity, signal));
+      try {
+        const entries = await client.list(`Ticket/${ticketId}/${type}`, {}, Infinity, signal);
+        if (!entries.some(entry => String(entry.id) === id && Number(entry.is_private) !== 1)) continue;
+        linked = hasDocument(await client.list(`${type}/${id}/Document_Item`, {}, Infinity, signal));
+      } catch (error: any) {
+        if (type === "TicketValidation" && error?.status === 403) {
+          approval403 = true;
+          continue;
+        }
+        throw error;
+      }
     }
-    if (!linked && !origins.length)
+    if (!linked && (!origins.length || approval403))
       linked = (await readTicketTimeline(client, ticketId, signal)).documentIds.has(documentId);
     if (!linked)
       throw Object.assign(Error("O anexo não está mais vinculado ao chamado. Atualize a sincronização."), { status: 404 });

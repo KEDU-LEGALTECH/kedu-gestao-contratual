@@ -1,0 +1,186 @@
+import "dotenv/config";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import postgres from "postgres";
+import { checkPostgresDemandPilot } from "./postgres-demand-pilot-check.js";
+import { supabaseConfig } from "../server/supabase-config.js";
+
+type SchemaEntry = { type: string; name: string; tbl_name: string; sql: string };
+const quote = (value: string) => '"' + value.replaceAll('"', '""') + '"';
+
+function postgresSchema(entries: SchemaEntry[]) {
+  const statements: string[] = [];
+  const constraints: string[] = [];
+  for (const table of entries.filter(entry => entry.type === "table")) {
+    // Separate references so cycles and self-references are allowed on import.
+    const ddl = table.sql.replace(
+      /\s+REFERENCES\s+(\w+)\((\w+)\)(\s+ON DELETE CASCADE)?/gi,
+      (ref, target: string, column: string, action = "", offset: number) => {
+        const source = /(?:[(,])\s*(\w+)\s+[^,(]*$/s.exec(table.sql.slice(0, offset))?.[1];
+        if (!source) throw Error("Referência SQLite ainda sem conversão em " + table.name);
+        constraints.push(`ALTER TABLE ${quote(table.name)} ADD FOREIGN KEY (${quote(source)}) REFERENCES ${quote(target)}(${quote(column)})${action}`);
+        return "";
+      },
+    );
+    if (/\b(?:REFERENCES|AUTOINCREMENT|COLLATE|WITHOUT ROWID|STRICT)\b/i.test(ddl))
+      throw Error("DDL SQLite ainda sem conversão em " + table.name);
+    // Leave string literals and quoted identifiers untouched.
+    statements.push(ddl.replace(/'(?:[^']|'')*'|"(?:[^"]|"")*"|\b(?:BLOB|INTEGER|REAL|END)\b/gi,
+      token => ({ BLOB: "BYTEA", INTEGER: "BIGINT", REAL: "DOUBLE PRECISION", END: '"end"' })[token.toUpperCase()] ?? token));
+  }
+  const guards = entries.filter(entry => entry.type === "trigger");
+  if (guards.length) statements.push(`CREATE FUNCTION reject_immutable_change() RETURNS trigger
+    LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION '%', TG_ARGV[0]; END; $$`);
+  for (const guard of guards) {
+    const parts = /^CREATE TRIGGER (\w+) BEFORE (UPDATE|DELETE) ON (\w+)(?: WHEN (OLD\.status='aprovado'))? BEGIN SELECT RAISE\(ABORT,('(?:[^']|'')*')\); END\s*$/i.exec(guard.sql);
+    if (!parts) throw Error("Gatilho SQLite ainda sem conversão: " + guard.name);
+    const [, name, event, table, condition, message] = parts;
+    statements.push(`CREATE TRIGGER ${quote(name)} BEFORE ${event} ON ${quote(table)} FOR EACH ROW${condition ? ` WHEN (${condition})` : ""} EXECUTE FUNCTION reject_immutable_change(${message})`);
+  }
+  for (const entry of entries.filter(entry => entry.type === "index" || entry.type === "view")) {
+    statements.push(entry.sql.replace(/json_extract\(d\.data,'\$\.matriz'\)/g, "(d.data::jsonb ->> 'matriz')"));
+  }
+  return { statements, constraints };
+}
+
+type ManifestObject = {table: string; column: string; key: Record<string, string | number>; size: number; sha256: string};
+const objectKey = (keys: string[], row: Record<string, unknown>) => JSON.stringify(keys.map(key => String(row[key])));
+
+async function main() {
+  const [folder, mode = "--inspect"] = process.argv.slice(2);
+  if (!folder || !["--inspect", "--rehearse", "--pilot-only", "--stage-supabase"].includes(mode))
+    throw Error("Informe a pasta do manifesto e --inspect, --rehearse, --pilot-only ou --stage-supabase.");
+  const staging = mode === "--stage-supabase";
+  const root = resolve(folder);
+  const manifest = JSON.parse(await readFile(join(root, "manifest.json"), "utf8"));
+  if (typeof manifest.snapshot !== "string" || basename(manifest.snapshot) !== manifest.snapshot)
+    throw Error("Nome inválido para o snapshot.");
+  const snapshot = join(root, manifest.snapshot);
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(snapshot)) hash.update(chunk);
+  if (hash.digest("hex") !== manifest.snapshotHash) throw Error("O hash do snapshot diverge do manifesto.");
+  const source = new DatabaseSync(snapshot, { readOnly: true });
+  try {
+    const entries = source.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as SchemaEntry[];
+    const schema = postgresSchema(entries);
+    const tables = entries.filter(entry => entry.type === "table");
+    const counts = tables.map(({name}) => ({name, rows:Number(source.prepare(`SELECT count(*) AS n FROM ${quote(name)}`).get()?.n)}));
+    console.log(JSON.stringify({tables:counts.length,rows:counts.reduce((sum,t)=>sum+t.rows,0),foreignKeys:schema.constraints.length,triggers:entries.filter(e=>e.type==="trigger").length}));
+    if (mode === "--inspect") return;
+
+    const target = staging ? supabaseConfig() : undefined;
+    const url = new URL(target?.connection ?? process.env.KEDU_REHEARSAL_DATABASE_URL ?? "");
+    if (staging) {
+      if (url.port === "6543" || url.pathname !== "/postgres")
+        throw Error("Use a conexão direta ou Session pooler do banco postgres.");
+    } else if (!["postgresql:", "postgres:"].includes(url.protocol) || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || url.pathname !== "/kedu_rehearsal") {
+      throw Error("Use um PostgreSQL local com banco kedu_rehearsal.");
+    }
+    const namespace = staging ? "kedu_migration" : "kedu_rehearsal";
+    const sql = postgres(url.toString(), { max: 1, ssl: target?.ssl, connect_timeout: 10, onnotice: () => {} });
+    const rollback = Error("Ensaio verificado. Reverter transação.");
+    try {
+      await sql.begin(async tx => {
+        await tx.unsafe("CREATE SCHEMA " + quote(namespace));
+        await tx.unsafe("SET LOCAL search_path = " + quote(namespace) + ", pg_catalog");
+        if (staging) await tx.unsafe("REVOKE ALL ON SCHEMA kedu_migration FROM PUBLIC, anon, authenticated, service_role");
+        for (const ddl of schema.statements) {
+          try { await tx.unsafe(staging ? ddl : ddl.replace(/^CREATE TABLE\b/i, "CREATE UNLOGGED TABLE")); }
+          catch (error) {
+            const statement = ddl.split(/\s+/).slice(0, 4).join(" ").split("(")[0];
+            throw Error("Falha ao criar " + statement + " (SQLSTATE " + (error as {code?: string}).code + ").");
+          }
+        }
+        if (mode === "--pilot-only") {
+          for (const ddl of schema.constraints) await tx.unsafe(ddl);
+          await checkPostgresDemandPilot(tx);
+          throw rollback;
+        }
+        for (const {name, rows} of counts) {
+          let copied = 0;
+          if (name !== "sessions") {
+            const query = source.prepare(`SELECT * FROM ${quote(name)}`);
+            query.setReadBigInts(true);
+            let columns: string[] = [];
+            let batch: (string | number | Buffer | null)[][] = [];
+            let batchBytes = 0;
+            const flush = async () => {
+              if (!batch.length) return;
+              const params = batch.map((row, i) => "(" + row.map((_, j) => "$" + (i * columns.length + j + 1)).join(",") + ")").join(",");
+              try { await tx.unsafe(`INSERT INTO ${quote(name)} (${columns.map(quote).join(",")}) VALUES ${params}`, batch.flat()); }
+              catch (error) {
+                const err = error as {code?: string; message?: string};
+                const nul = err.message?.includes("0x00") ? " Texto contém byte NUL." : "";
+                throw Error(`Falha ao importar ${name}, registros ${copied+1} a ${copied+batch.length} (SQLSTATE ${err.code}).${nul}`);
+              }
+              copied += batch.length;
+              batch = [];
+              batchBytes = 0;
+            };
+            for (const row of query.iterate()) {
+              if (!columns.length) columns = Object.keys(row);
+              const values = Object.values(row).map(v => v instanceof Uint8Array ? Buffer.from(v) : typeof v === "bigint" ? v.toString() : v);
+              const rowBytes = values.reduce<number>((size,v)=>size+(typeof v==="string"?Buffer.byteLength(v):Buffer.isBuffer(v)?v.length:8),0);
+              if (batch.length >= 100 || batchBytes + rowBytes > 4 * 1024 * 1024) await flush();
+              batch.push(values);
+              batchBytes += rowBytes;
+            }
+            await flush();
+          }
+          const [target] = await tx.unsafe(`SELECT count(*) AS n FROM ${quote(name)}`);
+          if (Number(target.n) !== copied || copied !== (name === "sessions" ? 0 : rows))
+            throw Error("Contagem divergente em " + name);
+        }
+        for (const ddl of schema.constraints) await tx.unsafe(ddl);
+        const groups = new Map<string, ManifestObject[]>();
+        for (const object of manifest.objects as ManifestObject[]) {
+          const group = JSON.stringify([object.table, object.column]);
+          const existing = groups.get(group);
+          if (existing) existing.push(object);
+          else groups.set(group, [object]);
+        }
+        for (const objects of groups.values()) {
+          const {table, column, key} = objects[0];
+          const keys = Object.keys(key);
+          const blob = quote(column);
+          const rows = await tx.unsafe(`SELECT ${keys.map(quote).join(",")},
+            octet_length(${blob}) AS object_size, encode(sha256(${blob}),'hex') AS object_hash
+            FROM ${quote(table)} WHERE octet_length(${blob})>0`);
+          const byKey = new Map(rows.map(row => [objectKey(keys, row), row]));
+          for (const object of objects) {
+            const row = byKey.get(objectKey(keys, object.key));
+            if (Number(row?.object_size) !== object.size || row?.object_hash !== object.sha256)
+              throw Error("Hash divergente em " + table);
+          }
+        }
+        console.log("Contagens, vínculos e hashes verificados. Sessões excluídas.");
+        if (staging) {
+          await tx.unsafe("REVOKE ALL ON ALL TABLES IN SCHEMA kedu_migration FROM PUBLIC, anon, authenticated, service_role");
+          await tx.unsafe("REVOKE ALL ON ALL FUNCTIONS IN SCHEMA kedu_migration FROM PUBLIC, anon, authenticated, service_role");
+          await tx`UPDATE reading_jobs SET state='queued', owner=NULL, attempts=greatest(0,attempts-1)
+            WHERE state='running'`;
+          return;
+        }
+        if (process.env.KEDU_REHEARSAL_CHECK_API === "1") await checkPostgresDemandPilot(tx);
+        throw rollback;
+      });
+      if (staging) console.log("Cópia validada e gravada no esquema privado kedu_migration.");
+    } catch (error) {
+      if (error !== rollback) throw error;
+      console.log("Ensaio revertido.");
+    } finally { await sql.end({ timeout: 3 }); }
+  } finally { source.close(); }
+}
+
+main().catch(error => {
+  // Do not print driver details that may contain data or credentials.
+  console.error(error?.code ? "Falha na migração. Código: " + error.code : error instanceof Error ? error.message : "Falha na migração.");
+  if (error?.code === "ERR_ASSERTION") {
+    const location = String(error.stack).match(/postgres-demand-pilot-check\.ts:\d+:\d+/)?.[0];
+    if (location) console.error("Verificação não atendida em " + location);
+  }
+  process.exitCode = 1;
+});

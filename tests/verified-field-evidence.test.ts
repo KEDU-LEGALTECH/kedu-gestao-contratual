@@ -47,3 +47,31 @@ test('cláusula explícita fornece nome empresarial e sede sem misturar endereç
  assert.match(fields.endereco[0],/^Rua Marcos Barbosa/);
  assert.doesNotMatch(fields.endereco[0],/Pessoal/);
 });
+import {verifiedFieldEvidence} from '../server/verified-field-evidence.js';
+import {notApplicableReason} from '../server/comparison-profile.js';
+test('consenso entre Tesseract e PaddleOCR funciona em documento multipágina quando a página de origem do campo está registrada',()=>{
+ const multiPageReading={
+  text:'--- PÁGINA 1 ---\nCláusula 1\n--- PÁGINA 2 ---\nDados Bancários\nAgência: 0001\nConta: 68146786-2\n\nLEITURA ADICIONAL — PADDLEOCR / OPENCV\nDados Bancários\nAgência: 0001\nConta: 68146786-2',
+  method:'OCR de imagem + PaddleOCR',
+  pages:2,
+  confidence:72,
+  verifiedFields:[],
+  fieldOrigins:{
+   agencia:[{value:'0001',page:2,excerpt:'Dados Bancários\nAgência: 0001\nConta: 68146786-2'}],
+   conta:[{value:'68146786-2',page:2,excerpt:'Dados Bancários\nAgência: 0001\nConta: 68146786-2'}],
+  },
+  fields:{agencia:['0001'],conta:['68146786-2']},
+ };
+ assert.equal(verifiedFieldEvidence(multiPageReading as any,'agencia','0001','contract'),true);
+ assert.equal(verifiedFieldEvidence({...multiPageReading,fieldOrigins:{}} as any,'agencia','0001','contract'),false,'sem página de origem em documento multipágina não deve aprovar');
+});
+test('notApplicableReason marca nomeFantasia ausente em contrato sem cláusula de fantasia e dados bancários ausentes em aditivo não bancário',()=>{
+ const contractFile={category:'contract',text:'INSTRUMENTO PARTICULAR DE PRESTAÇÃO DE SERVIÇOS\nCONTRATANTE: ESCOLA EXEMPLO LTDA, CNPJ 11.444.777/0001-61, com sede na Rua A, 10.',fields:{razaoSocial:['ESCOLA EXEMPLO LTDA'],cnpj:['11.444.777/0001-61']},incomplete:false};
+ assert.match(notApplicableReason('Novo contrato','nomeFantasia',[contractFile as any]),/nome fantasia/i);
+ const contractWithTradeName={...contractFile,text:contractFile.text+'\nNome Fantasia: Colégio Exemplo'};
+ assert.equal(notApplicableReason('Novo contrato','nomeFantasia',[contractWithTradeName as any]),'');
+ const nonBankAddendum={category:'contract',text:'TERMO ADITIVO AO CONTRATO\nCláusula 1 - A taxa passa a ser de 12,50%.',fields:{remuneracao:['12,50%']},incomplete:false};
+ assert.match(notApplicableReason('Aditivo','agencia',[nonBankAddendum as any]),/instrumento contratual/i);
+ assert.equal(notApplicableReason('Alteração de dados bancários','agencia',[nonBankAddendum as any]),'');
+});
+

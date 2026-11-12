@@ -8,7 +8,7 @@ import express from 'express';
 process.env.DATABASE_PATH=join(mkdtempSync(join(tmpdir(),'kedu-audit-')),'test.sqlite');
 process.env.NODE_ENV='test';process.env.DEMO_SEED='false';process.env.GLPI_MODE='demo';
 const {all,one,run,now}=await import('../server/db.js');
-const {buildProcessingPlan,ensureProcessing,scheduleContractProcessing,processContract,processingFileProgress}=await import('../server/contract-processing.js');
+const {buildProcessingPlan,ensureProcessing,scheduleContractProcessing,processContract,processingFileProgress,processingSummary}=await import('../server/contract-processing.js');
 const {processingStatus}=await import('../server/processing-status.js');
 const {registerProcessingRoutes}=await import('../server/processing-routes.js');
 const {supersededDocuments}=await import('../server/document-versions.js');
@@ -225,7 +225,12 @@ test('Cobertura incompleta não afirma que o arquivo não foi enviado',()=>{
  demand('coverage',[],{coverage:{approvalCoverage:'partial',timelineCoverage:'complete'}});
  const plan=buildProcessingPlan('coverage')!;
  assert.equal(plan.comparisons.length,0);
- assert.match(plan.issues.find(i=>i.field==='contractMissing')!.message,/por consultar/);
+ const issue=plan.issues.find(i=>i.field==='contractMissing')!;
+ assert.equal(issue.label,'Consulta ao GLPI incompleta');
+ assert.equal(issue.missingReason,'coverage_partial');
+ run("UPDATE contract_processing SET status='Aguardando análise',result=? WHERE demand_id='coverage'",
+  JSON.stringify({issues:[{field:'contractMissing',label:'Contrato não encontrado',message:'Ainda há fontes por consultar.'}]}));
+ assert.equal(processingSummary('coverage')?.contractStage,'Consulta ao GLPI incompleta');
  demand('coverage-ok',[],{coverage:{approvalCoverage:'not_required',timelineCoverage:'complete'}});
  assert.equal(buildProcessingPlan('coverage-ok')!.issues.find(i=>i.field==='contractMissing')?.label,'Contrato não encontrado');
 });
@@ -322,3 +327,33 @@ test('Validação: conferência registrada tira o bloqueio; valor novo volta a b
  run("UPDATE processing_files SET extracted=? WHERE id='validation-2'",JSON.stringify({version:4,text:'TERMO ADITIVO\nCNPJ '+THIRD,fields:{cnpj:[THIRD]},digitalFields:{cnpj:[THIRD]},problem:'',method:'Texto do PDF',pages:1,needsReview:false}));
  assert.ok(buildProcessingPlan('validation')!.issues.some((i:any)=>i.field==='review:validation:cnpj'),'valor diferente exige nova conferência');
 });
+test('Triagem contratual: reconhece contratos com prefixo no nome, move anexos não contratuais lidos de Tipo a confirmar para Contrato não encontrado e informa o motivo exato em Contrato não lido',()=>{
+ // 1. Prefixed contract filenames and signed contract filenames are recognized as contracts, not missed as Contrato não encontrado
+ demand('prefixed-contract',[{id:'1',name:'Colégio Teste - 1º Termo Aditivo.pdf'}]);
+ file('prefixed-contract','1','Colégio Teste - 1º Termo Aditivo.pdf',{...contract,text:'Razão social: Escola Teste Ltda\nCNPJ: '+VALID+'\nTaxa de remuneração: 11,84%'});
+ const prefixedPlan=buildProcessingPlan('prefixed-contract')!;
+ assert.equal(prefixedPlan.files[0].contractForComparison,true);
+ assert.ok(!prefixedPlan.issues.some((i:any)=>i.field==='contractMissing'));
+
+ // 2. Non-contract PDF/DOCX already read (e.g. Boleto, Ficha Cadastral, Estatuto, or generic PDF read completely without contract content) moves from Tipo a confirmar to Contrato não encontrado
+ demand('read-non-contract',[{id:'1',name:'documento_escola.pdf'},{id:'2',name:'Boleto_Mensalidade.pdf'}]);
+ file('read-non-contract','1','documento_escola.pdf',{text:'Histórico administrativo da instituição de ensino com relação de turmas e horários do ano letivo de 2026.',triageOnly:true});
+ file('read-non-contract','2','Boleto_Mensalidade.pdf',{text:'Boleto bancário vencimento 10/11/2026 valor R$ 500,00',triageOnly:true});
+ const nonContractPlan=buildProcessingPlan('read-non-contract')!;
+ assert.ok(!nonContractPlan.issues.some((i:any)=>i.label==='Tipo a confirmar'));
+ assert.equal(nonContractPlan.issues.find((i:any)=>i.field==='contractMissing')?.label,'Contrato não encontrado');
+
+ // 3. Contrato não lido informs the exact cause (e.g. closed GLPI ticket, download failure with HTTP detail, or waiting in queue)
+ demand('unreadable-closed',[{id:'1',name:'Contrato_Garantia.pdf'}],{status:'5'});
+ const closedIssue=buildProcessingPlan('unreadable-closed')!.issues.find((i:any)=>i.field==='file:1')!;
+ assert.equal(closedIssue.label,'Contrato não lido');
+ assert.match(closedIssue.message,/encerrado no GLPI/);
+
+ demand('unreadable-http',[{id:'1',name:'Contrato_Garantia.pdf'}]);
+ run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)','unreadable-http-1','unreadable-http','1','hash-unreadable-http','Contrato_Garantia.pdf','application/pdf',Buffer.alloc(0),JSON.stringify({version:4,text:'',fields:{},problem:'Não foi possível baixar o anexo.',failureDetail:'HTTP 403'}),'Não foi possível baixar o anexo.',now());
+ const httpIssue=buildProcessingPlan('unreadable-http')!.issues.find((i:any)=>i.field==='file:1')!;
+ assert.equal(httpIssue.label,'Contrato não lido');
+ assert.match(httpIssue.message,/HTTP 403/);
+ assert.equal(httpIssue.pendingReason?.code,'download_failed');
+});
+

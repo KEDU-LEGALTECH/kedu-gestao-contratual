@@ -76,3 +76,10 @@ test('Tabela de simulação usa apenas a linha solicitada e não confunde taxa d
  assert.deepEqual(installmentTableFields(text,'3'),{remuneracao:['4,50%'],parcelas:['3'],valor:['1507,90'],valorParcela:['574,90']});
  assert.deepEqual(installmentTableFields(text,undefined),{});assert.deepEqual(installmentTableFields(text,'9'),{});
 });
+test('Filtra CNPJ da própria Kedu quando citado junto ao CNPJ da escola e resolve transição explícita de taxa (de X% para Y%)',()=>{
+ const ticketHtml='<p>CNPJ: 11.444.777/0001-61</p><p>Contratada: Kedu Serviços e Soluções Educacionais LTDA - CNPJ: 45.543.580/0001-99</p><p>Solicitamos redução da Taxa Kedu de 14,9% para 12,5%</p>';
+ const fields=requestExpectations(ticketHtml);
+ assert.deepEqual(fields.cnpj,['11.444.777/0001-61']);
+ assert.deepEqual(fields.remuneracao,['12,50%']);
+});
+

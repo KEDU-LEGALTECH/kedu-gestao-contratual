@@ -147,8 +147,14 @@ async function api(path: string, body?: any, method?: string) {
   if (!r.ok) throw Object.assign(Error(data.error), { fields: data.fields });
   return data;
 }
+const contractStageActions:Record<string,string> = {
+  "Consulta ao GLPI incompleta": "Confira os anexos e as aprovações na conversa do GLPI. Se a integração não tiver acesso, solicite a permissão de leitura.",
+  "Contrato não encontrado": "Confira a conversa do chamado. Se o contrato ainda não foi enviado, solicite o instrumento para conferência.",
+  "Contrato não lido": "Abra a demanda para ver se falta baixar o contrato ou concluir a leitura do arquivo.",
+  "Tipo a confirmar": "Abra o anexo indicado na demanda e confira se ele é o instrumento contratual.",
+};
 const Badge = ({ stage }: { stage: string }) => (
-  <span className={"badge " + (stage==="Sem erros"?"conference-clean":stage==="Aguardando correção"?"conference-correction":["Aguardando análise","Conferência parcial","Contrato não encontrado","Contrato não lido","Tipo a confirmar"].includes(stage)?"conference-analysis":"stage-" + stages.indexOf(stage))}>
+  <span className={"badge " + (stage==="Sem erros"?"conference-clean":stage==="Aguardando correção"?"conference-correction":Object.hasOwn(contractStageActions,stage)||["Aguardando análise","Conferência parcial"].includes(stage)?"conference-analysis":"stage-" + stages.indexOf(stage))}>
     <i />
     {demandStageLabel(stage)}
   </span>
@@ -482,6 +488,8 @@ export function App() {
               </td>
               <td>
                 <Badge stage={displayStage(d)} />
+                {!compact && stage && Object.hasOwn(contractStageActions,stage) && d.processing?.contractReason &&
+                  <small>{d.processing.contractReason}</small>}
               </td>
               <td><span className={"badge priority-badge priority-"+demandPriorityRank(d)}>{d.glpiOrigin?glpiPriorityLabel(d.glpiOrigin.priority):d.priority}</span></td>
               <td>
@@ -1510,13 +1518,14 @@ export function App() {
                             <button
                               key={s}
                               type="button"
+                              aria-label={`Ver demandas em ${demandStageLabel(s)} (${n})`}
                               onClick={() => openDashboardDemands(s)}
                             >
                               <div className="bar-space">
                                 <div
                                   className={"bar bar-" + listStages.indexOf(s)}
                                   style={{
-                                    background:s==="Sem erros"?"#58a879":s==="Aguardando correção"?"#d86b62":s==="Contrato não lido"?"#cd8848":["Aguardando análise","Contrato não encontrado"].includes(s)?"#d5ab44":s==="Conferência parcial"?"#e2c675":undefined,
+                                    background:s==="Sem erros"?"#58a879":s==="Aguardando correção"?"#d86b62":s==="Consulta ao GLPI incompleta"?"#8db9ce":s==="Contrato não lido"?"#cd8848":["Aguardando análise","Contrato não encontrado"].includes(s)?"#d5ab44":s==="Conferência parcial"?"#e2c675":undefined,
                                     height:Math.max(8,(n/largestStage)*72)+"%",
                                   }}
                                 >
@@ -1524,7 +1533,7 @@ export function App() {
                                 </div>
                               </div>
                               <small>
-                                {demandStageLabel(s)}
+                                {s==="Consulta ao GLPI incompleta"?"Consulta incompleta":demandStageLabel(s)}
                               </small>
                             </button>
                           );
@@ -1611,7 +1620,7 @@ export function App() {
                         ))}
                       </select>
                     </div>
-                    <p className="muted">Contrato não encontrado: nenhum contrato foi identificado nos anexos lidos. Contrato não lido: há um possível contrato, mas falta obter ou ler o arquivo.</p>
+                    {stage && Object.hasOwn(contractStageActions,stage) && <p className="muted">{contractStageActions[stage]}</p>}
                     <details className="more-filters" open={!!(owner||priority||type||deadline)}>
                     <summary>Mais filtros</summary>
                     <div className="filter-row">
@@ -1688,7 +1697,7 @@ export function App() {
                     </details>
                   </section>
                   <ProcessingProgress demands={filtered} api={api} allowed={!!can('files')&&!!can('bank')}/>
-                  {['Aguardando análise','Contrato não encontrado','Contrato não lido','Conferência parcial','Aguardando correção'].includes(stage)&&can('files')&&can('bank')&&<ProcessingSummary stage={['Contrato não encontrado','Contrato não lido'].includes(stage)?'Aguardando análise':stage} demands={filtered} api={api}/>}
+                  {(Object.hasOwn(contractStageActions,stage)||['Aguardando análise','Conferência parcial','Aguardando correção'].includes(stage))&&can('files')&&can('bank')&&<ProcessingSummary stage={Object.hasOwn(contractStageActions,stage)?'Aguardando análise':stage} demands={filtered} api={api}/>}
                   <section className="panel">{table(filtered)}</section>
                   <p className="muted">
                     {filtered.length} demandas encontradas. Etapas são alteradas

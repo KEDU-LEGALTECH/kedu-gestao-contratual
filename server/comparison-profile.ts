@@ -18,6 +18,12 @@ export function notApplicableReason(type:string,key:string,files:ProfileFile[]) 
  if(![...identity,...bank].includes(key))return '';
  if(readable.length&&readable.every(f=>templateDocument(f.text)))return 'Os documentos recebidos são modelos com marcadores ({{…}}), sem dados preenchidos; este dado não consta neles.';
  if(educational(type)&&readable.some(f=>parentsContract(f.text)))return 'Contrato da escola com os responsáveis: confere-se a cláusula de cessão à Kedu, não os dados cadastrais da escola.';
+ if(readable.length&&readable.every(f=>!f.incomplete)){
+  if(key==='nomeFantasia'&&!readable.some(f=>/nome\s+(?:de\s+)?fantasia|t[íi]tulo\s+do\s+estabelecimento/i.test(f.text)))
+   return 'O instrumento contratual qualifica a parte pela razão social e CNPJ, sem cláusula de nome fantasia.';
+  if(bank.includes(key)&&/aditivo|distrato|parcelamento|rescis[ãa]o/.test(t)&&!/conta banc|dados banc|ag[êe]ncia|\bpix\b/.test(t)&&!readable.some(f=>/\b(?:banco|ag[êe]ncia|conta\s+corrente|dados\s+banc[áa]rios)\b/i.test(f.text)))
+   return 'Este instrumento contratual não altera nem declara dados bancários.';
+ }
  return '';
 }
 

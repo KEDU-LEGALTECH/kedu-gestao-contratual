@@ -1,5 +1,5 @@
 import {qualifiedCompanyName} from './qualification-reading.js';
-import {contractReadingScope,isFilledContract} from './contract-reading-scope.js';
+import {contractReadingScope,isFilledContract,isSupportDocument} from './contract-reading-scope.js';
 import {readingFilename} from './reading-format.js';
 import { all,one,run,db,id,now,audit } from "./db.js";
 import { downloadGlpiAttachment } from "./glpi-download.js";
@@ -57,7 +57,7 @@ const activeFiles=new Map<string,{documentId:string;targeted?:boolean;page?:numb
 function fingerprint(did:string) {
  const d=one("SELECT school_id,contract_id,data_version FROM demands WHERE id=?",did);
  return sha256(Buffer.from(JSON.stringify([
-  'hybrid-local-ocr-v39-party-layout-evidence',
+  'hybrid-local-ocr-v44-approval-docs-and-party-scoping',
   all('SELECT kind,field,signature,value FROM processing_resolutions WHERE demand_id=? ORDER BY kind,field',did),
   d,
   all("SELECT v.id,v.status,s.template_hash,h.template_hash AS approved_hash,i.version_id AS inactive FROM template_sources s JOIN template_versions v ON v.id=s.version_id LEFT JOIN template_homologations h ON h.version_id=v.id LEFT JOIN inactive_template_versions i ON i.version_id=v.id ORDER BY v.id"),
@@ -109,6 +109,25 @@ function carryReviews(fromFileId:string,did:string,documentId:string,hash:string
  const whole=run('INSERT OR IGNORE INTO processing_file_reviews SELECT ?,extraction_hash,author,created FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?',target.id,fromFileId,extractionHash).changes;
  if(fields||whole)audit(did,null,'Conferência humana mantida na nova versão do chamado: mesmo arquivo e mesma extração. Nenhuma nova conferência foi criada.');
 }
+function unreadableContractIssue(doc:any,file:any,raw:any,ticketStatus:unknown):{message:string;missingReason:string}{
+ if(!file){
+  if(raw.documentsAvailable===false)return {missingReason:'coverage_partial',message:'O contrato foi identificado na lista do chamado, mas os anexos ainda não puderam ser consultados no GLPI.'};
+  if(closedInGlpi(ticketStatus))return {missingReason:'download_pending',message:'O contrato foi identificado pelo nome, mas o chamado está encerrado no GLPI (leitura automática em segundo plano pausada). Abra a demanda e clique em Atualizar leitura para analisar este contrato.'};
+  return {missingReason:'download_pending',message:'O contrato foi identificado pelo nome e aguarda download e leitura na fila automática. Clique em Atualizar leitura para priorizar.'};
+ }
+ let e:any={};try{e=JSON.parse(file.extracted||'{}')||{};}catch{}
+ if(!file.byteLength){
+  const detail=e.failureDetail?` (${e.failureDetail})`:'';
+  return {missingReason:'download_failed',message:`Não foi possível baixar o anexo do contrato no GLPI${detail}. Confira a disponibilidade do arquivo no chamado.`};
+ }
+ const prob=String(file.problem||e.problem||'').trim();
+ if(prob){
+  const detail=e.failureDetail&&!prob.includes(e.failureDetail)?` (${e.failureDetail})`:'';
+  return {missingReason:/sem conteúdo legível|em branco|vazio/i.test(prob)?'empty_source':'read_failed',message:`${prob}${detail}`};
+ }
+ if(e.decorative)return {missingReason:'empty_source',message:'O arquivo identificado como contrato contém apenas imagem sem contraste ou sem texto legível para o OCR. Envie uma cópia legível.'};
+ return {missingReason:'read_failed',message:'O arquivo do contrato foi aberto, mas não retornou texto legível nem campos reconhecidos. Confira o original no GLPI ou envie uma cópia legível.'};
+}
 export function buildProcessingPlan(did:string) {
  const {demand:d,ticket}=processingSource(did),job=one("SELECT * FROM contract_processing WHERE demand_id=?",did);
  if(!d || !ticket || !job)return null;
@@ -126,7 +145,7 @@ export function buildProcessingPlan(did:string) {
  const currentFiles=allFiles.filter(f=>!superseded.has(f.document_id));
  const files=currentFiles.filter(f=>{
   const reading=JSON.parse(f.extracted);
-  return !f.problem&&!reading.triageOnly&&isFilledContract(reading.text||'');
+  return !f.problem&&!reading.triageOnly&&isFilledContract(reading.text||'',f.name);
  });
  const contractIds=new Set(files.map(f=>f.id));
  const currentDocuments=(raw.documents||[]).filter((doc:any)=>!superseded.has(String(doc.id)));
@@ -143,21 +162,28 @@ export function buildProcessingPlan(did:string) {
  const incompleteCoverage=raw.timelineCoverage==='partial'||raw.approvalCoverage==='partial'||raw.documentsAvailable===false;
  const demandType=analysis.suggestion.type||(d.type!=="A classificar"?d.type:"");
  const unusedFiles=new Set<string>();
+ const expectedPartyCnpj=request.cnpj?.length===1?request.cnpj[0]:undefined;
+ const expectedPartyName=request.razaoSocial?.length===1?request.razaoSocial[0]:request.nomeFantasia?.length===1?request.nomeFantasia[0]:undefined;
+ const extractedByFile=new Map<string,any>();
  for(const f of files) {
   const saved=JSON.parse(f.extracted);
   const savedFields={...saved.fields};
   if(savedFields.razaoSocial)savedFields.razaoSocial=savedFields.razaoSocial.map(qualifiedCompanyName).filter(Boolean);
   const fields={...savedFields,...recoverTextFields(saved.text||'',savedFields)};
   const enriched={...saved,fields:Object.fromEntries(Object.entries(fields).map(([key,vs])=>[key,(vs as string[]).map(v=>normalizeValue(key,v)).filter(Boolean)]))};
-  const partyScope=scopePartyReading(enriched,request.cnpj?.length===1?request.cnpj[0]:undefined);
+  const partyScope=scopePartyReading(enriched,expectedPartyCnpj,expectedPartyName);
   if(partyScope.parties.length)filesWithQualifiedParties.add(f.id);
   const extracted:any={...partyScope.reading,fields:withDocumentAddress(partyScope.reading.fields||{})};
+  extractedByFile.set(f.id,extracted);
   const role='document';
   const extractedHash=sha256(Buffer.from(f.extracted)),wholeReviewed=!!one('SELECT file_id FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?',f.id,extractedHash);
   const scopedFields=fieldsForRole(role,extracted.fields),fieldChecks=all('SELECT field,value,extraction_hash FROM processing_field_reviews WHERE file_id=?',f.id);
   const checkedAllFields=Object.keys(scopedFields).length>0&&Object.entries(scopedFields).every(([key,values])=>values.length===1&&fieldChecks.some(check=>check.field===key&&check.extraction_hash===extractedHash&&sameRequestedValue(key,check.value,values[0])));
   if(partyScope.parties.length&&!partyScope.selected)add('review:parties:'+f.id,'Há mais de uma parte contratual possível. Identifique a empresa correspondente ao chamado; os CNPJs das partes não foram misturados.',{label:'Identificação da parte contratual',source:f.name});
-  if(extracted.incomplete)add('review:partial:'+f.id,'A leitura foi interrompida. Os trechos já lidos foram preservados, mas é necessário conferir as páginas restantes e enviar uma cópia completa legível.',{label:'Leitura parcial',source:f.name});
+  if(extracted.incomplete){
+   const partialDetail=extracted.pages?` (${extracted.completedPages?.length||0}/${extracted.pages} páginas lidas${extracted.warnings?.[0]?' — '+extracted.warnings[0]:''})`:(extracted.warnings?.[0]?` (${extracted.warnings[0]})`:'');
+   add('review:partial:'+f.id,`A leitura foi interrompida${partialDetail}. Os trechos já lidos foram preservados, mas é necessário conferir as páginas restantes e enviar uma cópia completa legível.`,{label:'Leitura parcial',source:f.name});
+  }
   if(extracted.needsReview && !automaticReadingCheck(extracted,role,request) && !wholeReviewed && !checkedAllFields)add("review:"+f.id,readingGuidance(extracted,role),{label:"Conferência de leitura: "+f.name,source:f.name});
   // Implausible values (labels, malformed numbers) and this portal's own identity are reading artifacts, not document data.
   for(const [key,vs] of Object.entries(scopedFields))for(const value of vs){
@@ -181,16 +207,24 @@ export function buildProcessingPlan(did:string) {
  const originalCnpj=request.cnpj?.length===1&&!references.cnpj?request.cnpj[0]:undefined;
  const provedCnpj=(candidates.cnpj||[]).some(c=>{
   if(!filesWithQualifiedParties.has(c.fileId)||!sameRequestedValue('cnpj',c.value,printedCnpj))return false;
-  const reading=JSON.parse(files.find(f=>f.id===c.fileId)!.extracted);
+  const reading=extractedByFile.get(c.fileId)||JSON.parse(files.find(f=>f.id===c.fileId)!.extracted);
   return hasDigitalField(reading,'cnpj',c.value)||(!reading.incomplete&&!reading.needsReview);
  });
  const normalizedCnpj=originalCnpj&&printedCnpj&&!otherCnpjs.length&&provedCnpj?corroboratedDecimalCnpj(originalCnpj,printedCnpj):undefined;
  if(normalizedCnpj)request.cnpj=[normalizedCnpj];
- for(const doc of pendingContracts)add('file:'+doc.id,'O possível contrato ainda não pôde ser obtido ou lido. Confira o anexo no GLPI ou envie uma cópia legível.',{label:'Contrato não lido',source:doc.name});
+ for(const doc of pendingContracts){
+  const reason=unreadableContractIssue(doc,cachedByDocument.get(String(doc.id)),raw,ticket.status);
+  add('file:'+doc.id,reason.message,{label:'Contrato não lido',source:doc.name,missingReason:reason.missingReason});
+ }
  if(!files.length&&!pendingContracts.length&&unidentified.length)for(const doc of unidentified)add('file:'+doc.id,'A identificação inicial não confirmou que este anexo é um contrato. Abra o arquivo na conversa do GLPI para verificar o tipo.',{label:'Tipo a confirmar',source:doc.name});
- if(!files.length&&!pendingContracts.length&&!unidentified.length)add('contractMissing',incompleteCoverage||unavailable.some((doc:any)=>contractReadingScope(doc.name||'',cachedByDocument.get(String(doc.id))).kind==='unknown')
-  ?'Nenhum contrato foi identificado nos anexos lidos. Ainda há anexos ou fontes por consultar.'
-  :'Nenhum contrato foi identificado entre os anexos do chamado. Obtenha o contrato no GLPI para conferir o preenchimento.',{label:'Contrato não encontrado'});
+ if(!files.length&&!pendingContracts.length&&!unidentified.length){
+  if(incompleteCoverage)
+   add('contractMissing','A consulta do GLPI deixou anexos ou aprovações por verificar. Confira a conversa do chamado e o acesso da integração antes de pedir o reenvio.',{label:'Consulta ao GLPI incompleta',missingReason:'coverage_partial'});
+  else if(unavailable.some((doc:any)=>contractReadingScope(doc.name||'',cachedByDocument.get(String(doc.id))).kind==='unknown'))
+   add('contractMissing','Ainda há anexos cujo tipo precisa ser identificado. Abra os arquivos na conversa do GLPI.',{label:'Tipo a confirmar',missingReason:'source_unidentified'});
+  else
+   add('contractMissing','Nenhum contrato foi identificado entre os anexos do chamado. Obtenha o contrato no GLPI para conferir o preenchimento.',{label:'Contrato não encontrado'});
+ }
  for(const [key,vs] of Object.entries(candidates)) {
   const distinct=vs.map(x=>normalizeValue(key,x.value)).filter((v,i,a)=>a.findIndex(x=>sameRequestedValue(key,x,v))===i);
   if(distinct.length===1){values[key]=distinct[0];origins[key]=vs[0].source;}
@@ -215,7 +249,7 @@ export function buildProcessingPlan(did:string) {
  }
  if(!values.modalidade){const named=["Garantia Completa","Garantia Conjunta","Garantia Prevista"].filter(x=>norm(htmlToText(raw.content).join(" ")+" "+raw.title).includes(norm(x)));if(named.length===1){values.modalidade=named[0];origins.modalidade="Modalidade explicitamente citada no chamado GLPI";}}
  const comparable=new Set(editableKeys.filter(key=>!["motivo","matriz"].includes(key)));
- const profileFiles=files.map(f=>{const e=JSON.parse(f.extracted);return {name:f.name,text:e.text||'',problem:f.problem,incomplete:!!e.incomplete,method:e.method};});
+ const profileFiles=files.map(f=>{const e=extractedByFile.get(f.id)||JSON.parse(f.extracted);return {name:f.name,text:e.text||'',problem:f.problem,incomplete:!!e.incomplete,method:e.method};});
  const comparisons:any[]=Object.entries(request).filter(([key])=>files.length&&comparable.has(key)).map(([key,expected])=>{
   const located=distinctRequestedValues(key,(candidates[key]||[]).map(c=>c.value));
   // No extractor captured the field, but the exact requested value is printed in an attachment.
@@ -238,11 +272,11 @@ export function buildProcessingPlan(did:string) {
     evidence:invalidEvidence,message,reviewReason:{code:'invalid_identifier',message}};
   }
   const matches=expected.length===1 && found.length>0 && found.every(v=>sameRequestedValue(key,v,expected[0]));
-  const tradeName=key==='razaoSocial'&&!matches&&!guided&&!!candidates[key]?.length&&candidates[key].every(c=>headerTradeName(JSON.parse(files.find(f=>f.id===c.fileId)!.extracted).text,c.value));
+  const tradeName=key==='razaoSocial'&&!matches&&!guided&&!!candidates[key]?.length&&candidates[key].every(c=>headerTradeName((extractedByFile.get(c.fileId)||JSON.parse(files.find(f=>f.id===c.fileId)!.extracted)).text,c.value));
   // Several values where one equals the request (branches, partners, witnesses) need a check, not a correction.
   const partlyMatches=!matches && expected.length===1 && found.length>1 && found.some(v=>sameRequestedValue(key,v,expected[0]));
   const previousVersion=!found.length&&pendingContracts.some((doc:any)=>!cachedByDocument.has(String(doc.id))&&one('SELECT id FROM processing_files WHERE demand_id=? AND document_id=? LIMIT 1',did,String(doc.id)));
-  const visuallyAbsent=!found.length&&files.length>0&&files.every(f=>!f.problem&&assistedVisualAbsence(JSON.parse(f.extracted),key));
+  const visuallyAbsent=!found.length&&files.length>0&&files.every(f=>!f.problem&&assistedVisualAbsence(extractedByFile.get(f.id)||JSON.parse(f.extracted),key));
   const fieldEvidence={reason:'not_located',message:'O campo não foi localizado no contrato. Confira o trecho correspondente no original.',expectedDocument:'Contrato',sourceDocuments:files.map(f=>f.name)};
   // Shows where the value is printed so a person can check it; the field stays pending.
   const valueSource=!found.length&&expected.length===1?attachmentWithValue(key,expected[0],files):undefined;
@@ -254,7 +288,7 @@ export function buildProcessingPlan(did:string) {
   // attachment supplies the same value but has lower reading confidence.
   const trustedReading=found.length===1&&(candidates[key]||[]).some(c=>{
    const file=files.find(f=>f.id===c.fileId)!;
-   const reading=JSON.parse(file.extracted),role='document';
+   const reading=extractedByFile.get(c.fileId)||JSON.parse(file.extracted),role='document';
    if(file.problem)return false;
    if(issues.some(i=>i.field.startsWith('review:')&&i.field.endsWith(c.fileId)&&!['review:'+c.fileId,'review:partial:'+c.fileId].includes(i.field)))return false;
    if(hasDigitalField(reading,key,c.value))return true;
@@ -266,7 +300,7 @@ export function buildProcessingPlan(did:string) {
    return !reading.needsReview||automaticReadingCheck({...reading,fields:{[key]:[c.value]}},role,request);
   });
   const referenceTradeName=key==='razaoSocial'&&(candidates[key]||[]).some(c=>{
-   const reading=JSON.parse(files.find(f=>f.id===c.fileId)!.extracted);
+   const reading=extractedByFile.get(c.fileId)||JSON.parse(files.find(f=>f.id===c.fileId)!.extracted);
    return referenceTradeNameNeedsReview(key,found,expected,request.cnpj||[],{...reading.fields,...recoverTextFields(reading.text||'',{})});
   });
   const needsFieldReview=(referenceTradeName||legalFormReferenceNeedsReview(key,found,expected)||tradeName||!!guided&&!guided.associated||qualifiedNameNeedsReview(key,found,expected)||!trustedReading&&(candidates[key]||[]).some(c=>{
@@ -275,14 +309,14 @@ export function buildProcessingPlan(did:string) {
    // Structural, partial and legal reviews remain independent of OCR certainty.
    if(pending.some(i=>i.field!=='review:'+c.fileId))return true;
    const file=files.find(f=>f.id===c.fileId)!;
-   const reading=JSON.parse(file.extracted),role='document';
+   const reading=extractedByFile.get(c.fileId)||JSON.parse(file.extracted),role='document';
    const confirmed=one('SELECT value FROM processing_field_reviews WHERE file_id=? AND field=? AND extraction_hash=?',file.id,key,sha256(Buffer.from(file.extracted)));
    if(!reading.incomplete&&confirmed&&sameRequestedValue(key,confirmed.value,c.value))return false;
    return !automaticReadingCheck({...reading,fields:{[key]:[c.value]}},role,request);
   }));
   const bankHolderContext=key==='razaoSocial'&&guided&&!guided.associated?distinctRequestedValues('titularConta',(candidates.titularConta||[]).map(c=>c.value)):[];
   const conflictingRates=['remuneracao','garantia','repasse','repasseSegundo','cashback'].includes(key)&&expected.length>1&&expected.every(value=>plausibleFieldValue(key,value))&&trustedReading&&!needsFieldReview;
-  const reviewReason=conflictingRates?{code:'reference_conflict',message:'O GLPI informa taxas diferentes para este campo. Confirme e registre qual taxa vale para a demanda antes de solicitar alteração do documento.'}:bankHolderContext.length===1?{code:'commercial_name_bank_holder',message:'O nome aparece no comunicado, mas não como razão social. O titular bancário declarado é '+bankHolderContext[0]+'. Confirme o vínculo entre o nome comercial e a pessoa jurídica; não foi presumida equivalência.'}:needsFieldReview||partlyMatches?comparisonReviewReason({referenceTradeName,referenceNameTypo:legalFormReferenceNeedsReview(key,found,expected),tradeName,guided:!!guided&&!guided.associated,qualifiedName:qualifiedNameNeedsReview(key,found,expected),conflictingValues:partlyMatches,readings:(candidates[key]||[]).map(c=>JSON.parse(files.find(f=>f.id===c.fileId)!.extracted)),field:key}):undefined;
+  const reviewReason=conflictingRates?{code:'reference_conflict',message:'O GLPI informa taxas diferentes para este campo. Confirme e registre qual taxa vale para a demanda antes de solicitar alteração do documento.'}:bankHolderContext.length===1?{code:'commercial_name_bank_holder',message:'O nome aparece no comunicado, mas não como razão social. O titular bancário declarado é '+bankHolderContext[0]+'. Confirme o vínculo entre o nome comercial e a pessoa jurídica; não foi presumida equivalência.'}:needsFieldReview||partlyMatches?comparisonReviewReason({referenceTradeName,referenceNameTypo:legalFormReferenceNeedsReview(key,found,expected),tradeName,guided:!!guided&&!guided.associated,qualifiedName:qualifiedNameNeedsReview(key,found,expected),conflictingValues:partlyMatches,readings:(candidates[key]||[]).map(c=>extractedByFile.get(c.fileId)||JSON.parse(files.find(f=>f.id===c.fileId)!.extracted)),field:key}):undefined;
   if(reviewReason&&['reference_trade_name','reference_name_typo'].includes(reviewReason.code))for(const issue of issues.filter(i=>i.field===key))issue.message=reviewReason.message;
   const correction=conversationCorrections[key];
   return {field:key,referenceNormalization:key==='cnpj'&&normalizedCnpj?originalCnpj:undefined,advanceRateContext:key==='remuneracao'&&expected.length===1&&expected[0]===advanceRates?.advance?advanceRates:undefined,referenceResolution:references[key],referenceCorrection:correction&&expected.length===1&&sameRequestedValue(key,expected[0],correction.value)?correction:undefined,reviewReason,matchesReference:matches,partlyMatches,expectedEntities:companies,message:companies.length>1?'O chamado menciona mais de uma empresa. Os CNPJs foram separados; confira cada arquivo com a empresa correspondente. O CNPJ do titular bancário não comprova, sozinho, o CNPJ do contrato social.':invalidReference?'O documento informado no GLPI tem quantidade de dígitos ou dígitos verificadores inválidos. Confirme a referência no chamado antes de solicitar alteração do arquivo.':undefined,missingReason:!found.length?evidence.reason:undefined,expectedDocument:evidence.expectedDocument,sourceDocuments:evidence.sourceDocuments,readingPending:needsFieldReview||partlyMatches,label:key==='cnpj'&&expected.length===1&&expected[0].replace(/\D/g,'').length===11?'CPF':analysis.suggestion.type==="Parcelamento" && key==="valor"?"Valor parcelado":analysis.suggestion.type==="Parcelamento" && key==="parcelas"?"Quantidade de parcelas":inputLabels[key]||key,expected:expected.join("; "),found:found.join("; "),source:guided?guided.source+(guided.associated?" (valor localizado junto ao rótulo do campo)":" (valor do chamado localizado no texto)"):[...new Set((candidates[key]||[]).map(c=>c.source))].join("; "),used:values[key]||"",note:notApplicable||undefined,status:invalidReference||expected.length>1?"ambiguous":notApplicable?"not_applicable":!found.length?"missing":needsFieldReview||partlyMatches?"review":!matches?"different":"matches"};
@@ -291,7 +325,7 @@ export function buildProcessingPlan(did:string) {
  // completely read file pending after every requested field it supplies has independent proof.
  for(const f of files){
   const index=issues.findIndex(i=>i.field==='review:'+f.id);if(index<0||f.problem)continue;
-  const e=JSON.parse(f.extracted);
+  const e=extractedByFile.get(f.id)||JSON.parse(f.extracted);
   // Unrequested calculations do not invalidate an identity read from literal
   // workbook cells. Financial/calculated fields never qualify for this rule.
   const literalRelated=comparisons.filter(c=>request[c.field]?.length&&(candidates[c.field]||[]).some(v=>v.fileId===f.id));
@@ -310,7 +344,7 @@ export function buildProcessingPlan(did:string) {
  }
  const cession=files.length?cessionClauseCheck(demandType,profileFiles):null;
  if(cession){comparisons.push(cession);if(cession.status!=='matches')add('clausulaCessao',cession.message,{label:cession.label});}
- const validationFindings=validateReadings(files.filter(f=>!f.problem).map(f=>{const scoped=scopePartyReading(JSON.parse(f.extracted),request.cnpj?.length===1?request.cnpj[0]:undefined).reading;const fields=scoped.fields as Record<string,string[]>;return {name:f.name,fields:Object.fromEntries(Object.entries(fields).map(([key,vs])=>[key,vs.filter(v=>plausibleFieldValue(key,v))]))};}));
+ const validationFindings=validateReadings(files.filter(f=>!f.problem).map(f=>{const scoped=extractedByFile.get(f.id)||scopePartyReading(JSON.parse(f.extracted),expectedPartyCnpj,expectedPartyName).reading;const fields=scoped.fields as Record<string,string[]>;return {name:f.name,fields:Object.fromEntries(Object.entries(fields).map(([key,vs])=>[key,vs.filter(v=>plausibleFieldValue(key,v))]))};}));
  for(const finding of validationFindings){
   const resolved=resolutions.find(r=>r.kind==='validation'&&r.field===finding.field&&r.signature===resolutionSignature(finding.field,finding.found));
   if(resolved){finding.resolution={note:resolved.note,created:resolved.created};continue;}
@@ -367,7 +401,7 @@ export function buildProcessingPlan(did:string) {
  }catch{add("generation","Não foi possível preencher o modelo com estes dados. Confira o modelo e os campos indicados.");}
  const typeIdentification={type:actualType||"Não identificado",source:analysis.suggestion.type?analysis.suggestion.basis:d.type!=="A classificar"?"Classificação registrada na demanda":documentTypes.length===1?"Título no início do documento ou nome do arquivo":"Conferência manual necessária",ticketTitle:raw.title,correction:templates.length?"Modelo oficial":"Lista de erros (tipo sem modelo oficial)"};
  return {demand:d,ticket,job,values,origins,issues:issues.map(issue=>({...issue,pendingReason:pendingReason({...issue,...comparisons.find(c=>c.field===issue.field)})})),comparisons,validationFindings,typeIdentification,template,templates,version,sequence,matrix,derived,generated,type:actualType,subtype:actualSubtype,
-  files:allFiles.map(f=>{const scope=scopePartyReading(JSON.parse(f.extracted),request.cnpj?.length===1?request.cnpj[0]:undefined),e=scope.reading;return {
+  files:allFiles.map(f=>{const saved=JSON.parse(f.extracted);const savedFields={...saved.fields};if(savedFields.razaoSocial)savedFields.razaoSocial=savedFields.razaoSocial.map(qualifiedCompanyName).filter(Boolean);const fields={...savedFields,...recoverTextFields(saved.text||'',savedFields)};const enriched={...saved,fields:Object.fromEntries(Object.entries(fields).map(([key,vs])=>[key,(vs as string[]).map(v=>normalizeValue(key,v)).filter(Boolean)]))};const scope=scopePartyReading(enriched,expectedPartyCnpj,expectedPartyName),e=extractedByFile.get(f.id)||scope.reading;return {
    parties:scope.parties,selectedParty:scope.selected,vision:e.vision,
    guidance:readingGuidance(e,attachmentRole(f.name,e.text||'')),changes:proposedChanges(e.text||''),
    fieldReviews:contractIds.has(f.id)?[...new Set([...Object.keys(candidates).filter(key=>candidates[key].some(c=>c.fileId===f.id)),...Object.keys(request).filter(key=>missingFieldEvidence(key,[{name:f.name,text:e.text||''}]).reason!=='not_sent')])].map(key=>{
@@ -434,9 +468,11 @@ export async function processContract(did:string,userId:string|null=null,downloa
      const preview=/\.(pdf|png|jpe?g|webp|tiff?|bmp|gif)$/i.test(detected)
       ?await readProcessingFile(file.bytes,detected,{page:1,x:0,y:0,width:1,height:1,rotation:0,identification:true})
       :/\.docx$/i.test(detected)&&file.bytes.length<=20*1024*1024?extractProcessingFile(file.bytes,detected):/\.(doc|odt|txt)$/i.test(detected)?await readProcessingFile(file.bytes,detected,undefined,true):null;
-     extracted=preview&&!preview.problem&&isFilledContract(preview.text)
-      ?{...await readProcessingFile(file.bytes,file.name),contractIdentified:true}
-      :{...preview,version:readerVersion,text:preview?.text?.slice(0,10000)||'',fields:{},problem:preview?.problem||'',method:'Identificação inicial',needsReview:false,triageOnly:true};
+     const likelyContractOnCover=preview&&!preview.problem&&/\.pdf$/i.test(detected)&&!isSupportDocument(file.name,preview.text||'')&&/\b(?:contratante|contratad[ao]|cedente|cessionaria|clausula|termo aditivo|aditamento|distrato|rescisao|confissao de divida|prestacao de servicos|clicksign|docusign|zapsign|d4sign|autentique)\b/i.test(preview.text||'');
+     const fullRead=preview&&!preview.problem&&(isFilledContract(preview.text||'',file.name)||likelyContractOnCover)?await readProcessingFile(file.bytes,file.name):null;
+     extracted=fullRead&&isFilledContract(fullRead.text||'',file.name)
+      ?{...fullRead,contractIdentified:true}
+      :{...(fullRead||preview),version:readerVersion,text:(fullRead||preview)?.text?.slice(0,10000)||'',fields:{},problem:(fullRead||preview)?.problem||'',method:'Identificação inicial',needsReview:false,triageOnly:true};
     }
    }
    catch(error){file??={name:doc.name,mime:doc.mime||"application/octet-stream",bytes:Buffer.alloc(0)};extracted={version:readerVersion,text:"",fields:{},problem:file.bytes.length?"O original está disponível, mas a leitura falhou. Confira o arquivo ou envie uma cópia acessível.":"Não foi possível baixar o anexo após as tentativas de recuperação. Confira a disponibilidade no GLPI.",failureDetail:failureDetail(error),method:'inconclusiva',needsReview:false};}
@@ -531,7 +567,7 @@ function targetedRecovery(did:string,hash:string,comparisons?:any[]){
  const {ticket}=processingSource(did);
  const current=new Set(currentReadingDocuments(JSON.parse(ticket?.payload||'{}')).map(doc=>String(doc.id)));
  return filesFor(did,hash).flatMap(file=>{
-  if(!current.has(file.document_id)||!file.byteLength||file.problem||!isFilledContract(JSON.parse(file.extracted).text||'')||JSON.parse(file.extracted).triageOnly)return [];
+  if(!current.has(file.document_id)||!file.byteLength||file.problem||!isFilledContract(JSON.parse(file.extracted).text||'',file.name)||JSON.parse(file.extracted).triageOnly)return [];
   const extractedHash=sha256(Buffer.from(file.extracted));
   if(one('SELECT file_id FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?',file.id,extractedHash))return [];
   const protectedFields=all('SELECT field FROM processing_field_reviews WHERE file_id=? AND extraction_hash=?',file.id,extractedHash).map(r=>r.field);
@@ -637,13 +673,24 @@ export function processingSummary(did:string) {
  const j=one(`SELECT d.stage,t.hash,p.status,p.ticket_hash,p.revision,
   json_array_length(p.result,'$.issues') AS issues,
   CASE WHEN p.status='Aguardando análise' THEN (
-   SELECT CASE WHEN json_extract(issue.value,'$.field')='contractMissing'
-    THEN 'Contrato não encontrado' ELSE json_extract(issue.value,'$.label') END
+   SELECT CASE
+    WHEN json_extract(issue.value,'$.field')='contractMissing' AND (
+     json_extract(t.payload,'$.timelineCoverage')='partial'
+     OR json_extract(t.payload,'$.approvalCoverage')='partial'
+     OR json_extract(t.payload,'$.documentsAvailable')=0
+    ) THEN 'Consulta ao GLPI incompleta'
+    ELSE json_extract(issue.value,'$.label') END
    FROM json_each(p.result,'$.issues') issue
    WHERE json_extract(issue.value,'$.field')='contractMissing'
     OR json_extract(issue.value,'$.label') IN ('Contrato não lido','Tipo a confirmar')
    LIMIT 1
   ) END AS contract_stage,
+  CASE WHEN p.status='Aguardando análise' THEN (
+   SELECT json_extract(issue.value,'$.message') FROM json_each(p.result,'$.issues') issue
+   WHERE json_extract(issue.value,'$.field')='contractMissing'
+    OR json_extract(issue.value,'$.label') IN ('Contrato não lido','Tipo a confirmar')
+   LIMIT 1
+  ) END AS contract_reason,
   CASE WHEN p.status='Aguardando correção' THEN json_extract(p.result,'$.issues') END AS saved_issues,
   CASE WHEN p.status='Aguardando correção' THEN json_extract(p.result,'$.comparisons') END AS saved_comparisons
   FROM demands d JOIN glpi_tickets t ON t.external_id=d.glpi_id AND t.mode='real'
@@ -654,6 +701,6 @@ export function processingSummary(did:string) {
  const status=j.status==='Aguardando correção'
   ? processingStatus(JSON.parse(j.saved_issues||'[]'),JSON.parse(j.saved_comparisons||'[]')) : j.status;
  if(status!==j.status)run("UPDATE contract_processing SET status=? WHERE demand_id=?",status,did);
- return {status,revision:j.revision,issues:j.issues||0,contractStage:j.contract_stage||undefined};
+ return {status,revision:j.revision,issues:j.issues||0,contractStage:j.contract_stage||undefined,contractReason:j.contract_reason||undefined};
 }
 

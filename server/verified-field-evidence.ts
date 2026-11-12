@@ -25,7 +25,11 @@ export function verifiedFieldEvidence(reading:any,key:string,value:string,role:s
  if(reading.verifiedFields?.includes(key)&&(reading.fieldConfidence?.[key]??reading.confidence??0)>=85)return true;
  // A low document-wide average must not hide a field independently read by
  // Tesseract and PaddleOCR. Each engine must yield one explicit, equal value.
- if(!/PaddleOCR/.test(reading.method||'')||reading.pages!==1)return false;
+ if(!/PaddleOCR/.test(reading.method||''))return false;
  const passes=String(reading.text||'').split(/\n\s*LEITURA ADICIONAL\s*[—–-]\s*PADDLEOCR\s*\/\s*OPENCV\s*\n/i);
- return passes.length===2&&passes.every(pass=>{const candidates=distinctRequestedValues(key,labelledFields(pass)[key]||[]);return candidates.length===1&&sameRequestedValue(key,candidates[0],value);});
+ if(passes.length<2)return false;
+ if(passes.length===2)return passes.every(pass=>{const candidates=distinctRequestedValues(key,labelledFields(pass)[key]||[]);return candidates.length===1&&sameRequestedValue(key,candidates[0],value);});
+ const matchedPasses=passes.filter(pass=>{const candidates=distinctRequestedValues(key,labelledFields(pass)[key]||[]);return candidates.length===1&&sameRequestedValue(key,candidates[0],value);});
+ const conflictingPasses=passes.some(pass=>{const candidates=distinctRequestedValues(key,labelledFields(pass)[key]||[]);return candidates.some(c=>!sameRequestedValue(key,c,value));});
+ return matchedPasses.length>=2&&!conflictingPasses;
 }

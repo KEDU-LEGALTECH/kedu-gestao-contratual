@@ -2,6 +2,7 @@ import {distinctFieldValues,sameFieldValue} from '../shared/value-comparison.js'
 import {htmlToText,extractFields} from './glpi-analysis.js';
 import {fieldsFromLines,normalizeValue} from './processing-extract.js';
 import {validCnpj} from './registration-reading.js';
+import {ownIdentity} from './field-plausibility.js';
 
 /** An Excel-style decimal with one lost leading zero can be reconciled with a proven identifier. */
 export function corroboratedDecimalCnpj(reference:string,documentValue:string){
@@ -10,7 +11,7 @@ export function corroboratedDecimalCnpj(reference:string,documentValue:string){
  return documentValue.replace(/\D/g,'')==='0'+digits?normalizeValue('cnpj',documentValue):undefined;
 }
 export function requestCompanyReferences(content:string){
- return [...htmlToText(content).join('\n').matchAll(/(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})\s*\(([^)\n]{3,180})\)/g)].map(m=>({cnpj:m[1],name:m[2].trim()}));
+ return [...htmlToText(content).join('\n').matchAll(/(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})\s*\(([^)\n]{3,180})\)/g)].map(m=>({cnpj:m[1],name:m[2].trim()})).filter(c=>!ownIdentity('cnpj',c.cnpj));
 }
 
 /** The form and explicitly labelled observations are the reference, never a guessed value. */
@@ -34,6 +35,11 @@ export function requestExpectations(content:string,explicitFields:Record<string,
  const companies=requestCompanyReferences(content);
  if(listed.length>1||companies.length>1)fields.cnpj=[...(fields.cnpj||[]),...listed.map(v=>normalizeValue('cnpj',v)),...companies.map(c=>c.cnpj)];
  if(fields.razaoSocial)fields.razaoSocial=fields.razaoSocial.map(value=>value.replace(/^(?:contratante|contratad[ao])\s*:\s*|^(?:contratante|contratad[ao])\s+(?=\S+\s+\S+)/i,'').trim());
+ // When the ticket mentions both the school and Kedu's own CNPJ/name, keep the school's reference.
+ for(const key of ['cnpj','razaoSocial'] as const)if((fields[key]?.length||0)>1){
+  const external=fields[key].filter(v=>!ownIdentity(key,v));
+  if(external.length>=1)fields[key]=external;
+ }
  // A CEP inside the requested address is also explicit reference evidence, not a replacement for it.
  for(const address of fields.endereco||[])for(const match of address.matchAll(/\bCEP\s*:?\s*(\d{2}\.?\d{3}-?\d{3})(?!\d)/gi))fields.cep=[...(fields.cep||[]),normalizeValue('cep',match[1])];
  // Labelled numeric values also occur together in a single observations cell.
@@ -46,6 +52,15 @@ export function requestExpectations(content:string,explicitFields:Record<string,
   const matches=[...text.matchAll(pattern)].map(m=>normalizeValue(key,m[1]));
   const shape=key==='valor'?/^\d+,\d{2}$/:key==='remuneracao'?/^\d+,\d{2}%$/:/^\d+$/;
   if(matches.length)fields[key]=[...new Set([...(fields[key]||[]).filter(v=>shape.test(v)),...matches])];
+ }
+ // Explicit "de X% para Y%" or "taxa atual X% / nova taxa Y%" transition in the ticket text.
+ const fullText=lines.join('\n');
+ const rateTransition=/\b(?:taxa(?:\s+de\s+remunera[çc][ãa]o)?(?:\s+kedu)?|remunera[çc][ãa]o(?:\s+kedu)?)\s+(?:de\s+(\d{1,3}(?:[.,]\d{1,2})?\s*%)\s+para\s+(\d{1,3}(?:[.,]\d{1,2})?\s*%)|(?:atual|anterior|antiga)\s*:?\s*(\d{1,3}(?:[.,]\d{1,2})?\s*%)[\s\S]{1,80}?(?:nova\s+taxa|taxa\s+nova|passa(?:ndo)?\s+a\s+ser)\s*:?\s*(\d{1,3}(?:[.,]\d{1,2})?\s*%))/i.exec(fullText);
+ if(rateTransition){
+  const fromRate=normalizeValue('remuneracao',rateTransition[1]||rateTransition[3]||'');
+  const toRate=normalizeValue('remuneracao',rateTransition[2]||rateTransition[4]||'');
+  const current=distinctFieldValues('remuneracao',fields.remuneracao||[]);
+  if(toRate&&(!current.length||(current.length===2&&current.some(v=>sameFieldValue('remuneracao',v,fromRate))&&current.some(v=>sameFieldValue('remuneracao',v,toRate)))))fields.remuneracao=[toRate];
  }
  for(const key of ['razaoSocial','remuneracao'])if(!fields[key] && explicitFields[key]?.value)fields[key]=[normalizeValue(key,explicitFields[key].value)];
  return Object.fromEntries(Object.entries(fields).map(([key,values])=>[key,distinctFieldValues(key,values)]));

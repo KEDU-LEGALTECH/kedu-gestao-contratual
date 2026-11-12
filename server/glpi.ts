@@ -151,7 +151,7 @@ export class GlpiClient {
   async get(path: string, params: Record<string, string> = {}, signal?: AbortSignal) {
     // Restrict both the HTTP verb and the resource, even if a future caller passes a new path.
     // Session creation/termination changes only this integration's API session.
-    const allowed = /^(?:initSession|killSession|getMyProfiles|getActiveProfile|getMyEntities|getActiveEntities|listSearchOptions\/Ticket|search\/Ticket|Group(?:\/\d+(?:\/Group_Ticket)?)?|Ticket\/\d+(?:\/(?:ITILFollowup|ITILSolution|TicketTask|TicketValidation|Document_Item|Group_Ticket))?|(?:ITILFollowup|ITILSolution|TicketTask|TicketValidation)\/\d+\/Document_Item|Document\/\d+)$/;
+    const allowed = /^(?:initSession|killSession|getMyProfiles|getActiveProfile|getMyEntities|getActiveEntities|listSearchOptions\/Ticket|search\/Ticket|Group(?:\/\d+(?:\/Group_Ticket)?)?|Ticket\/\d+(?:\/(?:ITILFollowup|ITILSolution|TicketTask|TicketValidation|Document_Item|Group_Ticket|Log))?|(?:ITILFollowup|ITILSolution|TicketTask|TicketValidation)\/\d+\/Document_Item|TicketValidation\/\d+|Document_Item|Document\/\d+)$/;
     if (!allowed.test(path))
       throw new GlpiError("Recurso bloqueado: a integração GLPI permite apenas as consultas de leitura previstas.");
     const url = new URL(this.config.url + "/" + path.replace(/^\/+/, ""));
@@ -280,6 +280,121 @@ export class GlpiClient {
 
 const timelineTypes = ["ITILFollowup", "TicketTask", "ITILSolution", "TicketValidation"] as const;
 
+async function recoverApprovalTimeline(
+  client: GlpiClient,
+  ticketId: string,
+  signal: AbortSignal,
+  documentIds: Set<string>,
+  documentLinks: Record<string, string[]>,
+  messageAuthors: Record<string, string>,
+  followups: RawTicket["followups"],
+) {
+  let logs: any[];
+  try {
+    logs = await client.list(`Ticket/${ticketId}/Log`, {}, Infinity, signal);
+  } catch (error) {
+    if (signal.aborted) throw error;
+    return;
+  }
+  const approvalLogs = logs.filter(entry => String(entry?.itemtype_link || "") === "TicketValidation");
+  if (!approvalLogs.length) return;
+  const parseSec = (d: string) => Date.parse(String(d || "").replace(" ", "T") + "Z");
+  const minutes = [...new Set(approvalLogs.map(entry => String(entry.date_mod || "").slice(0, 16)).filter(m => /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(m)))];
+  const candidateLinks: any[] = [];
+  for (const minute of minutes) {
+    try {
+      const items = await client.list("Document_Item", { "searchText[itemtype]": "TicketValidation", "searchText[date_creation]": minute }, 200, signal);
+      candidateLinks.push(...items.filter(item => String(item?.itemtype || "") === "TicketValidation"));
+    } catch (error) {
+      if (signal.aborted) throw error;
+      return;
+    }
+  }
+  const matchedValidationIds = new Set<string>();
+  const verifiedValidations = new Map<string, boolean>();
+  const logDocs = new Map<string, string[]>();
+  for (const entry of approvalLogs) {
+    const logId = String(entry.id || "");
+    if (!/^\d+$/.test(logId)) continue;
+    const logTime = parseSec(entry.date_mod);
+    const userId = /\((\d+)\)\s*$/.exec(String(entry.user_name || ""))?.[1];
+    const matched = candidateLinks.filter(item => {
+      const itemTime = parseSec(item.date_creation || item.date_mod);
+      const closeEnough = Number.isFinite(logTime) && Number.isFinite(itemTime) && Math.abs(logTime - itemTime) <= 15000;
+      return closeEnough && (!userId || String(item.users_id) === userId);
+    });
+    for (const item of matched) {
+      const validationId = String(item.items_id);
+      if (!/^\d+$/.test(validationId)) continue;
+      if (!verifiedValidations.has(validationId)) {
+        try {
+          const { body } = await client.get(`TicketValidation/${validationId}`, {}, signal);
+          verifiedValidations.set(validationId, String(body?.tickets_id) === ticketId && Number(body?.is_private) !== 1);
+        } catch (error) {
+          if (signal.aborted) throw error;
+          verifiedValidations.set(validationId, false);
+        }
+      }
+      if (!verifiedValidations.get(validationId)) continue;
+      matchedValidationIds.add(validationId);
+      const docId = String(item.documents_id || "");
+      if (/^\d+$/.test(docId)) {
+        const list = logDocs.get(logId) ?? [];
+        if (!list.includes(docId)) list.push(docId);
+        logDocs.set(logId, list);
+      }
+    }
+  }
+  for (const validationId of matchedValidationIds) {
+    try {
+      const items = await client.list("Document_Item", { "searchText[itemtype]": "TicketValidation", "searchText[items_id]": validationId }, 200, signal);
+      for (const item of items) {
+        if (String(item?.itemtype || "") !== "TicketValidation" || String(item?.items_id || "") !== validationId) continue;
+        const docId = String(item.documents_id || "");
+        if (!/^\d+$/.test(docId)) continue;
+        const alreadyLinked = [...logDocs.values()].some(ids => ids.includes(docId));
+        if (!alreadyLinked) {
+          const itemTime = parseSec(item.date_creation || item.date_mod);
+          const bestLog = approvalLogs
+            .filter(e => /^\d+$/.test(String(e.id || "")))
+            .sort((a, b) => Math.abs(parseSec(a.date_mod) - itemTime) - Math.abs(parseSec(b.date_mod) - itemTime))[0];
+          if (bestLog) {
+            const logId = String(bestLog.id);
+            const list = logDocs.get(logId) ?? [];
+            if (!list.includes(docId)) list.push(docId);
+            logDocs.set(logId, list);
+          }
+        }
+      }
+    } catch (error) {
+      if (signal.aborted) throw error;
+    }
+  }
+  for (const entry of approvalLogs) {
+    const logId = String(entry.id || "");
+    if (!/^\d+$/.test(logId)) continue;
+    const messageId = "TicketValidation:" + logId;
+    const content = String(entry.new_value || "").trim();
+    const author = String(entry.user_name || "").replace(/\s*\(\d+\)\s*$/, "").trim();
+    if (author && !/^\d+$/.test(author)) messageAuthors[messageId] = author;
+    const docs = logDocs.get(logId) || [];
+    for (const docId of docs) {
+      documentIds.add(docId);
+      const linked = documentLinks[messageId] ??= [];
+      if (!linked.includes(docId)) linked.push(docId);
+    }
+    if (documentLinks[messageId]?.length) {
+      followups.push({
+        id: messageId,
+        date: String(entry.date_mod || ""),
+        content,
+        private: false,
+      });
+    }
+  }
+  // Recovery can prove individual links, but cannot enumerate all approvals.
+}
+
 /** Enumerate attachments only through the ticket and its accessible timeline entries. */
 export async function readTicketTimeline(client: GlpiClient, ticketId: string, signal: AbortSignal, globalValidation?: unknown) {
   const documentIds = new Set<string>();
@@ -327,6 +442,9 @@ export async function readTicketTimeline(client: GlpiClient, ticketId: string, s
         private: Number(entry.is_private) === 1,
       });
     }
+  }
+  if (approvalsPartial && complete) {
+    await recoverApprovalTimeline(client, ticketId, signal, documentIds, documentLinks, messageAuthors, followups);
   }
   followups.sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
   const approvalCoverage: NonNullable<RawTicket["approvalCoverage"]> = skipApprovals ? "not_required" : approvalsPartial ? "partial" : "complete";

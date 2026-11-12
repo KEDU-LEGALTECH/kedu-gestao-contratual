@@ -8,8 +8,7 @@ async function main(){
   await sql.begin("read only",async tx=>{
    const [settings]=await tx`SELECT current_setting('transaction_read_only') AS read_only`;
    if(settings.read_only!=="on")throw Error("A verificação deve executar em transação somente leitura.");
-   const [tls]=await tx`SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()`;
-   if(!tls?.ssl)throw Error("A conexão remota não confirmou TLS.");
+   // The client requires verified TLS. pg_stat_ssl only describes the backend connection behind the pooler.
   });
   console.log("PostgreSQL acessível com TLS verificado; consulta somente leitura concluída.");
   if(c.key){
@@ -21,4 +20,11 @@ async function main(){
   console.log("Este teste não ativa Supabase no portal. O adaptador de persistência e a migração ainda precisam ser concluídos e validados.");
  }finally{await sql.end({timeout:3});}
 }
-main().catch(()=>{console.error("Supabase não validado. Confira variáveis, TLS/certificado, rede e permissões; nenhuma senha ou chave foi exibida. A aplicação continua no SQLite.");process.exitCode=1;});
+main().catch((error: unknown)=>{
+ const code=(error as {code?:string})?.code;
+ const reason=code==="28P01"?"O PostgreSQL recusou a autenticação. Confira o usuário e a senha da URI.":
+  code==="ENOTFOUND"?"O endereço do banco não foi encontrado. Confira o host e o DNS.":
+  "Confira as variáveis, o certificado TLS, a rede e as permissões.";
+ console.error("Supabase não validado. "+reason);
+ process.exitCode=1;
+});

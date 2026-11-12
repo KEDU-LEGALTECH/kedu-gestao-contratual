@@ -53,4 +53,4 @@ Uma melhoria na seleção da fonte não recupera automaticamente um campo nem re
 
 ## Fontes locais para manutenção
 
-`server/hermes_document_mcp.py`, `server/contract-processing.ts`, `server/reading-policy.ts`, `server/comparison-profile.ts`, `server/targeted-reading.ts`, `server/document-evidence.ts`, `server/processing-routes.ts`, `shared/official-fields.ts`, `docs/recuperacao-texto-2026-10-30.md`, `docs/piloto-cinco-demandas.md`. Documentação histórica pode estar superada: confirmar limites e comportamento no código atual antes de execução.
+`server/hermes_document_mcp.py`, `server/contract-processing.ts`, `server/contract-reading-scope.ts`, `server/reading-policy.ts`, `server/comparison-profile.ts`, `server/guided-confirmation.ts`, `server/verified-field-evidence.ts`, `server/request-expectations.ts`, `server/targeted-reading.ts`, `server/document-evidence.ts`, `server/processing-routes.ts`, `shared/document-heading.ts`, `shared/official-fields.ts`, `docs/recuperacao-texto-2026-10-30.md`, `docs/piloto-cinco-demandas.md`. Documentação histórica pode estar superada: confirmar limites e comportamento no código atual antes de execução.

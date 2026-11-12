@@ -55,6 +55,22 @@ O diagnóstico não aceita hosts arbitrários ou desativação de TLS. Erros de 
 
 ## O que ainda exige implementação e validação da migração
 
+Para verificar a cópia gerada por `migration:prepare`, execute
+`npx tsx scripts/postgres-rehearsal.ts <pasta-do-manifesto> --inspect`.
+Com um banco local descartável chamado `kedu_rehearsal`, informe a conexão
+em `KEDU_REHEARSAL_DATABASE_URL` e use `--rehearse` para ensaiar a importação.
+O ensaio cria um esquema temporário dentro de uma transação, verifica as
+contagens, chaves estrangeiras e hashes dos arquivos e reverte a transação.
+O banco de teste deve usar UTF-8. Os arquivos são ensaiados como `BYTEA`.
+Esta etapa valida a cópia dos dados e o esquema. O runtime da API e a
+integração com o Storage ainda precisam ser adaptados.
+
+Use `--pilot-only` com o mesmo banco local para testar login, logout,
+expiração da sessão, visibilidade por responsável e dados bancários
+com registros fictícios. O piloto também testa criar, abrir e editar
+demandas manuais de contratos, incluindo auditoria e conflito de versão.
+Esse modo cria o esquema e reverte o teste ao final.
+
 O backend usa chamadas síncronas SQLite, consultas específicas, gatilhos de imutabilidade e transações de numeração. A conexão PostgreSQL preparada não substitui essas chamadas. Antes de mudar o runtime, é necessário:
 
 1. Portar a camada de persistência e as consultas para PostgreSQL, preservando transações e concorrência.

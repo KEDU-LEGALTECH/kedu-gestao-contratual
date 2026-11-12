@@ -79,8 +79,8 @@ export function bankFields(source:string):Fields {
  // Inline label block, possibly inside a contract paragraph.
  for(const block of text.matchAll(/\bBANCO\s*:/gi)){
   const part=text.slice(block.index,block.index+420).split(/\n\s*\n/)[0];
-  const label=(name:string)=>new RegExp(`\\b${name}\\s*:\\s*([^\\n]*?)\\s*(?=\\b(?:AG[ÊE]NCIA|CONTA(?: CORRENTE)?|TITULAR DA CONTA|CNPJ\\/CPF|CPF\\/CNPJ|PIX|CHAVE PIX)\\s*:|\\n|$)`,'i').exec(part)?.[1];
-  const bank=label('BANCO'),agency=label('AG[ÊE]NCIA'),account=label('CONTA(?: CORRENTE)?'),owner=label('TITULAR DA CONTA'),document=label('(?:CNPJ\\/CPF|CPF\\/CNPJ)');
+  const label=(name:string)=>new RegExp(`\\b${name}\\s*:\\s*([^\\n]*?)\\s*(?=\\b(?:AG[ÊE]NCIA|CONTA(?: CORRENTE)?|TITULAR(?: DA CONTA|IDADE)?|CNPJ\\/CPF|CPF\\/CNPJ|PIX|CHAVE PIX)\\s*:|\\n|$)`,'i').exec(part)?.[1];
+  const bank=label('BANCO'),agency=label('AG[ÊE]NCIA'),account=label('CONTA(?: CORRENTE)?'),owner=/\bTITULAR(?: DA CONTA|IDADE)?\s*:\s*([^\n]+(?:\n\s*[^\n:]+?(?=\s*\b(?:CNPJ\/CPF|CPF\/CNPJ|PIX|CHAVE PIX|AG[ÊE]NCIA|CONTA)\s*:))?)/i.exec(part)?.[1]?.split(/\s*\b(?:AG[ÊE]NCIA|CONTA(?: CORRENTE)?|TITULAR(?: DA CONTA|IDADE)?|CNPJ\/CPF|CPF\/CNPJ|PIX|CHAVE PIX)\s*:/i)[0],document=label('(?:CNPJ\\/CPF|CPF\\/CNPJ)');
   if(!agency&&!account)continue;
   if(bank&&/\p{L}/u.test(bank))add('banco',bank.replace(/[\s,;.]+$/,''));
   if(agency&&/^\d{1,6}(?:\s*-\s*[\dXx])?$/.test(agency.trim()))add('agencia',agency.replace(/\s/g,''));

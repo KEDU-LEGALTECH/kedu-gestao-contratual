@@ -57,3 +57,24 @@ test('layout de colunas, nome quebrado em linhas e cartão CNPJ mantêm a associ
  assert.equal(guidedConfirmation('nomeFantasia','ESCOLINHA TRAVESSIA DOM GUANELLA',[card])?.associated,true);
  assert.equal(guidedConfirmation('razaoSocial','ESCOLINHA TRAVESSIA DOM GUANELLA',[card])?.associated,false);
 });
+test('representante legal, dados bancários, percentuais e vigência rotulados são confirmados com segurança',()=>{
+ const contract=file('Contrato.pdf',
+  'neste ato representada por seu administrador CARLOS EDUARDO SILVA, brasileiro, portador do CPF 529.982.247-25.\n'+
+  'Dados para pagamento: Agência: 1234-5 | Conta Corrente: 98765-0\n'+
+  'Taxa de remuneração Kedu: 12,5% | Percentual de repasse: 80% | Percentual de garantia: 100%\n'+
+  'Vigência inicial: 01/02/2026 | Término da vigência: 31 de janeiro de 2027');
+ assert.equal(guidedConfirmation('representanteNome','CARLOS EDUARDO SILVA',[contract])?.associated,true);
+ assert.equal(guidedConfirmation('agencia','1234-5',[contract])?.associated,true);
+ assert.equal(guidedConfirmation('conta','98765-0',[contract])?.associated,true);
+ assert.equal(guidedConfirmation('remuneracao','12,50%',[contract])?.associated,true);
+ assert.equal(guidedConfirmation('repasse','80,00%',[contract])?.associated,true);
+ assert.equal(guidedConfirmation('garantia','100,00%',[contract])?.associated,true);
+ assert.equal(guidedConfirmation('inicio','2026-02-01',[contract])?.associated,true);
+ assert.equal(guidedConfirmation('fim','2027-01-31',[contract])?.associated,true);
+ // Valores soltos sem rótulo ou em seção de pagador não confirmam campos rotulados
+ const unlabelled=file('Contrato.pdf','1234-5 98765-0 12,5% 01/02/2026 Pagador: Agência: 4321 Conta: 11111-1');
+ assert.equal(guidedConfirmation('agencia','1234-5',[unlabelled]),undefined);
+ assert.equal(guidedConfirmation('agencia','4321',[unlabelled]),undefined);
+ assert.equal(guidedConfirmation('remuneracao','12,50%',[unlabelled]),undefined);
+ assert.equal(guidedConfirmation('inicio','2026-02-01',[unlabelled]),undefined);
+});

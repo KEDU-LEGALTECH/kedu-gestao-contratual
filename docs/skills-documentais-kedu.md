@@ -32,6 +32,19 @@ Relatório por demanda e documento: campos encontrados e esperados separados, en
 
 Ausências reais exigem pedir documentos ou esclarecimentos; OCR repetido não resolve falta de fonte. A redução da fila depende de execução e validação no fluxo oficial. Criar skills não executa automaticamente essa fila, não altera o motor de OCR e não comprova acurácia.
 
+## Atualização 1.7.0 / 1.8.0 (11/11/2026)
+
+- **Triagem estrita entre `Contrato não encontrado`, `Tipo a confirmar`, `Contrato não lido` e `Contrato com pendências` (`kedu-triagem-documental` v1.6.0 & `kedu-leitura-precisa` v1.7.0)**:
+  - Reconhecimento de contratos com nome prefixado (`Colégio X - 1º Termo Aditivo.pdf`, `Minuta - Contrato...`, `Assinatura_Contrato...`), títulos `Aditamento`, `Rescisão Contratual` e `Confissão e Parcelamento de Dívida` (`shared/document-heading.ts`), e preservação da classificação contratual via `isFilledContract(text, name)` mesmo quando o cabeçalho da página 1 é gráfico.
+  - Disparo automático de leitura integral em PDFs de nome genérico quando a página 1 contém termos contratuais ou de envelope de assinatura digital (`likelyContractOnCover`: `Clicksign`, `DocuSign`, `ZapSign`, `D4Sign`, `Autentique`, `Contratante`, `Cláusula`), mantendo `needsWork: true` enquanto o contrato estiver em `triageOnly` ou `incomplete`.
+  - Classificação de anexos `.pdf`, `.docx`, `.doc` e `.odt` já lidos integralmente sem estrutura contratual (ou identificados por `isSupportDocument`: boleto, estatuto, ata, certidão, alvará, ficha cadastral, DANFE/NF-e, declaração, ofício, requerimento) como `support`, deslocando demandas sem contrato de **Tipo a confirmar** ou **Conferência parcial** para **Contrato não encontrado** (`contractMissing`).
+  - Registro explícito do motivo em **Contrato não lido** (`unreadableContractIssue`: fila automática pausada em chamado encerrado no GLPI, falha HTTP no download, aguardando vez na fila, leitura parcial `X/Y páginas lidas` com aviso do OCR, ou imagem sem contraste) e nos alertas de **Leitura parcial** (`review:partial:<nome> (X/Y páginas lidas — <motivo>)`).
+- **Redução de falsos positivos em `Conferência parcial` (`kedu-conferencia-documental` v1.8.0 & `kedu-leitura-precisa` v1.7.0)**:
+  - Expansão da confirmação guiada por rótulo contextual (`server/guided-confirmation.ts`) para `representanteNome`, `agencia`, `conta`, `remuneracao`, `repasse`, `garantia`, `inicio` e `fim` (incluindo datas por extenso em português e exclusão de `payerContext` em comprovantes bancários).
+  - Validação automática por consenso duplo `Tesseract` + `PaddleOCR` (`server/verified-field-evidence.ts`) em PDFs digitalizados multipágina quando a página de origem (`origin.page` em `fieldOrigins`) está registrada e não há conflito entre páginas.
+  - Desambiguação das expectativas do chamado GLPI (`server/request-expectations.ts`): filtragem do CNPJ/razão social da própria Kedu (`ownIdentity`) quando listado junto ao da escola, e resolução de transição explícita de taxa (`"de X% para Y%"` / `"taxa atual: X% ... nova taxa: Y%"`) para a nova taxa.
+  - Expansão de `notApplicableReason` (`server/comparison-profile.ts`) para `nomeFantasia` ausente em contratos integralmente lidos sem cláusula de nome fantasia e para campos bancários ausentes em instrumentos de `Aditivo` (sem subtipo bancário), `Distrato`, `Rescisão` ou `Parcelamento`.
+
 ## Atualização 1.6.0
 
 - O CNPJ da contratada recebe **Confere** quando os 14 dígitos coincidem e o documento comprova a associação à parte. A checagem cadastral é separada.

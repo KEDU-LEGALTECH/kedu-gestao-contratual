@@ -3,6 +3,7 @@ import { one, all, run, id, now, db, audit } from "./db.js";
 import { governanceMissing, requirements, humanMissing } from "./governance.js";
 import { requiredFor } from "../shared/request-policy.js";
 import { assertProductionTemplate } from "./template-policy.js";
+import { access, permit } from "../shared/access-policy.js";
 export const stages = [
   "Recebido",
   "Aguardando informações",
@@ -14,59 +15,7 @@ export const stages = [
   "Devolvido",
   "Cancelado",
 ];
-export const permissions: Record<string, string[]> = {
-  Administrador: [
-    "write",
-    "schools",
-    "confirm",
-    "review",
-    "commercial",
-    "legal",
-    "bank",
-    "files",
-    "sync",
-    "settings",
-    "export",
-    "risk",
-    "finance",
-  ],
-  Solicitante: ["write"],
-  Operação: [
-    "write",
-    "schools",
-    "confirm",
-    "review",
-    "bank",
-    "files",
-    "export",
-  ],
-  Jurídico: ["review", "legal", "bank", "files", "export"],
-  Aprovador: ["commercial", "bank", "files", "export"],
-  Consulta: [],
-  Risco: [
-    "write",
-    "schools",
-    "confirm",
-    "review",
-    "risk",
-    "bank",
-    "files",
-    "export",
-  ],
-  Financeiro: ["finance", "bank", "files", "export", "review"],
-};
-export function permit(user: any, action: string) {
-  if (!permissions[user.role]?.includes(action))
-    throw Object.assign(Error("Seu perfil não tem permissão para esta ação."), {
-      status: 403,
-    });
-}
-export function access(user: any, demand: any) {
-  if (user.role === "Solicitante" && demand.owner !== user.id)
-    throw Object.assign(Error("Registro restrito ao responsável."), {
-      status: 403,
-    });
-}
+export { permissions, permit, access } from "../shared/access-policy.js";
 export function required(d: any) {
   const data = JSON.parse(d.data);
   return requiredFor(d.type, requirements(d).subtype, data.modalidade || "")

@@ -9,10 +9,35 @@ process.env.NODE_ENV = "test";
 process.env.DEMO_SEED = "true";
 const { default: app } = await import("../server/index.js");
 const { one, all, run } = await import("../server/db.js");
-const { GlpiClient, RealGlpiSource, glpiConfig, configProblems } = await import("../server/glpi.js");
+const { GlpiClient, RealGlpiSource, glpiConfig, configProblems, readTicketTimeline } = await import("../server/glpi.js");
 const { analyzeTicket, htmlToText, validCnpj } = await import("../server/glpi-analysis.js");
 const { syncGlpi } = await import("../server/glpi-sync.js");
 const { ticketSource } = await import("../server/glpi-sync.js");
+
+test("aprovação com 403 só recupera documento cujo vínculo direto aponta para o chamado", async () => {
+  const ticketId = "42";
+  const date = "2026-11-11 09:28:27";
+  const links = [1, 2, 3].map(id => ({
+    itemtype: "TicketValidation", items_id: id, documents_id: 500 + id,
+    date_creation: date, users_id: 7,
+  }));
+  const fetchMock: typeof fetch = async input => {
+    const path = new URL(String(input)).pathname.replace(/^\/apirest\.php\//, "");
+    if (path === "Ticket/42/TicketValidation" || path === "TicketValidation/3")
+      return Response.json(["ERROR_RIGHT_MISSING"], { status: 403 });
+    if (path === "Ticket/42/Log") return Response.json([
+      { id: 9, itemtype_link: "TicketValidation", date_mod: date, user_name: "Autor (7)" },
+    ]);
+    if (path === "Document_Item") return Response.json(links);
+    if (path === "TicketValidation/1") return Response.json({ tickets_id: 42 });
+    if (path === "TicketValidation/2") return Response.json({ tickets_id: 43 });
+    return Response.json([]);
+  };
+  const client = new GlpiClient({ ...glpiConfig(), url: "http://glpi.test/apirest.php", retries: 0 }, fetchMock);
+  const result = await readTicketTimeline(client, ticketId, AbortSignal.timeout(2000));
+  assert.deepEqual([...result.documentIds], ["501"]);
+  assert.equal(result.approvalCoverage, "partial");
+});
 
 /** Minimal GLPI 10 apirest.php double: documented headers, range/Content-Range, sub-items. */
 const APP = "app-token-de-teste",
@@ -301,7 +326,7 @@ test("Sincronização recupera anexos e mensagens perdidos de versão imutável"
   run("INSERT INTO glpi_ticket_versions VALUES(?,?,?,?,?)", "known-version", externalId, "known-hash", JSON.stringify(known), "2026-10-16");
   const settings = {
     GLPI_MODE: "real", GLPI_URL: config().url, GLPI_APP_TOKEN: APP, GLPI_USER_TOKEN: USER,
-    GLPI_GROUP_IDS: "", GLPI_GROUPS: "JURIDICO CONTRATOS", GLPI_RETRIES: "0",
+    GLPI_GROUP_IDS: "", GLPI_GROUPS: "JURIDICO CONTRATOS", GLPI_RETRIES: "0", GLPI_MAX_TICKETS: "20",
     GLPI_INCLUDE_PENDING: "false", GLPI_INCLUDE_OPEN: "false",
   };
   const previous = Object.entries(settings).map(([key, value]) => [key, process.env[key], value] as const);

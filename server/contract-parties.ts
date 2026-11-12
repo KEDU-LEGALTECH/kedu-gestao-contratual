@@ -1,6 +1,9 @@
 import {receiverBankFields} from './bank-reading.js';
 import {validCnpj} from './registration-reading.js';
-export type ContractParty={role:string;name:string;cnpj:string;excerpt:string;aliases?:string[]};
+import {extractQualifiedParties} from './qualification-reading.js';
+import {sameRequestedValue} from './request-expectations.js';
+import {fieldsFromLines} from './processing-extract.js';
+export type ContractParty={role:string;name:string;cnpj:string;excerpt:string;aliases?:string[];fields?:Record<string,string[]>};
 const canon=(s:string)=>s.normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().replace(/[^a-z0-9]/g,'');
 const mask=(s:string)=>{const d=s.replace(/\D/g,'');return `${d.slice(0,2)}.${d.slice(2,5)}.${d.slice(5,8)}/${d.slice(8,12)}-${d.slice(12)}`;};
 
@@ -46,7 +49,7 @@ export function extractContractParties(text:string):ContractParty[] {
   const unique=[...new Set(ids)];if(unique.length!==1)continue;
   const named=/(?:^|\n)\s*(?:NOME|RAZ[ÃA]O SOCIAL|NOME EMPRESARIAL)\s*:\s*([^\n]+)/i.exec(block)?.[1];
   const first=block.split(/\s*(?:,?\s*inscrit[ao]\b|\bCNPJ\b|\bCPF\b)/i)[0].replace(/\s+/g,' ').trim();
-  const name=(named||first).split(/,\s*(?:pessoa jur[íi]dica|inscrit[ao]|com sede)|\s+CNPJ\b/i)[0].replace(/[;,\s]+$/,'').trim();
+  const name=(named||first).split(/,\s*(?:pessoa jur[íi]dica|sociedade|mantenedora|inscrit[ao]|com sede)|\s+CNPJ\b/i)[0].replace(/[;,\s]+$/,'').trim();
   if(name.length<3||name.length>200||/^(?:CNPJ|ENDERE[ÇC]O)\b/i.test(name))continue;
   const party:ContractParty={role:match[1].toUpperCase(),name,cnpj:unique[0],excerpt:block.slice(0,500).trim()};
   if(!parties.some(p=>canon(p.name)===canon(name)&&p.cnpj===party.cnpj))parties.push(party);
@@ -55,22 +58,102 @@ export function extractContractParties(text:string):ContractParty[] {
  const people=parties.filter(p=>p.cnpj.replace(/\D/g,'').length===11);
  const aliases=[...text.matchAll(/aceit[oa]\s+por\s+mim\s*\(\s*([^()\n]{3,80})\s*\)/gi)].map(m=>m[1].trim());
  if(people.length===1&&aliases.length===1)people[0].aliases=aliases;
- return parties.length?parties:preambleParties(text);
+ const base=parties.length?parties:preambleParties(text);
+ const qualified=extractQualifiedParties(text).filter(qp=>qp.name&&!/^(?:anuente|palestrante|agente|interveniente)/i.test(qp.role));
+ // A narrative mention at the start is not a declaration of the contract parties.
+ if(!base.length&&qualified.some(p=>/^o contrato (?:menciona|cita|faz refer[eê]ncia)\b/i.test(p.name)))return [];
+ for(const p of base){
+  const qp=qualified.find(q=>canon(q.cnpj)===canon(p.cnpj));
+  if(qp)p.fields=qp.fields;
+ }
+ if(qualified.length>=2||qualified.some(q=>q.role!=='QUALIFICADA NO CONTRATO')){
+  for(const qp of qualified){
+   if(!base.some(p=>canon(p.cnpj)===canon(qp.cnpj))){
+    base.push({role:qp.role.toUpperCase(),name:qp.name,cnpj:qp.cnpj,excerpt:qp.excerpt,fields:qp.fields});
+   }
+  }
+ }
+ return base;
 }
-export function selectContractParty(parties:ContractParty[],expectedCnpj?:string) {
+
+function samePartyName(party:ContractParty,expectedName:string){
+ if(sameRequestedValue('razaoSocial',party.name,expectedName))return true;
+ if((party.aliases||[]).some(a=>sameRequestedValue('razaoSocial',a,expectedName)))return true;
+ return (party.fields?.nomeFantasia||[]).some(f=>sameRequestedValue('nomeFantasia',f,expectedName));
+}
+
+export function selectContractParty(parties:ContractParty[],expectedCnpj?:string,expectedName?:string) {
  if(!parties.length)return null;
- const matching=expectedCnpj?parties.filter(p=>canon(p.cnpj)===canon(expectedCnpj)):[];
- if(matching.length===1)return matching[0];
- if(matching.length>1)return null;
  const counterpart=parties.filter(p=>!/^kedu\b/i.test(p.name));
+ const byName=expectedName?counterpart.filter(p=>samePartyName(p,expectedName)):[];
+ if(byName.length===1)return byName[0];
+ const candidates=byName.length?byName:parties;
+ const matching=expectedCnpj?candidates.filter(p=>canon(p.cnpj)===canon(expectedCnpj)):[];
+ if(matching.length===1)return matching[0];
+ if(matching.length>1||byName.length>1)return null;
  // A unique, explicitly identified counterparty can expose a real CNPJ mismatch.
  return counterpart.length===1?counterpart[0]:null;
 }
-export function scopePartyReading<T extends {text:string;fields:Record<string,string[]>}>(reading:T,expectedCnpj?:string):{reading:Omit<T,'fields'>&{text:string;fields:Record<string,string[]>};parties:ContractParty[];selected:ContractParty|null} {
+
+function partyBankFields(text:string,selected:ContractParty):Record<string,string[]>|null {
+ const blocks=[...text.matchAll(/\bBANCO\s*:[\s\S]{1,360}?(?=\bBANCO\s*:|\bOcorrer[áa]\b|\bClicksign\b|\bCl[áa]usula\b|$)/gi)].map(m=>m[0]);
+ if(blocks.length<2)return null;
+ const targetDigits=selected.cnpj.replace(/\D/g,'');
+ const byCnpj=blocks.filter(b=>b.replace(/\D/g,'').includes(targetDigits));
+ const matching=byCnpj.length?byCnpj:blocks.filter(b=>selected.role&&b.toUpperCase().includes(selected.role.toUpperCase()));
+ if(matching.length!==1)return null;
+ return fieldsFromLines(matching[0].split(/\r?\n/).map(s=>s.trim()).filter(Boolean));
+}
+
+export function scopePartyReading<T extends {text:string;fields:Record<string,string[]>}>(reading:T,expectedCnpj?:string,expectedName?:string):{reading:Omit<T,'fields'>&{text:string;fields:Record<string,string[]>};parties:ContractParty[];selected:ContractParty|null} {
  const receiver=receiverBankFields(reading.text);if(receiver)reading={...reading,fields:{...reading.fields,...receiver}};
- const parties=extractContractParties(reading.text),selected=selectContractParty(parties,expectedCnpj);
+ const parties=extractContractParties(reading.text),selected=selectContractParty(parties,expectedCnpj,expectedName);
  if(!parties.length)return {reading,parties,selected};
  const fields={...reading.fields};delete fields.cnpj;delete fields.razaoSocial;
- if(selected){fields.cnpj=[selected.cnpj];fields.razaoSocial=[selected.aliases?.length===1?selected.aliases[0]:selected.name];}
- return {reading:{...reading,fields},parties,selected};
+ const counterparts=parties.filter(p=>!/^kedu\b/i.test(p.name));
+ const partyKeys=['nomeFantasia','rua','numero','bairro','cep','cidade','estado','endereco','representanteNome','representanteCpf'];
+ const bankKeys=['banco','agencia','conta','titularConta','documentoTitular'];
+ if(selected){
+  fields.cnpj=[selected.cnpj];
+  fields.razaoSocial=[selected.aliases?.length===1?selected.aliases[0]:selected.name];
+  if(selected.fields){
+   for(const key of partyKeys){
+    if(counterparts.length>1){
+     if(selected.fields[key]?.length)fields[key]=selected.fields[key];
+     else delete fields[key];
+    } else if(!fields[key]?.length&&selected.fields[key]?.length){
+     fields[key]=selected.fields[key];
+    }
+   }
+   if(counterparts.length>1){
+    const bank=partyBankFields(reading.text,selected);
+    if(bank){
+     for(const key of bankKeys){
+      if(bank[key]?.length)fields[key]=bank[key];
+      else delete fields[key];
+     }
+    }
+   }
+  }
+ }
+ const rawDigital=(reading as any).digitalFields as Record<string,string[]>|undefined;
+ let digitalFields=rawDigital?{...rawDigital}:undefined;
+ if(digitalFields){
+  if(!selected){delete digitalFields.cnpj;delete digitalFields.razaoSocial;}
+  else if(digitalFields.cnpj?.some(v=>canon(v)===canon(selected.cnpj))){
+   digitalFields.cnpj=fields.cnpj;
+   digitalFields.razaoSocial=fields.razaoSocial;
+   if(selected.fields){
+    for(const key of [...partyKeys,...bankKeys]){
+     if(counterparts.length>1){
+      if(fields[key]?.length)digitalFields[key]=fields[key];
+      else delete digitalFields[key];
+     } else if(!digitalFields[key]?.length&&fields[key]?.length&&selected.fields[key]?.length){
+      digitalFields[key]=fields[key];
+     }
+    }
+   }
+  }
+ }
+ return {reading:{...reading,fields,...(digitalFields?{digitalFields}:{})},parties,selected};
 }

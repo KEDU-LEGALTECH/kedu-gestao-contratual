@@ -49,6 +49,10 @@ export function recoverTextFields(text:string,existing:Fields):Fields {
   if(names.length===1&&ids.length===1){found.razaoSocial=names;found.cnpj=ids;}
  }
  for(const [key,values] of Object.entries(structuredIdentityFields(text)))found[key]=[...new Set([...(found[key]||[]),...values])];
- return Object.fromEntries(Object.entries(found).filter(([key,values])=>values.length&&!existing[key]?.some(value=>plausibleFieldValue(key,value))));
+ return Object.fromEntries(Object.entries(found).filter(([key,values])=>{
+  if(!values.length)return false;
+  if(!existing[key]?.some(value=>plausibleFieldValue(key,value)))return true;
+  return existing[key].length===1&&values.length===1&&values[0].toUpperCase().startsWith(existing[key][0].toUpperCase()+' ');
+ }));
 }
 

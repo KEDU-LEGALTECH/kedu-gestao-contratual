@@ -1,5 +1,10 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
 import {extractContractParties,scopePartyReading,selectContractParty} from '../server/contract-parties.js';
+
+test('CNPJ de outra escola não substitui o da escola indicada pelo nome',()=>{
+ const parties=extractContractParties('CONTRATADA: ESCOLA ALFA LTDA, CNPJ 31.679.749/0001-30\nCONTRATADA: ESCOLA BETA LTDA, CNPJ 04.185.080/0001-58');
+ assert.equal(selectContractParty(parties,'04.185.080/0001-58','ESCOLA ALFA LTDA')?.cnpj,'31.679.749/0001-30');
+});
 import {plausibleFieldValue} from '../server/field-plausibility.js';
 import {recoverTextFields} from '../server/text-recovery.js';
 import {sameFieldValue} from '../shared/value-comparison.js';
@@ -32,7 +37,9 @@ test('a running preamble keeps the school and supplier qualifications separate',
  ]){
   const scoped=scopePartyReading({text,fields},'61.060.246/0001-43');
   assert.equal(scoped.parties.length,2);
-  assert.deepEqual(scoped.reading.fields,{razaoSocial:['CENTRO EDUCACIONAL EXEMPLO LTDA'],cnpj:['61.060.246/0001-43']});
+  assert.deepEqual(scoped.reading.fields.razaoSocial,['CENTRO EDUCACIONAL EXEMPLO LTDA']);
+  assert.deepEqual(scoped.reading.fields.cnpj,['61.060.246/0001-43']);
+  if(scoped.reading.fields.rua)assert.deepEqual(scoped.reading.fields.rua,['Rua A']);
   assert.match(scoped.selected!.excerpt,/61\.060\.246\/0001-43/);
   const unmatched=scopePartyReading({text,fields},'05.868.278/0001-07');
   assert.equal(unmatched.selected,null);

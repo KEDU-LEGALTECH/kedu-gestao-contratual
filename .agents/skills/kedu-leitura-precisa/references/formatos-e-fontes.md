@@ -20,6 +20,8 @@ Para extração direta de PDF/Office carregar a skill do formato e sua referênc
 
 ## Identidade por parte ou aba
 
+- **Síntese com duas escolas.** Separe as qualificações numeradas mesmo quando aparecem no mesmo parágrafo, após uma data ou depois de um ponto final. Considere expressões intermediárias como “sociedade” e “mantenedora”. Vincule nome, CNPJ, endereço e conta ao bloco correspondente. Preserve a evidência digital dessa associação ao montar os campos da comparação.
+
 - **PDF com texto em colunas.** Se a extração juntar o título do aditivo ou distrato à razão social, confirme a separação na página original. Remova apenas o prefixo identificado como título e preserve o nome legal completo. Restrinja a qualificação aos limites do bloco da parte antes das cláusulas.
 - **CNPJ quebrado na linha.** Reúna os 14 dígitos somente quando a quebra ocorrer dentro do mesmo trecho de qualificação. Registre a página, o trecho literal e a parte. Números próximos de outra parte ou de uma nova cláusula exigem evidência própria.
 - **Assinaturas lado a lado.** Uma assinatura rotulada pode comprovar a razão social daquela parte. Valide cada campo no bloco correspondente. Se a locadora estiver identificada na assinatura e o único CNPJ for o da locatária, confirme apenas o nome da locadora.
@@ -55,9 +57,11 @@ Confirmar em `shared/official-fields.ts` e `server/comparison-profile.ts`:
   - `Conta bancária`: `banco`, `agencia`, `conta`, `titularConta`, `documentoTitular`.
   - `Taxa de remuneração`: `remuneracao`.
   - `Percentual/data de repasse`: `parcelas`, `repasse`, `diaRepasse`, `repasseSegundo`, `diaSegundoRepasse`.
+  - Em instrumentos de `Aditivo` (sem subtipo bancário), `Distrato`, `Rescisão` ou `Parcelamento` que não trazem cláusula de dados bancários, os campos `banco`, `agencia`, `conta`, `titularConta`, `documentoTitular` e `pix` ausentes recebem `not_applicable` (`server/comparison-profile.ts`).
 - **Contrato de garantia** (`contractRequirements` por modalidade):
   - `Garantia Completa` e `Garantia Conjunta`: qualificação da parte, `alunos`, `incorporaMatricula`, `cashbackValor`, `remuneracao`, `valor`, `inicio`, `fim`, `duracaoMeses`, dados bancários, `parcelas`, `repasse`, `diaRepasse`.
   - `Garantia Prevista`: todos os anteriores + `garantia`.
+- **Nome fantasia (`nomeFantasia`)**: quando todos os instrumentos contratuais vigentes da demanda foram lidos por completo e não possuem cláusula ou rótulo de nome fantasia, o campo `nomeFantasia` ausente recebe `not_applicable` (`server/comparison-profile.ts`), pois contratos formais frequentemente qualificam apenas a razão social.
 
 - **Cartão CNPJ com colunas.** A data de abertura pode aparecer na mesma linha do rótulo **Número de inscrição**. Verifique se o CNPJ começa na linha seguinte, se pertence à empresa do cartão e se os dígitos verificadores são válidos. Duas inscrições diferentes no mesmo bloco exigem associação adicional. Guarde a página e o trecho tal como lido.
 
@@ -66,14 +70,15 @@ Confirmar em `shared/official-fields.ts` e `server/comparison-profile.ts`:
 - Razão social/CNPJ/nome fantasia: qualificação contratual e documento cadastral, distinguindo cada rótulo. Alvará e cabeçalho comercial podem mostrar fantasia; preservar dúvida.
 - Endereço/CEP/cidade/UF: sede explicitamente declarada ou cartão cadastral, não endereço do sócio, banco, foro ou Kedu. `rua` e `numero` lidos com valor único no mesmo documento compõem `endereco` (`withDocumentAddress`).
 - Representante/CPF/poderes: cláusula societária ou procuração com validade/limites/atuação conjunta. Não inventar conferência jurídica ou situação cadastral atual por documento antigo.
-- Banco/agência/conta/titular/CPF-CNPJ do titular: comprovante ou declaração com bloco explícito e conta correspondente. Transferência: isolar recebedor do pagador; saudação do aplicativo não comprova titular.
+- Banco/agência/conta/titular/CPF-CNPJ do titular: comprovante ou declaração com bloco explícito e conta correspondente. Transferência: isolar recebedor do pagador (`payerContext` em `server/guided-confirmation.ts`); saudação do aplicativo não comprova titular.
 - Taxa/remuneração/repasse/cashback: cláusula/proposta aplicável e unidade explícita. Não misturar valor monetário e percentual ou confundir taxa bancária com taxa contratual.
 - Quantidade/total/parcelas: tabela e cláusula correspondente; incluir moeda, quantidade, periodicidade e vencimentos. Se produto divergir do total explícito, registrar conflito; calcular via ferramenta sem sobrescrever o literal.
-- Vigência/início/fim: cláusulas e aditivos posteriores. Mês/ano não autoriza inventar o dia. Data de assinatura não é necessariamente início de vigência.
+- Vigência/início/fim: cláusulas e aditivos posteriores (inclusive datas escritas por extenso em português via `guidedConfirmation`). Mês/ano não autoriza inventar o dia. Data de assinatura não é necessariamente início de vigência.
 - Número de aditivo/matriz: histórico assinado e vínculo comprovado no sistema. Nome do arquivo ou rascunho não confirma sequência assinada.
 
 ## Suficiência e releitura direcionada (`targeted-reading`)
 
-Confiança informada pelo OCR é metadado, não prova absoluta. Regras automáticas atuais devem ser conferidas em `server/comparison-evidence.ts`, `server/contract-processing.ts`, `server/targeted-reading.ts` e módulos por campo. Não criar política paralela mais permissiva por esta skill.
+Confiança informada pelo OCR é metadado, não prova absoluta. Regras automáticas atuais devem ser conferidas em `server/comparison-evidence.ts`, `server/guided-confirmation.ts`, `server/verified-field-evidence.ts`, `server/contract-processing.ts`, `server/targeted-reading.ts` e módulos por campo. Não criar política paralela mais permissiva por esta skill.
 - Um campo extraído da camada digital (`hasDigitalField`, incluindo `Docling — estrutura do PDF` com `nativeText: true` ou células literais de identidade em `XLSX`) permanece válido mesmo que outra página do arquivo tenha OCR pendente.
+- Em PDFs digitalizados de uma ou mais páginas, o consenso sem conflito entre os passos `Tesseract` e `PaddleOCR` valida a evidência (`verifiedFieldEvidence`) desde que a página de origem (`origin.page` em `fieldOrigins`) esteja registrada.
 - A releitura direcionada (`targetedReadingTargets`) atua apenas sobre páginas candidatas de campos em `missing` ou `review`, nunca apaga texto/campos já salvos (`mergeTargetedReading`) e preserva observações conflitantes para decisão humana.
