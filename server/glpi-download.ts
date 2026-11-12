@@ -1,10 +1,10 @@
-import { one } from "./db.js";
+import { one, sql } from "./db.js";
 import { GlpiClient, glpiConfig, configProblems, readTicketTimeline, type GlpiConfig } from "./glpi.js";
 
 /** No remote URL supplied by the browser is accepted. Rechecks live group and document links. */
 export async function downloadGlpiAttachment(ticketId: string, documentId: string, signal: AbortSignal, config: GlpiConfig = glpiConfig(), fetchImpl: typeof fetch = fetch) {
   if (!/^\d+$/.test(documentId)) throw Error("Identificador de anexo inválido.");
-  const ticket = one("SELECT * FROM glpi_tickets WHERE external_id=? AND mode='real'", ticketId);
+  const ticket = await sql.one("SELECT * FROM glpi_tickets WHERE external_id=? AND mode='real'", ticketId);
   if (!ticket) throw Object.assign(Error("Chamado real importado não encontrado."), { status: 404 });
   const payload = JSON.parse(ticket.payload);
   const attachment = payload.documents.find((d: any) => String(d.id) === documentId);

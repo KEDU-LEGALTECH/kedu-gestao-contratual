@@ -53,6 +53,6 @@ for(const d of all(`SELECT d.id,t.hash FROM demands d JOIN glpi_tickets t ON t.e
    db.exec('COMMIT');changed.push({demand:d.id,file:file.id,name:file.name,reason});console.log('Recuperado:',file.name);
   }catch(error){db.exec('ROLLBACK');throw error;}
  }
- if(one('SELECT status FROM contract_processing WHERE demand_id=?',d.id)?.status!=='Analisando')saveProcessingResult(d.id);
+ if(one('SELECT status FROM contract_processing WHERE demand_id=?',d.id)?.status!=='Analisando')await saveProcessingResult(d.id);
 }
 const report={created:now(),examined,changed,skipped};writeFileSync('data/reading-recovery-report.json',JSON.stringify(report,null,2));console.log(JSON.stringify({examined,recovered:changed.length,stillNeedsOcr:skipped.length}));db.close();

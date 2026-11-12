@@ -31,10 +31,10 @@ test('processing preserves reference typo as review instead of routing the origi
   const raw={externalId:'synthetic-reference',title:'Contrato',content:'<p>RAZÃO SOCIAL: ESCOLA EXEMPLO EIRELLI</p>',documents:[{id:'1',name:'Contrato social.pdf'}],documentsAvailable:true,followups:[],groups:[],status:'2',created:'',updated:'',category:''};
   run("INSERT INTO demands(id,glpi_id,type,stage,priority,due,data,created) VALUES('synthetic-reference','synthetic-reference','A classificar','Recebido','Normal','','{}',?)",now());
   run('INSERT INTO glpi_tickets VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',raw.externalId,'real',raw.title,'2','synthetic-hash',JSON.stringify(raw),'{}','vinculado',raw.externalId,now(),now(),null);
-  ensureProcessing(raw.externalId);
+  await ensureProcessing(raw.externalId);
   const reading={text:'A empresa girará sob o nome empresarial. ESCOLA EXEMPLO EIRELI.',fields:{razaoSocial:['ESCOLA EXEMPLO EIRELI']},method:'Texto do PDF',pages:1,needsReview:false,incomplete:false};
   run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)','synthetic-file',raw.externalId,'1','synthetic-hash','Contrato social.pdf','application/pdf',Buffer.from('synthetic fixture'),JSON.stringify(reading),'',now());
-  const plan=buildProcessingPlan(raw.externalId)!;
+  const plan=(await buildProcessingPlan(raw.externalId))!;
   const field=plan.comparisons.find(c=>c.field==='razaoSocial')!;
   assert.equal(field.status,'review');
   assert.equal(field.reviewReason?.code,'reference_name_typo');
@@ -44,7 +44,7 @@ test('processing preserves reference typo as review instead of routing the origi
   run('UPDATE glpi_tickets SET payload=? WHERE external_id=?',JSON.stringify(raw),raw.externalId);
   const brandReading={...reading,text:'a empresa EMPRESA EXEMPLO ME, com nome fantasia MARCA EXEMPLO AMBIENTAL, inscrita no CNPJ 11.444.777/0001-61.',fields:{razaoSocial:['EMPRESA EXEMPLO ME'],cnpj:['45.543.580/0001-00'],nomeFantasia:['MARCA EXEMPLO AMBIENTAL']}};
   run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify(brandReading),'synthetic-file');
-  const brandPlan=buildProcessingPlan(raw.externalId)!,brandField=brandPlan.comparisons.find(c=>c.field==='razaoSocial')!;
+  const brandPlan=(await buildProcessingPlan(raw.externalId))!,brandField=brandPlan.comparisons.find(c=>c.field==='razaoSocial')!;
   assert.equal(brandField.status,'review');assert.equal(brandField.reviewReason?.code,'reference_trade_name');
   assert.equal(processingStatus(brandPlan.issues,brandPlan.comparisons),'Aguardando análise');
   assert.doesNotMatch(brandPlan.issues.find(i=>i.field==='razaoSocial')?.message||'',/Corrija o valor/);

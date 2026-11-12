@@ -1,6 +1,6 @@
 import {mkdirSync,existsSync,readFileSync,writeFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
-import {all,run,db,audit} from './db.js';
+import { all, run, db, audit, sql, auditAsync } from './db.js';
 import {readProcessingFile} from './file-reading.js';
 import {captureFieldOrigins} from './identity-evidence.js';
 import {distinctRequestedValues} from './request-expectations.js';
@@ -8,15 +8,15 @@ import {saveProcessingResult} from './contract-processing.js';
 import {createVerifiedBackup} from './backup-service.js';
 
 const apply=process.argv.includes('--apply'),folder='data/pending-page-recovery';mkdirSync(folder,{recursive:true});
-const rows=all("SELECT p.demand_id,p.result,t.hash FROM contract_processing p JOIN demands d ON d.id=p.demand_id JOIN glpi_tickets t ON t.external_id=d.glpi_id WHERE p.status='Aguardando análise' AND t.mode='real'");
+const rows=await sql.all("SELECT p.demand_id,p.result,t.hash FROM contract_processing p JOIN demands d ON d.id=p.demand_id JOIN glpi_tickets t ON t.external_id=d.glpi_id WHERE p.status='Aguardando análise' AND t.mode='real'");
 const backup=apply?await createVerifiedBackup():null;const report:any[]=[];const changed=new Set<string>();
 for(const row of rows){
  const result=JSON.parse(row.result);if(!result.issues?.some((i:any)=>/^file:|^review:partial:/.test(i.field)))continue;
- const files=all('SELECT * FROM processing_files WHERE demand_id=? ORDER BY rowid DESC',row.demand_id).filter(f=>f.ticket_hash===row.hash||f.ticket_hash.startsWith(row.hash+':correction:')).filter((f,i,fs)=>fs.findIndex(o=>o.document_id===f.document_id)===i);
+ const files=(await sql.all('SELECT * FROM processing_files WHERE demand_id=? ORDER BY rowid DESC', row.demand_id)).filter(f=>f.ticket_hash===row.hash||f.ticket_hash.startsWith(row.hash+':correction:')).filter((f,i,fs)=>fs.findIndex(o=>o.document_id===f.document_id)===i);
  for(const file of files){
   const old=JSON.parse(file.extracted);
   if(!/\.pdf$/i.test(file.name)||!file.bytes?.length||(!old.incomplete&&!file.problem)||!old.pages)continue;
-  if(old.assistedVisualEvidence?.length||all('SELECT file_id FROM processing_field_reviews WHERE file_id=? UNION SELECT file_id FROM processing_file_reviews WHERE file_id=?',file.id,file.id).length)continue;
+  if(old.assistedVisualEvidence?.length||(await sql.all('SELECT file_id FROM processing_field_reviews WHERE file_id=? UNION SELECT file_id FROM processing_file_reviews WHERE file_id=?', file.id, file.id)).length)continue;
   const page=old.pendingPages?.[0]||(old.pages===1?1:0);if(!page)continue;
   const hash=createHash('sha256').update(Buffer.from(file.bytes)).digest('hex');const path=folder+'/'+hash+'-'+page+'.json';
   let reading:any;
@@ -40,8 +40,8 @@ for(const row of rows){
    if(old.pages===1){next.confidence=reading.confidence;next.verifiedFields=reading.verifiedFields||[];}
    next.pageRecovery={originalHash:hash,page,readAt:new Date().toISOString()};
    if(apply){
-    db.exec('BEGIN IMMEDIATE');try{const current=all('SELECT extracted FROM processing_files WHERE id=?',file.id)[0];
-     if(current?.extracted===file.extracted&&!all('SELECT file_id FROM processing_field_reviews WHERE file_id=? UNION SELECT file_id FROM processing_file_reviews WHERE file_id=?',file.id,file.id).length){run('UPDATE processing_files SET extracted=?,problem=? WHERE id=?',JSON.stringify(next),'',file.id);changed.add(row.demand_id);}
+    db.exec('BEGIN IMMEDIATE');try{const current=(await sql.all('SELECT extracted FROM processing_files WHERE id=?', file.id))[0];
+     if(current?.extracted===file.extracted&&!(await sql.all('SELECT file_id FROM processing_field_reviews WHERE file_id=? UNION SELECT file_id FROM processing_file_reviews WHERE file_id=?', file.id, file.id)).length){await sql.run('UPDATE processing_files SET extracted=?,problem=? WHERE id=?', JSON.stringify(next), '', file.id);changed.add(row.demand_id);}
      db.exec('COMMIT');
     }catch(e){db.exec('ROLLBACK');throw e;}
    }
@@ -50,5 +50,5 @@ for(const row of rows){
   console.log((usable?'Página recuperada: ':'Leitura anterior preservada: ')+file.name);
  }
 }
-for(const did of changed){saveProcessingResult(did);audit(did,null,'Página pendente relida localmente; originais e leituras anteriores preservados, sem confirmação humana automática.');}
+for(const did of changed){await saveProcessingResult(did);await auditAsync(did, null, 'Página pendente relida localmente; originais e leituras anteriores preservados, sem confirmação humana automática.');}
 const path=folder+'/'+Date.now()+(apply?'-applied':'-preview')+'.json';writeFileSync(path,JSON.stringify({apply,backup:backup?.path,changedDemands:[...changed],files:report},null,2));console.log(JSON.stringify({apply,attempts:report.length,recovered:report.filter(r=>r.usable).length,report:path}));db.close();

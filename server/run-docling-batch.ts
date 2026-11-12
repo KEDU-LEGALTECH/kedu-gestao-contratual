@@ -59,7 +59,7 @@ try{
  const rows=all("SELECT d.id,d.glpi_id FROM demands d JOIN glpi_tickets t ON t.external_id=d.glpi_id JOIN contract_processing p ON p.demand_id=d.id WHERE t.mode='real' AND d.stage NOT IN('Concluído','Cancelado','Em assinatura') ORDER BY d.id");
  const before:any[]=[],candidates:any[]=[],skipped:any[]=[],originals=new Map<string,any>();
  for(const d of rows){
-  const plan=saveProcessingResult(d.id);if(!plan)continue;before.push({id:d.id,glpi:d.glpi_id,status:plan.status,comparisons:plan.comparisons});
+  const plan=await saveProcessingResult(d.id);if(!plan)continue;before.push({id:d.id,glpi:d.glpi_id,status:plan.status,comparisons:plan.comparisons});
   const pendingFields=plan.comparisons.filter(c=>['missing','review'].includes(c.status)&&!c.partlyMatches&&!['conflicting_values','trade_name','qualified_name','spreadsheet_calculation'].includes(c.reviewReason?.code));
   if(!pendingFields.length)continue;
   for(const file of plan.files){
@@ -108,7 +108,8 @@ try{
   modified.set(task.id,next);writeFileSync(join(folder,'reading-'+task.id+'.json'),next);
  }
  closeReader();release();release=undefined;
- const after=before.map(previous=>{const next=saveProcessingResult(previous.id)!;return {id:previous.id,glpi:previous.glpi,status:next.status,comparisons:next.comparisons};});
+ const after:any[]=[];
+ for(const previous of before){const next=(await saveProcessingResult(previous.id))!;after.push({id:previous.id,glpi:previous.glpi,status:next.status,comparisons:next.comparisons});}
  const changes=after.flatMap(next=>{const old=before.find(r=>r.id===next.id);return next.comparisons.flatMap((c:any)=>{const p=old.comparisons.find((r:any)=>r.field===c.field);return p&&(p.status!==c.status||p.found!==c.found)?[{demand:next.id,glpi:next.glpi,field:c.field,from:p.status,to:c.status,previous:p.found,found:c.found}]:[];});});
  const transitions=after.filter(r=>before.find(b=>b.id===r.id).status!==r.status).map(r=>({demand:r.id,glpi:r.glpi,from:before.find(b=>b.id===r.id).status,to:r.status}));
  const applied:any[]=[],notApplied:any[]=[];

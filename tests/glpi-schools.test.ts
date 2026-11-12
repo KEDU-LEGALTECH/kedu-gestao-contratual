@@ -21,10 +21,10 @@ function reset() {
   db.exec("DELETE FROM school_glpi_sources; DELETE FROM school_glpi_origins; DELETE FROM audit; DELETE FROM glpi_tickets; DELETE FROM schools;");
 }
 
-test("Importa escola com CNPJ válido uma única vez, com origem e sem inventar endereço", () => {
+test("Importa escola com CNPJ válido uma única vez, com origem e sem inventar endereço", async () => {
   store(raw("1", "Escola Real Teste Ltda", "11.444.777/0001-61"));
   store(raw("2", "Escola Real Teste Ltda", "11444777000161"));
-  assert.equal(importGlpiSchools(null).created, 1);
+  assert.equal((await importGlpiSchools(null)).created, 1);
   const school = one("SELECT * FROM schools");
   assert.equal(school.cnpj, "11.444.777/0001-61");
   assert.equal(school.address, "");
@@ -32,18 +32,18 @@ test("Importa escola com CNPJ válido uma única vez, com origem e sem inventar 
   assert.equal(one("SELECT first_ticket,reviewed_at FROM school_glpi_origins").first_ticket, "2");
   assert.equal(one("SELECT reviewed_at FROM school_glpi_origins").reviewed_at, null);
   assert.equal(one("SELECT COUNT(*) n FROM school_glpi_sources").n, 2);
-  assert.equal(importGlpiSchools(null).created, 0);
+  assert.equal((await importGlpiSchools(null)).created, 0);
   assert.equal(one("SELECT COUNT(*) n FROM schools").n, 1);
   assert.equal(one("SELECT COUNT(*) n FROM school_glpi_sources").n, 2);
   assert.equal(one("SELECT COUNT(*) n FROM demands").n, 0);
 });
 
-test("Nome divergente não substitui cadastro existente nem duplica CNPJ sem pontuação", () => {
+test("Nome divergente não substitui cadastro existente nem duplica CNPJ sem pontuação", async () => {
   reset();
   run("INSERT INTO schools VALUES('existing','Nome fantasia','Razão conferida Ltda','11444777000161','Endereço conferido','Contato conferido')");
   store(raw("3", "Nome diferente vindo do GLPI", "11.444.777/0001-61"));
   const before = one("SELECT * FROM schools");
-  const result = importGlpiSchools(null);
+  const result = await importGlpiSchools(null);
   assert.equal(result.created, 0);
   assert.equal(result.matched, 1);
   assert.equal(result.conflicts, 1);
@@ -51,12 +51,12 @@ test("Nome divergente não substitui cadastro existente nem duplica CNPJ sem pon
   assert.equal(one("SELECT name_conflict FROM school_glpi_sources").name_conflict, 1);
 });
 
-test("Dados inválidos, razão social ausente e chamados demo não geram escolas", () => {
+test("Dados inválidos, razão social ausente e chamados demo não geram escolas", async () => {
   reset();
   store(raw("4", "Escola inválida", "11.444.777/0001-62"));
   store(raw("5", "", "11.444.777/0001-61"));
   store(raw("6", "Escola fictícia", "11.444.777/0001-61"), "demo");
-  assert.equal(importGlpiSchools(null).skipped, 2);
+  assert.equal((await importGlpiSchools(null)).skipped, 2);
   assert.equal(one("SELECT COUNT(*) n FROM schools").n, 0);
 });
 
@@ -67,7 +67,7 @@ test("Sincronização real cadastra a escola e a triagem passa a encontrar o CNP
   const result = await syncGlpi(null, source);
   assert.equal(result.schools.created, 1);
   const school = one("SELECT * FROM schools");
-  const imported = listTickets()[0];
+  const imported = (await listTickets())[0];
   assert.equal(imported.analysis.schoolId, null);
   assert.equal(imported.analysis.organizationId, school.id);
   assert.ok(imported.analysis.pendencies.some((p: string) => p.includes("aguarda classificação")));
@@ -125,14 +125,14 @@ test("Classificação humana protege escolas, fornecedores, permissões, versão
     assert.equal(data.organizations[0].organization_kind, "Fornecedor");
     assert.equal((await call("/demands", demandBody, "2", "POST")).status, 400, "fornecedor não pode virar contrato de garantia");
     assert.equal((await call("/demands", { ...demandBody, type: "Contrato fornecedor" }, "2", "POST")).status, 200);
-    importGlpiSchools(null);
+    await importGlpiSchools(null);
     db.exec(readFileSync("migrations/009.sql", "utf8"));
     assert.equal(one("SELECT kind FROM organization_classifications WHERE school_id=?", school.id).kind, "Fornecedor", "sincronização e reinício não desfazem classificação");
     assert.equal((await call(path, { ...body, kind: "Escola", expected_version: 2 })).status, 200);
     data = await (await call("/bootstrap")).json();
     assert.equal(data.schools.length, 1);
     assert.equal(data.schools[0].id, school.id);
-    assert.equal(listTickets()[0].analysis.schoolId, school.id);
+    assert.equal((await listTickets())[0].analysis.schoolId, school.id);
     assert.equal(one("SELECT COUNT(*) n FROM schools").n, 1);
     assert.ok(one("SELECT id FROM audit WHERE action LIKE 'Organização %→ Escola.%'"));
   } finally { server.close(); }

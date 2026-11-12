@@ -13,7 +13,7 @@ run("INSERT INTO schools VALUES('s','Escola teste','Escola teste','11.444.777/00
 for(const [id,stage,status] of [["pending","Recebido","2"],["canceled","Cancelado","2"],["solved","Recebido","5"],["closed","Recebido","6"]]){
  run("INSERT INTO demands(id,glpi_id,school_id,type,stage,priority,owner,due,data,created) VALUES(?,?,?,'Contrato educacional',?,'Normal','u',?,'{}',?)",id,id,"s",stage,["solved","closed"].includes(id)?"2000-01-01":"",now());
  run("INSERT INTO glpi_tickets VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",id,"real","Contrato educacional",status,"hash-"+id,JSON.stringify({title:"Contrato educacional",content:"",documents:[]}),"{}","vinculado",id,now(),now(),null);
- ensureProcessing(id);saveProcessingResult(id);
+ await ensureProcessing(id);await saveProcessingResult(id);
 }
 const {default:app}=await import("../server/index.js");
 const server=app.listen(0,"127.0.0.1");await new Promise<void>(r=>server.on("listening",r));after(()=>server.close());

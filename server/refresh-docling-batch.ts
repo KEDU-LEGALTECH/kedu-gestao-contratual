@@ -26,7 +26,7 @@ try{
  const refreshed:any[]=[];let skipped=0;
  for(const id of ids){
   if(mode!=='snapshot'&&one('SELECT status FROM contract_processing WHERE demand_id=?',id)?.status==='Analisando'){skipped++;continue;}
-  db.exec('BEGIN IMMEDIATE');try{const result=saveProcessingResult(id);if(result)refreshed.push({id,glpi:before.find((r:any)=>r.id===id)?.glpi,status:result.status,comparisons:result.comparisons});db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}
+  db.exec('BEGIN IMMEDIATE');try{const result=await saveProcessingResult(id);if(result)refreshed.push({id,glpi:before.find((r:any)=>r.id===id)?.glpi,status:result.status,comparisons:result.comparisons});db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}
  }
  if(mode==='snapshot'){
   const count=(items:any[],field:string)=>items.reduce((a,r)=>(a[r[field]]=(a[r[field]]||0)+1,a),{});

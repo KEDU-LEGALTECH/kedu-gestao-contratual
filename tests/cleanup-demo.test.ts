@@ -13,8 +13,8 @@ const { seedCatalog } = await import("../server/governance-routes.js");
 const { registerOfficialCatalog } = await import("../server/official-templates.js");
 const { one, all, run } = await import("../server/db.js");
 const { cleanupDemoData } = await import("../server/cleanup-demo.js");
-seedCatalog();
-registerOfficialCatalog();
+await seedCatalog();
+await registerOfficialCatalog();
 run("INSERT INTO schools VALUES('real-school','Escola real','Escola real Ltda','11.444.777/0001-61','Endereço real','Contato real')");
 run("INSERT INTO contracts(id,school_id,status) VALUES('real-contract','real-school','Assinado')");
 run("INSERT INTO demands(id,school_id,contract_id,type,stage,priority,owner,due,data,created) VALUES('REAL-1','real-school','real-contract','Contrato de garantia','Recebido','Normal','u2','2030-01-01','{}','2026-10-20')");
@@ -31,26 +31,26 @@ const realDemand = one("SELECT * FROM demands WHERE id='REAL-1'");
 const realTicket = one("SELECT * FROM glpi_tickets WHERE external_id='real-ticket'");
 const officialIds = all("SELECT version_id FROM template_sources ORDER BY version_id");
 
-test("Limpeza exige demonstração desativada", () => {
-  assert.throws(() => cleanupDemoData(), /Desative DEMO_SEED/);
+test("Limpeza exige demonstração desativada", async () => {
+  await assert.rejects(async () => cleanupDemoData(), /Desative DEMO_SEED/);
   assert.equal(one("SELECT COUNT(*) n FROM schools").n, 9);
   process.env.DEMO_SEED = "false";
 });
-test("Cadastro da carga alterado impede exclusão e mantém a integridade", () => {
+test("Cadastro da carga alterado impede exclusão e mantém a integridade", async () => {
   run("UPDATE schools SET address='Endereço agora real' WHERE id='s0'");
-  assert.throws(() => cleanupDemoData(), /foi alterado/);
+  await assert.rejects(async () => cleanupDemoData(), /foi alterado/);
   assert.equal(one("SELECT COUNT(*) n FROM schools").n, 9);
   run("UPDATE schools SET address='Fortaleza, CE • Dados fictícios' WHERE id='s0'");
 });
-test("Dependência real em contrato fictício impede toda a limpeza", () => {
+test("Dependência real em contrato fictício impede toda a limpeza", async () => {
   run("UPDATE demands SET data=? WHERE id='REAL-1'", JSON.stringify({ matriz: "c0" }));
-  assert.throws(() => cleanupDemoData(), /Demanda externa depende/);
+  await assert.rejects(async () => cleanupDemoData(), /Demanda externa depende/);
   assert.equal(one("SELECT COUNT(*) n FROM demands").n, 9);
   assert.ok(one("SELECT name FROM sqlite_master WHERE name='no_delete_signed_history'"));
   run("UPDATE demands SET data='{}' WHERE id='REAL-1'");
 });
-test("Remove carga fictícia e preserva dados reais, oficiais, acesso e gatilhos", () => {
-  const result = cleanupDemoData();
+test("Remove carga fictícia e preserva dados reais, oficiais, acesso e gatilhos", async () => {
+  const result = await cleanupDemoData();
   assert.equal(result.schoolsRemoved, 8);
   assert.equal(result.demandsRemoved, 8);
   assert.equal(result.contractsRemoved, 8);
@@ -68,7 +68,7 @@ test("Remove carga fictícia e preserva dados reais, oficiais, acesso e gatilhos
   assert.throws(() => run("DELETE FROM signed_history WHERE id='real-history'"), /imutável/);
   assert.throws(() => run("DELETE FROM glpi_ticket_versions WHERE id='real-version'"), /imutável/);
   assert.deepEqual(all("PRAGMA foreign_key_check"), []);
-  assert.equal(cleanupDemoData().schoolsRemoved, 0);
+  assert.equal((await cleanupDemoData()).schoolsRemoved, 0);
 });
 test("Reiniciar com DEMO_SEED=true não recria exemplos no banco limpo", () => {
   const child = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", 'await import("./server/seed.ts");const {seedCatalog}=await import("./server/governance-routes.ts");seedCatalog();const {one}=await import("./server/db.ts");console.log(JSON.stringify({schools:one("SELECT COUNT(*) n FROM schools").n,demands:one("SELECT COUNT(*) n FROM demands").n,demo:one("SELECT COUNT(*) n FROM template_catalog WHERE demonstration=1").n}));'], { encoding: "utf8", env: { ...process.env, DEMO_SEED: "true" } });

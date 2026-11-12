@@ -1,5 +1,5 @@
 import { basisPoints, cents } from "./decimal.js";
-import { one, all, run, id, now, db, audit } from "./db.js";
+import { one, all, run, id, now, db, audit, sql, auditAsync } from "./db.js";
 import { governanceMissing, requirements, humanMissing } from "./governance.js";
 import { requiredFor } from "../shared/request-policy.js";
 import { assertProductionTemplate } from "./template-policy.js";
@@ -16,119 +16,69 @@ export const stages = [
   "Cancelado",
 ];
 export { permissions, permit, access } from "../shared/access-policy.js";
-export function required(d: any) {
+export async function required(d: any) {
   const data = JSON.parse(d.data);
-  return requiredFor(d.type, requirements(d).subtype, data.modalidade || "")
+  return requiredFor(d.type, (await requirements(d)).subtype, data.modalidade || "")
     .filter((f) => typeof data[f] !== "string" || !data[f].trim())
     .concat(
       data.checklist ? [] : ["Documentação obrigatória"],
-      governanceMissing(d),
+      await governanceMissing(d),
     );
 }
-export function latest(d: string) {
-  return one(
-    "SELECT * FROM documents WHERE demand_id=? ORDER BY version DESC LIMIT 1",
-    d,
-  );
+export async function latest(d: string) {
+  return await sql.one("SELECT * FROM documents WHERE demand_id=? ORDER BY version DESC LIMIT 1", d);
 }
-export function invalidate(d: string) {
-  run(
-    "UPDATE approvals SET valid=0 WHERE document_id IN (SELECT id FROM documents WHERE demand_id=?)",
-    d,
-  );
+export async function invalidate(d: string) {
+  await sql.run("UPDATE approvals SET valid=0 WHERE document_id IN (SELECT id FROM documents WHERE demand_id=?)", d);
 }
-export function saveTerms(demandId: string, data: any) {
+export async function saveTerms(demandId: string, data: any) {
   if (data.cashbackValor)
-    run(
-      "INSERT INTO cashback_values VALUES(?,?) ON CONFLICT(demand_id) DO UPDATE SET amount_cents=excluded.amount_cents",
-      demandId,
-      cents(data.cashbackValor),
-    );
-  else run("DELETE FROM cashback_values WHERE demand_id=?", demandId);
+    await sql.run("INSERT INTO cashback_values VALUES(?,?) ON CONFLICT(demand_id) DO UPDATE SET amount_cents=excluded.amount_cents", demandId, cents(data.cashbackValor));
+  else await sql.run("DELETE FROM cashback_values WHERE demand_id=?", demandId);
   if (!["remuneracao", "garantia", "repasse", "valor"].every((k) => data[k]))
     return;
-  run(
-    "INSERT INTO commercial_terms VALUES(?,?,?,?,?,?) ON CONFLICT(demand_id) DO UPDATE SET remuneration_bps=excluded.remuneration_bps,guarantee_bps=excluded.guarantee_bps,transfer_bps=excluded.transfer_bps,cashback_bps=excluded.cashback_bps,reference_cents=excluded.reference_cents",
-    demandId,
-    basisPoints(data.remuneracao),
-    basisPoints(data.garantia),
-    basisPoints(data.repasse),
-    basisPoints(data.cashback || "0,00%"),
-    cents(data.valor),
-  );
+  await sql.run("INSERT INTO commercial_terms VALUES(?,?,?,?,?,?) ON CONFLICT(demand_id) DO UPDATE SET remuneration_bps=excluded.remuneration_bps,guarantee_bps=excluded.guarantee_bps,transfer_bps=excluded.transfer_bps,cashback_bps=excluded.cashback_bps,reference_cents=excluded.reference_cents", demandId, basisPoints(data.remuneracao), basisPoints(data.garantia), basisPoints(data.repasse), basisPoints(data.cashback || "0,00%"), cents(data.valor));
 }
-export function allocateAddendum(
+export async function allocateAddendum(
   school: string,
   parent: string,
   ownTransaction = true,
 ) {
-  if (ownTransaction) db.exec("BEGIN IMMEDIATE");
-  try {
-    const matrix = one(
-      "SELECT * FROM contract_registry WHERE id=? AND school_id=? AND status=? AND instrument_kind='Matriz'",
-      parent,
-      school,
-      "Assinado",
-    );
+  return await sql.transaction(async () => {
+    const matrix = await sql.one("SELECT * FROM contract_registry WHERE id=? AND school_id=? AND status=? AND instrument_kind='Matriz'", parent, school, "Assinado");
     if (!matrix || matrix.parent_id)
       throw Error("Aditivo exige contrato matriz assinado da mesma escola.");
-    const history = one(
-      "SELECT * FROM signed_history WHERE matrix_id=? ORDER BY sequence DESC LIMIT 1",
-      parent,
-    );
+    const history = await sql.one("SELECT * FROM signed_history WHERE matrix_id=? ORDER BY sequence DESC LIMIT 1", parent);
     if (!history)
       throw Error(
         "Confirme o último aditivo assinado no Clicksign/Clint antes de reservar a numeração.",
       );
     if (
       history.source === "Registro local" &&
-      !one(
-        "SELECT id FROM history_confirmations WHERE matrix_id=? AND sequence=?",
-        parent,
-        history.sequence,
-      )
+      !await sql.one("SELECT id FROM history_confirmations WHERE matrix_id=? AND sequence=?", parent, history.sequence)
     )
       throw Error(
         "Consulte Clicksign/Clint e confirme o novo último assinado antes da próxima emissão.",
       );
     const seq = history.sequence + 1;
     if (
-      one(
-        "SELECT id FROM contracts WHERE parent_id=? AND sequence=?",
-        parent,
-        seq,
-      )
+      await sql.one("SELECT id FROM contracts WHERE parent_id=? AND sequence=?", parent, seq)
     )
       throw Error(
         "O próximo número já está reservado. Conclua a reserva ou reconcilie o histórico assinado; números cancelados não são reutilizados automaticamente.",
       );
     /* Signed history is immutable and the unique index serializes reservations. */
     const cid = id();
-    run(
-      "INSERT INTO contracts(id,school_id,parent_id,sequence) VALUES(?,?,?,?)",
-      cid,
-      school,
-      parent,
-      seq,
-    );
-    if (ownTransaction) db.exec("COMMIT");
+    await sql.run("INSERT INTO contracts(id,school_id,parent_id,sequence) VALUES(?,?,?,?)", cid, school, parent, seq);
     return { id: cid, sequence: seq };
-  } catch (e) {
-    if (ownTransaction) db.exec("ROLLBACK");
-    throw e;
-  }
+  });
 }
-export function transition(user: any, d: any, stage: string, reason?: string) {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    applyTransition(user, d, stage, reason);
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
+export async function transition(user: any, d: any, stage: string, reason?: string) {
+  await sql.transaction(async () => {
+    await applyTransition(user, d, stage, reason);
+  });
 }
-function applyTransition(user: any, d: any, stage: string, reason?: string) {
+async function applyTransition(user: any, d: any, stage: string, reason?: string) {
   permit(user, "write");
   access(user, d);
   if (["Concluído", "Cancelado"].includes(d.stage))
@@ -136,11 +86,11 @@ function applyTransition(user: any, d: any, stage: string, reason?: string) {
       "Demandas concluídas ou canceladas têm histórico encerrado. Crie uma nova demanda.",
     );
   if (!stages.includes(stage)) throw Error("Etapa inválida.");
-  if (!["Cancelado", "Devolvido", "Aguardando informações"].includes(stage) && one("SELECT demand_id FROM glpi_intakes WHERE demand_id=? AND confirmed_at IS NULL", d.id))
+  if (!["Cancelado", "Devolvido", "Aguardando informações"].includes(stage) && await sql.one("SELECT demand_id FROM glpi_intakes WHERE demand_id=? AND confirmed_at IS NULL", d.id))
     throw Error("Confira o recebimento GLPI antes de avançar a demanda.");
   if (["Cancelado", "Devolvido"].includes(stage)) {
     if (!reason?.trim()) throw Error("Informe uma justificativa.");
-    invalidate(d.id);
+    await invalidate(d.id);
   } else {
     const edges: Record<string, string[]> = {
       Recebido: ["Aguardando informações", "Em elaboração"],
@@ -153,7 +103,7 @@ function applyTransition(user: any, d: any, stage: string, reason?: string) {
     };
     if (!edges[d.stage]?.includes(stage))
       throw Error("Transição não permitida.");
-    const doc = latest(d.id);
+    const doc = await latest(d.id);
     if (
       doc &&
       ["Em conferência", "Em aprovação", "Em assinatura", "Concluído"].includes(
@@ -161,13 +111,10 @@ function applyTransition(user: any, d: any, stage: string, reason?: string) {
       )
     )
       assertProductionTemplate(
-        one(
-          "SELECT demonstration FROM template_catalog WHERE version_id=?",
-          doc.template_version,
-        ),
+        await sql.one("SELECT demonstration FROM template_catalog WHERE version_id=?", doc.template_version),
       );
     if (["Em conferência", "Em aprovação", "Em assinatura"].includes(stage)) {
-      if (required(d).length || !d.confirmed)
+      if ((await required(d)).length || !d.confirmed)
         throw Error(
           "Confirme os dados e complete todos os campos e documentos obrigatórios.",
         );
@@ -175,28 +122,21 @@ function applyTransition(user: any, d: any, stage: string, reason?: string) {
         throw Error("Gere uma minuta com a versão atual dos dados.");
     }
     if (["Em aprovação", "Em assinatura"].includes(stage)) {
-      const r = one(
-        "SELECT * FROM reviews WHERE document_id=? ORDER BY created DESC LIMIT 1",
-        doc.id,
-      );
+      const r = await sql.one("SELECT * FROM reviews WHERE document_id=? ORDER BY created DESC LIMIT 1", doc.id);
       if (r?.status !== "conforme")
         throw Error("Conferência inconclusiva ou divergente impede o avanço.");
     }
     if (stage === "Em assinatura") {
-      const approvals = all(
-        "SELECT kind FROM approvals WHERE document_id=? AND data_version=? AND valid=1",
-        doc.id,
-        d.data_version,
-      );
+      const approvals = await sql.all("SELECT kind FROM approvals WHERE document_id=? AND data_version=? AND valid=1", doc.id, d.data_version);
       if (
-        !requirements(d).approvals.every((k) =>
+        !(await requirements(d)).approvals.every((k) =>
           approvals.some((a) => a.kind === k),
         )
       )
         throw Error(
-          "Validações obrigatórias: " + requirements(d).approvals.join(", "),
+          "Validações obrigatórias: " + (await requirements(d)).approvals.join(", "),
         );
-      if (humanMissing(doc).length)
+      if ((await humanMissing(doc)).length)
         throw Error(
           "Complete os cinco eixos de revisão humana antes da assinatura.",
         );
@@ -205,46 +145,23 @@ function applyTransition(user: any, d: any, stage: string, reason?: string) {
       if (!doc?.signed)
         throw Error("Anexe o documento assinado antes de concluir.");
       const terms = JSON.parse(d.data);
-      const contract = one(
-        "SELECT * FROM contract_registry WHERE id=?",
-        d.contract_id,
-      );
+      const contract = await sql.one("SELECT * FROM contract_registry WHERE id=?", d.contract_id);
       if (contract?.instrument_kind === "Aditivo")
-        run(
-          "INSERT INTO signed_history VALUES(?,?,?,?,?,?,?,?)",
-          id(),
-          contract.parent_id,
-          contract.sequence,
-          "Registro local",
-          "Documento " + doc.id,
-          terms.dataFormalizacao,
-          user.id,
-          now(),
-        );
-      run(
-        "UPDATE contracts SET status=?,start=?,end=? WHERE id=?",
-        contract?.instrument_kind === "Operação jurídica"
+        await sql.run("INSERT INTO signed_history VALUES(?,?,?,?,?,?,?,?)", id(), contract.parent_id, contract.sequence, "Registro local", "Documento " + doc.id, terms.dataFormalizacao, user.id, now());
+      await sql.run("UPDATE contracts SET status=?,start=?,end=? WHERE id=?", contract?.instrument_kind === "Operação jurídica"
           ? "Concluído"
-          : "Assinado",
-        terms.inicio || null,
-        terms.fim || null,
-        d.contract_id,
-      );
+          : "Assinado", terms.inicio || null, terms.fim || null, d.contract_id);
       const sourceStatus: Record<string, string> = {
         Distrato: "Distratado",
         Descredenciamento: "Descredenciado",
         "Migração de modalidade": "Migrado",
       };
       if (sourceStatus[d.type]) {
-        if (d.type === "Migração de modalidade" && required(d).length)
+        if (d.type === "Migração de modalidade" && (await required(d)).length)
           throw Error(
             "Conclua os requisitos e as demandas vinculadas antes de encerrar a migração.",
           );
-        const matrix = one(
-          "SELECT * FROM contract_registry WHERE id=? AND school_id=? AND instrument_kind='Matriz'",
-          terms.matriz || "",
-          d.school_id,
-        );
+        const matrix = await sql.one("SELECT * FROM contract_registry WHERE id=? AND school_id=? AND instrument_kind='Matriz'", terms.matriz || "", d.school_id);
         if (!matrix || matrix.id === d.contract_id)
           throw Error("Matriz de origem inválida para concluir a operação.");
         if (!(
@@ -255,20 +172,11 @@ function applyTransition(user: any, d: any, stage: string, reason?: string) {
           throw Error(
             "A matriz de origem já foi encerrada por outra operação. Revise o vínculo antes de concluir.",
           );
-        run(
-          "UPDATE contracts SET status=? WHERE id=?",
-          sourceStatus[d.type],
-          matrix.id,
-        );
-        audit(d.id, user.id, `Matriz ${matrix.id}: ${sourceStatus[d.type]}`);
+        await sql.run("UPDATE contracts SET status=? WHERE id=?", sourceStatus[d.type], matrix.id);
+        await auditAsync(d.id, user.id, `Matriz ${matrix.id}: ${sourceStatus[d.type]}`);
       }
     }
   }
-  run(
-    "UPDATE demands SET stage=?,completed=? WHERE id=?",
-    stage,
-    stage === "Concluído" ? now() : null,
-    d.id,
-  );
-  audit(d.id, user.id, `Etapa: ${stage}${reason ? " • " + reason : ""}`);
+  await sql.run("UPDATE demands SET stage=?,completed=? WHERE id=?", stage, stage === "Concluído" ? now() : null, d.id);
+  await auditAsync(d.id, user.id, `Etapa: ${stage}${reason ? " • " + reason : ""}`);
 }

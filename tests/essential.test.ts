@@ -131,7 +131,7 @@ async function prepareGovernance(
     "PUT",
   );
   assert.equal(r.status, 200, JSON.stringify(r.data));
-  for (const kind of requirements(one("SELECT * FROM demands WHERE id=?", did))
+  for (const kind of (await requirements(one("SELECT * FROM demands WHERE id=?", did)))
     .evidence) {
     const form = new FormData();
     form.append(
@@ -422,7 +422,7 @@ test("Reservas concorrentes não recebem o mesmo número de aditivo", async () =
   assert.equal(seq.length, 1);
   assert.equal(new Set(seq).size, 1);
   assert.equal(seq[0], 4);
-  assert.throws(() => allocateAddendum("s0", "c4"));
+  await assert.rejects(async () => allocateAddendum("s0", "c4"));
 });
 test("Modelo aprovado é imutável no banco", () =>
   assert.throws(() =>
@@ -528,7 +528,7 @@ test("Fluxo completo: criação, confirmação, geração, conferência, aprova�
     "Concluído",
   );
 });
-test("Autonomia dos cinco aditivos e exigência Financeiro na conta bancária", () => {
+test("Autonomia dos cinco aditivos e exigência Financeiro na conta bancária", async () => {
   for (const subtype of [
     "Conta bancária",
     "Vigência",
@@ -555,25 +555,25 @@ test("Autonomia dos cinco aditivos e exigência Financeiro na conta bancária", 
       JSON.stringify({ subtype, legalFlags: [] }),
     );
     assert.deepEqual(
-      requirements(one("SELECT * FROM demands WHERE id=?", did)).approvals,
+      (await requirements(one("SELECT * FROM demands WHERE id=?", did))).approvals,
       subtype === "Conta bancária" ? ["Risco", "Financeiro"] : ["Risco"],
     );
   }
 });
-test("K-invest, parcelamento e migração exigem os documentos próprios", () => {
+test("K-invest, parcelamento e migração exigem os documentos próprios", async () => {
   assert.ok(
-    requirements({
+    (await requirements({
       id: "none",
       type: "Antecipação K-invest",
-    }).evidence.includes("confissao_divida"),
+    })).evidence.includes("confissao_divida"),
   );
   assert.ok(
-    requirements({ id: "none", type: "Parcelamento" }).evidence.includes(
+    (await requirements({ id: "none", type: "Parcelamento" })).evidence.includes(
       "confissao_divida",
     ),
   );
   assert.deepEqual(
-    requirements({ id: "none", type: "Migração de modalidade" }).evidence,
+    (await requirements({ id: "none", type: "Migração de modalidade" })).evidence,
     [
       "contrato_social",
       "identificacao",
@@ -585,7 +585,7 @@ test("K-invest, parcelamento e migração exigem os documentos próprios", () =>
     ],
   );
   assert.ok(
-    requirements({ id: "none", type: "CNPJ solidário" }).evidence.includes(
+    (await requirements({ id: "none", type: "CNPJ solidário" })).evidence.includes(
       "nexo_economico",
     ),
   );
@@ -650,7 +650,7 @@ test("Reporte deve ser sexta-feira e poderes exigem administrador único ou todo
   );
   assert.equal(r.status, 200);
   assert.ok(
-    governanceMissing(one("SELECT * FROM demands WHERE id=?", "KD-0001")).some(
+    (await governanceMissing(one("SELECT * FROM demands WHERE id=?", "KD-0001"))).some(
       (x) => x.includes("Todos os sócios"),
     ),
   );
@@ -686,7 +686,7 @@ test("Jurídico obrigatório quando corpo fixo ou poderes societários mudam", a
     }),
     d.id,
   );
-  assert.deepEqual(requirements(d).approvals, ["Risco", "Jurídica"]);
+  assert.deepEqual((await requirements(d)).approvals, ["Risco", "Jurídica"]);
 });
 test("Risco e Financeiro não podem aprovar um pelo outro", async () => {
   const finance = (
@@ -812,7 +812,7 @@ test("Aditivo bancário exige Risco e Financeiro, sem aprovação jurídica gen�
 });
 test("Novo arquivo de evidência exige nova verificação, mesmo havendo versão antiga verificada", async () => {
   const d = one("SELECT * FROM demands WHERE id='KD-0001'");
-  const before = governanceMissing(d);
+  const before = await governanceMissing(d);
   const form = new FormData();
   form.append(
     "file",
@@ -831,7 +831,7 @@ test("Novo arquivo de evidência exige nova verificação, mesmo havendo versão
     200,
   );
   assert.ok(
-    governanceMissing(one("SELECT * FROM demands WHERE id=?", d.id)).includes(
+    (await governanceMissing(one("SELECT * FROM demands WHERE id=?", d.id))).includes(
       "Contrato social e alterações societárias",
     ),
   );
@@ -1168,7 +1168,7 @@ test("Alteração estrutural encaminha automaticamente ao Jurídico e o formulá
     "divergente",
   );
   assert.deepEqual(
-    requirements(one("SELECT * FROM demands WHERE id=?", d.id)).approvals,
+    (await requirements(one("SELECT * FROM demands WHERE id=?", d.id))).approvals,
     ["Risco", "Jurídica"],
   );
   assert.equal(
@@ -1177,11 +1177,11 @@ test("Alteração estrutural encaminha automaticamente ao Jurídico e o formulá
     200,
   );
   assert.deepEqual(
-    requirements(one("SELECT * FROM demands WHERE id=?", d.id)).approvals,
+    (await requirements(one("SELECT * FROM demands WHERE id=?", d.id))).approvals,
     ["Risco", "Jurídica"],
   );
 });
-test("Renovação que menciona contratos anteriores exige Jurídico sem inventar pendência financeira", () => {
+test("Renovação que menciona contratos anteriores exige Jurídico sem inventar pendência financeira", async () => {
   run(
     "UPDATE case_details SET payload=? WHERE demand_id=?",
     JSON.stringify({
@@ -1190,24 +1190,24 @@ test("Renovação que menciona contratos anteriores exige Jurídico sem inventar
     }),
     "policy-Cashback",
   );
-  const r = requirements(
+  const r = await requirements(
     one("SELECT * FROM demands WHERE id=?", "policy-Cashback"),
   );
   assert.ok(r.approvals.includes("Jurídica"));
   assert.ok(r.evidence.includes("contratos_anteriores"));
   assert.ok(!r.evidence.includes("pendencias_financeiras"));
 });
-test("Garantia Completa não pode ser confirmada com percentual de garantia inferior a 100%", () => {
+test("Garantia Completa não pode ser confirmada com percentual de garantia inferior a 100%", async () => {
   const d = one("SELECT * FROM demands WHERE id=?", "KD-0001");
   assert.ok(
-    governanceMissing({
+    (await governanceMissing({
       ...d,
       data: JSON.stringify({
         ...snapshot,
         modalidade: "Garantia Completa",
         garantia: "90,00%",
       }),
-    }).includes("Garantia Completa exige garantia de 100,00%"),
+    })).includes("Garantia Completa exige garantia de 100,00%"),
   );
 });
 test("Campos duplicados contraditórios nunca recebem conferência conforme", () => {
@@ -1564,7 +1564,7 @@ test("Dados bancários anteriores são restritos e cashback em reais é persisti
     ).status,
     400,
   );
-  const policy = requirements({
+  const policy = await requirements({
     id: "policy-extra",
     type: "Distrato",
     data: JSON.stringify({

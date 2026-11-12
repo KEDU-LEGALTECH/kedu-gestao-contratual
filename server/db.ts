@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { DatabaseSync } from "node:sqlite";
+import { sqliteSql } from "./sql.js";
 import { mkdirSync, readFileSync } from "node:fs";
 import {
   randomUUID,
@@ -61,6 +62,8 @@ if (!(db.prepare("SELECT sql FROM sqlite_master WHERE name='contract_processing'
  ALTER TABLE contract_processing_next RENAME TO contract_processing;
  COMMIT;`);
 }
+/** Async access used by converted modules; the same connection as `db`. */
+export const sql = sqliteSql(db);
 export const id = () => randomUUID();
 export const now = () => new Date().toISOString();
 export const localDate = (value: string | Date = new Date()) =>
@@ -86,4 +89,7 @@ export function verify(password: string, stored: string) {
 }
 export function audit(demand: string | null, user: string | null, action: string) {
   run("INSERT INTO audit VALUES(?,?,?,?,?)", id(), demand, user, action, now());
+}
+export async function auditAsync(demand: string | null, user: string | null, action: string) {
+  await sql.run("INSERT INTO audit VALUES(?,?,?,?,?)", id(), demand, user, action, now());
 }

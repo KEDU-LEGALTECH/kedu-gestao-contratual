@@ -333,7 +333,7 @@ test("Sincronização recupera anexos e mensagens perdidos de versão imutável"
   for (const [key, , value] of previous) process.env[key] = value;
   timelineFailure = true;
   try {
-    await syncGlpi("u0", ticketSource());
+    await syncGlpi("u0", await ticketSource());
     const stored = one("SELECT payload,hash FROM glpi_tickets WHERE external_id=?", externalId);
     const restored = JSON.parse(stored.payload);
     assert.equal(restored.timelineCoverage, "partial");

@@ -101,7 +101,7 @@ test("Cadastro de matriz externa preserva arquivo, exige declaração e permite 
   assert.equal(downloaded.status, 200);
   assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), bytes);
   assert.equal((await request(`/demands/${d.id}`)).data.documentBundle.externalMatrix.contract_id, cid);
-  assert.equal(allocateAddendum(d.school_id, cid).sequence, 1);
+  assert.equal((await allocateAddendum(d.school_id, cid)).sequence, 1);
   assert.throws(() => run("UPDATE external_contract_files SET name='alterado' WHERE contract_id=?", cid), /imutável/);
 });
 test("Documentos da demanda mostram apenas a matriz e seus aditivos e respeitam acesso restrito", async () => {
@@ -187,7 +187,7 @@ test("Operações jurídicas concluídas e legadas nunca são matrizes elegívei
       matrix,
     );
     const d = await create(type, matrix);
-    transition(admin, signedFixture(d), "Concluído");
+    await transition(admin, signedFixture(d), "Concluído");
     const c = one("SELECT * FROM contract_registry WHERE id=?", d.contract_id);
     assert.equal(c.instrument_kind, "Operação jurídica");
     assert.equal(c.source_matrix, matrix);
@@ -210,8 +210,8 @@ test("Operações jurídicas concluídas e legadas nunca são matrizes elegívei
       ).instrument_kind,
       "Operação jurídica",
     );
-    assert.throws(
-      () => allocateAddendum("s4", d.contract_id),
+    await assert.rejects(
+      async () => allocateAddendum("s4", d.contract_id),
       /matriz assinado/,
     );
     const bad = await request("/demands", {
@@ -237,7 +237,7 @@ test("Operações jurídicas concluídas e legadas nunca são matrizes elegívei
     );
   }
   const normal = await create();
-  transition(admin, signedFixture(normal), "Concluído");
+  await transition(admin, signedFixture(normal), "Concluído");
   assert.equal(
     one("SELECT status FROM contracts WHERE id=?", normal.contract_id).status,
     "Assinado",
@@ -270,8 +270,8 @@ test("Upload e avanço de modelo demonstrativo são bloqueados em produção com
       0,
     );
     const pending = signedFixture(d);
-    assert.throws(
-      () => transition(admin, pending, "Concluído"),
+    await assert.rejects(
+      async () => transition(admin, pending, "Concluído"),
       /demonstrativos.*produção/,
     );
     assert.equal(
@@ -291,7 +291,7 @@ test("Migração preserva a nova matriz, encerra a antiga e reverte a transaçã
   );
   const migration = await create("Migração de modalidade", matrix);
   const pending = signedFixture(migration);
-  assert.throws(() => transition(admin, pending, "Concluído"), /requisitos/);
+  await assert.rejects(async () => transition(admin, pending, "Concluído"), /requisitos/);
   assert.equal(
     one("SELECT status FROM contracts WHERE id=?", migration.contract_id)
       .status,
@@ -302,9 +302,9 @@ test("Migração preserva a nova matriz, encerra a antiga e reverte a transaçã
     "Em assinatura",
   );
   const distrato = await create("Distrato", matrix);
-  transition(admin, signedFixture(distrato), "Concluído");
+  await transition(admin, signedFixture(distrato), "Concluído");
   const novo = await create();
-  transition(admin, signedFixture(novo), "Concluído");
+  await transition(admin, signedFixture(novo), "Concluído");
   const { saveDetails, requirements } = await import("../server/governance.js");
   const data = {
     ...JSON.parse(migration.data),
@@ -324,7 +324,7 @@ test("Migração preserva a nova matriz, encerra a antiga e reverte a transaçã
     migration.id,
     migration.id,
   );
-  saveDetails(migration.id, {
+  await saveDetails(migration.id, {
     reportDate: "2030-01-04",
     signingMode: "Administrador nomeado",
     partnerCount: 1,
@@ -338,7 +338,7 @@ test("Migração preserva a nova matriz, encerra a antiga e reverte a transaçã
     legalFlags: [],
   });
   const current = one("SELECT * FROM demands WHERE id=?", migration.id);
-  for (const kind of requirements(current).evidence)
+  for (const kind of (await requirements(current)).evidence)
     run(
       "INSERT INTO evidence_files VALUES(?,?,?,?,?,?,?,?,?,?)",
       id(),
@@ -352,7 +352,7 @@ test("Migração preserva a nova matriz, encerra a antiga e reverte a transaçã
       admin.id,
       new Date().toISOString(),
     );
-  transition(admin, current, "Concluído");
+  await transition(admin, current, "Concluído");
   assert.equal(
     one("SELECT status FROM contracts WHERE id=?", matrix).status,
     "Migrado",
@@ -546,12 +546,12 @@ test("PDF assinado de 8 MB é armazenado integralmente após todos os controles 
   };
   run("UPDATE demands SET data=? WHERE id=?", JSON.stringify(data), d.id);
   const current = one("SELECT * FROM demands WHERE id=?", d.id);
-  assert.deepEqual(required(current), []);
+  assert.deepEqual(await required(current), []);
   assert.equal(
     all("SELECT * FROM human_checks WHERE document_id='doc5'").length,
     humanAxes.length,
   );
-  for (const kind of requirements(current).approvals)
+  for (const kind of (await requirements(current)).approvals)
     assert.ok(
       one(
         "SELECT id FROM approvals WHERE document_id='doc5' AND kind=? AND valid=1",

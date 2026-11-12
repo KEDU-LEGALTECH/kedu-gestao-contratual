@@ -62,7 +62,7 @@ async function analyze(options:{parent?:string;bytes?:Buffer;role?:string;versio
 test("Fluxo de anexo preserva original, encaminha erro à correção e guarda nova versão para visualizar e baixar",async()=>{
   const original=await analyze();assert.equal(original.status,200);assert.equal(original.data.status,"divergente");
   assert.equal(one("SELECT stage FROM demands WHERE id='d'").stage,"Devolvido");
-  assert.ok(governanceMissing(one("SELECT * FROM demands WHERE id='d'")).some(s=>s.includes("correção manual")));
+  assert.ok((await governanceMissing(one("SELECT * FROM demands WHERE id='d'"))).some(s=>s.includes("correção manual")));
   const fixed=doc("Taxa de remuneração: 11,84%");
   const corrected=await analyze({parent:original.data.id,bytes:fixed});assert.equal(corrected.status,200);assert.equal(corrected.data.status,"conforme");
   assert.equal(one("SELECT COUNT(*) n FROM attachment_checks").n,2);
@@ -84,5 +84,5 @@ test("Perfil sem acesso, documento alheio e versões obsoletas são bloqueados a
 test("Imagem devolve resultado inconclusivo e bloqueia avanço em vez de aprovar",async()=>{
   const result=await analyze({document:"8"});assert.equal(result.status,200);assert.equal(result.data.status,"inconclusiva");
   assert.equal(one("SELECT stage FROM demands WHERE id='d'").stage,"Aguardando informações");
-  assert.ok(governanceMissing(one("SELECT * FROM demands WHERE id='d'")).some(s=>s.includes("inconclusiva")));
+  assert.ok((await governanceMissing(one("SELECT * FROM demands WHERE id='d'"))).some(s=>s.includes("inconclusiva")));
 });

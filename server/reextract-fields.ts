@@ -1,4 +1,4 @@
-import {db,all,run,audit} from "./db.js";
+import { db, all, run, audit, sql, auditAsync } from "./db.js";
 import {fieldsFromLines,extractProcessingFile} from "./processing-extract.js";
 import {saveProcessingResult} from "./contract-processing.js";
 import {invalidate} from "./workflow.js";
@@ -6,7 +6,7 @@ import {readSpreadsheet} from "./xlsx-reading.js";
 import PizZip from "pizzip";
 
 // Local cached originals only. No downloader or helpdesk request is invoked.
-const files=all("SELECT f.* FROM processing_files f JOIN demands d ON d.id=f.demand_id WHERE d.stage NOT IN ('Concluído','Cancelado','Em assinatura')");
+const files=await sql.all("SELECT f.* FROM processing_files f JOIN demands d ON d.id=f.demand_id WHERE d.stage NOT IN ('Concluído','Cancelado','Em assinatura')");
 const changed=new Set<string>();let before=0,after=0,updated=0;
 db.exec("BEGIN IMMEDIATE");
 try{
@@ -20,10 +20,10 @@ try{
   const calculatedFields=sheet&&Object.keys(sheet.calculatedFields).length?sheet.calculatedFields:undefined;
   before+=Object.keys(old.fields||{}).length;after+=Object.keys(fields).length;
   if(JSON.stringify(fields)===JSON.stringify(old.fields)&&JSON.stringify(calculatedFields)===JSON.stringify(old.calculatedFields))continue;
-  run("UPDATE processing_files SET extracted=? WHERE id=?",JSON.stringify({...old,fields,calculatedFields}),f.id);
+  await sql.run("UPDATE processing_files SET extracted=? WHERE id=?", JSON.stringify({...old,fields,calculatedFields}), f.id);
   changed.add(f.demand_id);updated++;
  }
- for(const did of changed){run("UPDATE contract_processing SET revision=revision+1 WHERE demand_id=?",did);invalidate(did);saveProcessingResult(did);audit(did,null,"Campos dos documentos locais reidentificados; originais e correções manuais preservados, sem acesso ao GLPI.");}
+ for(const did of changed){await sql.run("UPDATE contract_processing SET revision=revision+1 WHERE demand_id=?", did);await invalidate(did);await saveProcessingResult(did);await auditAsync(did, null, "Campos dos documentos locais reidentificados; originais e correções manuais preservados, sem acesso ao GLPI.");}
  db.exec("COMMIT");
 }catch(error){db.exec("ROLLBACK");throw error;}
 console.log(JSON.stringify({arquivosConsultados:files.length,arquivosAtualizados:updated,demandasAtualizadas:changed.size,camposAntes:before,camposDepois:after}));

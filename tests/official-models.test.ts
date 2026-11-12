@@ -82,7 +82,7 @@ test("Catálogo oficial é registrado uma única vez, sem homologação automát
   assert.equal(official.length, 8);
   assert.ok(official.every((t: any) => t.status === "rascunho" && !t.homologated_at));
   const { registerOfficialCatalog } = await import("../server/official-templates.js");
-  assert.equal(registerOfficialCatalog().registered, 0);
+  assert.equal((await registerOfficialCatalog()).registered, 0);
   assert.equal(all("SELECT * FROM template_sources").length, 8);
   const vigencia = official.find((t: any) => t.subtype === "Vigência");
   const r = await request("/templates/" + vigencia.version_id + "/approve", {}, juridico);
@@ -138,7 +138,7 @@ test("Aditivo de vigência ponta a ponta com o modelo oficial: prévia, homologa
     ),
   );
   const d0 = one("SELECT * FROM demands WHERE id=?", did);
-  for (const kind of requirements(d0).evidence) {
+  for (const kind of (await requirements(d0)).evidence) {
     ok(await upload(path + "/evidence", { kind }, demoTemplate(), "evidencia.docx"));
     const e = one("SELECT id FROM evidence_files WHERE demand_id=? AND kind=? ORDER BY rowid DESC LIMIT 1", did, kind);
     ok(await request(path + "/evidence/" + e.id + "/verify", { attested: true }, admin));
@@ -228,7 +228,7 @@ test("Aditivo de vigência ponta a ponta com o modelo oficial: prévia, homologa
   for (const axis of humanAxes)
     ok(await request(path + "/human-check", { axis, result: "Aprovado", notes: "Conferência humana fictícia do modelo oficial." }, admin));
   ok(await request(path + "/stage", { stage: "Em aprovação" }, admin));
-  assert.deepEqual(requirements(one("SELECT * FROM demands WHERE id=?", did)).approvals, ["Risco"]);
+  assert.deepEqual((await requirements(one("SELECT * FROM demands WHERE id=?", did))).approvals, ["Risco"]);
   ok(await request(path + "/approve", { kind: "Risco" }, risco));
   ok(await request(path + "/stage", { stage: "Em assinatura" }, admin));
   assert.equal((await request(path + "/stage", { stage: "Concluído" }, admin)).status, 400);

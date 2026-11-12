@@ -1,4 +1,4 @@
-import { all, one, run, localDate, id, now } from "./db.js";
+import { all, one, run, localDate, id, now, sql } from "./db.js";
 import { requiredFor } from "../shared/request-policy.js";
 import { officialProblems } from "../shared/official-fields.js";
 import { responsibilityFor } from "../shared/responsibility.js";
@@ -76,23 +76,19 @@ export function reviewDeadline(report: string) {
   d.setUTCDate(d.getUTCDate() - 1);
   return d.toISOString().slice(0, 10);
 }
-export function details(d: any) {
+export async function details(d: any) {
   return JSON.parse(
-    one("SELECT payload FROM case_details WHERE demand_id=?", d.id)?.payload ||
+    (await sql.one("SELECT payload FROM case_details WHERE demand_id=?", d.id))?.payload ||
       "{}",
   );
 }
-export function saveDetails(demandId: string, payload: any) {
-  run(
-    "INSERT INTO case_details VALUES(?,?) ON CONFLICT(demand_id) DO UPDATE SET payload=excluded.payload",
-    demandId,
-    JSON.stringify(payload),
-  );
+export async function saveDetails(demandId: string, payload: any) {
+  await sql.run("INSERT INTO case_details VALUES(?,?) ON CONFLICT(demand_id) DO UPDATE SET payload=excluded.payload", demandId, JSON.stringify(payload));
 }
-export function requirements(d: any) {
-  const g = details(d);
+export async function requirements(d: any) {
+  const g = await details(d);
   const custom = JSON.parse(
-    one("SELECT value FROM settings WHERE key=?", "legalPolicies")?.value ||
+    (await sql.one("SELECT value FROM settings WHERE key=?", "legalPolicies"))?.value ||
       "[]",
   );
   const flags = [
@@ -161,13 +157,9 @@ export function requirements(d: any) {
   };
 }
 /** Divergences between the demand and the GLPI ticket it was imported from. */
-export function ticketCrossCheck(d: any, data: any) {
+export async function ticketCrossCheck(d: any, data: any) {
   const ticket = d.glpi_id
-    ? one(
-        "SELECT payload FROM glpi_tickets WHERE external_id=? AND demand_id=?",
-        d.glpi_id,
-        d.id,
-      )
+    ? await sql.one("SELECT payload FROM glpi_tickets WHERE external_id=? AND demand_id=?", d.glpi_id, d.id)
     : null;
   if (!ticket) return [];
   const analysis = analyzeTicket(JSON.parse(ticket.payload), {
@@ -176,16 +168,16 @@ export function ticketCrossCheck(d: any, data: any) {
   });
   return crossCheck(analysis, d.glpi_id, data);
 }
-export function governanceMissing(d: any) {
-  const g = details(d),
-    r = requirements(d),
+export async function governanceMissing(d: any) {
+  const g = await details(d),
+    r = await requirements(d),
     data = JSON.parse(d.data),
     missing: string[] = [];
-  if (one("SELECT demand_id FROM glpi_intakes WHERE demand_id=? AND confirmed_at IS NULL", d.id))
+  if (await sql.one("SELECT demand_id FROM glpi_intakes WHERE demand_id=? AND confirmed_at IS NULL", d.id))
     missing.push("Conferir o recebimento GLPI: organização, tipo, responsável, prazo e matriz quando aplicável");
   if (!d.glpi_id) missing.push("Número do chamado GLPI");
-    for (const check of all("SELECT c.* FROM attachment_checks c WHERE c.demand_id=? AND c.rowid=(SELECT MAX(x.rowid) FROM attachment_checks x WHERE x.demand_id=c.demand_id AND x.document_id=c.document_id)",d.id)) {
-      const currentHash=one("SELECT hash FROM glpi_tickets WHERE external_id=?",d.glpi_id)?.hash;
+    for (const check of await sql.all("SELECT c.* FROM attachment_checks c WHERE c.demand_id=? AND c.rowid=(SELECT MAX(x.rowid) FROM attachment_checks x WHERE x.demand_id=c.demand_id AND x.document_id=c.document_id)", d.id)) {
+      const currentHash=(await sql.one("SELECT hash FROM glpi_tickets WHERE external_id=?", d.glpi_id))?.hash;
       if(check.status!=="conforme" || check.data_version!==d.data_version || check.ticket_hash!==currentHash)missing.push("Conferir valores do anexo "+check.name+": "+(check.data_version!==d.data_version || check.ticket_hash!==currentHash?"análise desatualizada":check.status==="divergente"?"correção manual pendente":"leitura/conferência inconclusiva"));
     }
   if (!g.reportDate) missing.push("Sexta-feira de reporte");
@@ -213,11 +205,7 @@ export function governanceMissing(d: any) {
   )
     missing.push("Garantia Completa exige garantia de 100,00%");
   if (matrixCases.includes(d.type)) {
-    const matrix = one(
-      "SELECT * FROM contract_registry WHERE id=? AND school_id=?",
-      data.matriz || "",
-      d.school_id,
-    );
+    const matrix = await sql.one("SELECT * FROM contract_registry WHERE id=? AND school_id=?", data.matriz || "", d.school_id);
     if (
       !matrix ||
       matrix.instrument_kind !== "Matriz" ||
@@ -249,32 +237,22 @@ export function governanceMissing(d: any) {
     missing.push("CNPJ solidário no formato válido");
   if (d.type === "Aditivo") {
     if (
-      one(
-        "SELECT subtype FROM demand_baselines WHERE demand_id=? ORDER BY rowid DESC LIMIT 1",
-        d.id,
-      )?.subtype !== g.subtype
+      (await sql.one("SELECT subtype FROM demand_baselines WHERE demand_id=? ORDER BY rowid DESC LIMIT 1", d.id))?.subtype !== g.subtype
     )
       missing.push("Conferir e confirmar os dados atuais do contrato matriz");
     if (!data.motivo?.trim()) missing.push("Motivo da alteração");
     if (!data.dataAssinaturaMatriz)
       missing.push("Data de assinatura do contrato matriz");
-    const c = one("SELECT * FROM contracts WHERE id=?", d.contract_id);
+    const c = await sql.one("SELECT * FROM contracts WHERE id=?", d.contract_id);
     if (!c?.parent_id) missing.push("Contrato matriz vinculado");
     else {
-      const h = one(
-        "SELECT * FROM signed_history WHERE matrix_id=? ORDER BY sequence DESC LIMIT 1",
-        c.parent_id,
-      );
+      const h = await sql.one("SELECT * FROM signed_history WHERE matrix_id=? ORDER BY sequence DESC LIMIT 1", c.parent_id);
       if (!h)
         missing.push("Último aditivo assinado confirmado no Clicksign/Clint");
       else if (
         !(
           d.stage === "Concluído" &&
-          one(
-            "SELECT id FROM signed_history WHERE matrix_id=? AND sequence=?",
-            c.parent_id,
-            c.sequence,
-          )
+          await sql.one("SELECT id FROM signed_history WHERE matrix_id=? AND sequence=?", c.parent_id, c.sequence)
         ) &&
         c.sequence !== h.sequence + 1
       )
@@ -284,7 +262,7 @@ export function governanceMissing(d: any) {
     }
   }
   missing.push(...officialProblems(d.type, g.subtype || "", data));
-  missing.push(...ticketCrossCheck(d, data));
+  missing.push(...await ticketCrossCheck(d, data));
   if (d.type === "Migração de modalidade") {
     // Manual §4.3: migration is never a simple addendum; it needs a distrato and a new contract.
     for (const [key, type, label] of [
@@ -299,12 +277,7 @@ export function governanceMissing(d: any) {
         "Demanda do novo contrato na modalidade de destino vinculada",
       ],
     ]) {
-      const linked = one(
-        "SELECT * FROM demands WHERE id=? AND school_id=? AND type=?",
-        data[key] || "",
-        d.school_id,
-        type,
-      );
+      const linked = await sql.one("SELECT * FROM demands WHERE id=? AND school_id=? AND type=?", data[key] || "", d.school_id, type);
       if (!linked) missing.push(label);
       else if (
         type === "Distrato" &&
@@ -339,13 +312,7 @@ export function governanceMissing(d: any) {
     );
   for (const kind of r.evidence)
     if (
-      !one(
-        "SELECT id FROM evidence_files WHERE demand_id=? AND kind=? AND verified_by IS NOT NULL AND rowid=(SELECT MAX(rowid) FROM evidence_files WHERE demand_id=? AND kind=?)",
-        d.id,
-        kind,
-        d.id,
-        kind,
-      )
+      !await sql.one("SELECT id FROM evidence_files WHERE demand_id=? AND kind=? AND verified_by IS NOT NULL AND rowid=(SELECT MAX(rowid) FROM evidence_files WHERE demand_id=? AND kind=?)", d.id, kind, d.id, kind)
     )
       missing.push(evidenceLabels[kind]);
   const signers = g.signers || [];
@@ -367,44 +334,34 @@ export function governanceMissing(d: any) {
     missing.push("Nome e e-mail dos signatários");
   return missing;
 }
-export function checksFor(doc: any) {
+export async function checksFor(doc: any) {
   if (!doc) return [];
-  return all(
-    "SELECT h.*,u.name FROM human_checks h JOIN users u ON u.id=h.user_id WHERE document_id=? AND data_version=? ORDER BY h.created DESC,h.rowid DESC",
-    doc.id,
-    doc.data_version,
-  ).map((check) => ({
-    ...check,
-    issues: all(
-      "SELECT location,problem,correction,severity FROM human_issues WHERE check_id=?",
-      check.id,
-    ),
-  }));
+  const checks = [];
+  for (const check of await sql.all("SELECT h.*,u.name FROM human_checks h JOIN users u ON u.id=h.user_id WHERE document_id=? AND data_version=? ORDER BY h.created DESC,h.rowid DESC", doc.id, doc.data_version))
+    checks.push({ ...check, issues: await sql.all("SELECT location,problem,correction,severity FROM human_issues WHERE check_id=?", check.id) });
+  return checks;
 }
-export function humanMissing(doc: any) {
-  const checks = checksFor(doc);
+export async function humanMissing(doc: any) {
+  const checks = await checksFor(doc);
   return humanAxes.filter((axis) => {
     const c = checks.find((c) => c.axis === axis);
     return !c || c.result === "Reprovado";
   });
 }
-export function legalReport(d: any, doc: any) {
-  const checks = checksFor(doc),
+export async function legalReport(d: any, doc: any) {
+  const checks = await checksFor(doc),
     review = doc
-      ? one(
-          "SELECT * FROM reviews WHERE document_id=? ORDER BY created DESC LIMIT 1",
-          doc.id,
-        )
+      ? await sql.one("SELECT * FROM reviews WHERE document_id=? ORDER BY created DESC LIMIT 1", doc.id)
       : null;
   const findings = review ? JSON.parse(review.results) : [];
   const missing = [
-    ...governanceMissing(d),
-    ...humanMissing(doc).map((a) => "Revisão humana: " + a),
+    ...await governanceMissing(d),
+    ...(await humanMissing(doc)).map((a) => "Revisão humana: " + a),
   ];
   const data = JSON.parse(d.data);
   for (const key of requiredFor(
     d.type,
-    requirements(d).subtype,
+    (await requirements(d)).subtype,
     data.modalidade || "",
   ))
     if (typeof data[key] !== "string" || !data[key].trim())
@@ -414,14 +371,9 @@ export function legalReport(d: any, doc: any) {
   if (doc && doc.data_version !== d.data_version)
     missing.push("Minuta desatualizada em relação aos dados atuais");
   if (doc)
-    for (const kind of requirements(d).approvals)
+    for (const kind of (await requirements(d)).approvals)
       if (
-        !one(
-          "SELECT id FROM approvals WHERE document_id=? AND data_version=? AND kind=? AND valid=1",
-          doc.id,
-          d.data_version,
-          kind,
-        )
+        !await sql.one("SELECT id FROM approvals WHERE document_id=? AND data_version=? AND kind=? AND valid=1", doc.id, d.data_version, kind)
       )
         missing.push("Validação obrigatória: " + kind);
   const status =

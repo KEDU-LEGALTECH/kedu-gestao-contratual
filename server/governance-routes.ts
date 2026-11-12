@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { all, one, run, id, now, audit, localDate, db } from "./db.js";
+import { all, one, run, id, now, audit, localDate, db, sql, auditAsync } from "./db.js";
 import { permit, access, invalidate, latest } from "./workflow.js";
 import {
   details,
@@ -24,25 +24,21 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 8 * 1024 * 1024, files: 1 },
 });
-function get(req: any) {
-  const d = one("SELECT * FROM demands WHERE id=?", req.params.id);
+async function get(req: any) {
+  const d = await sql.one("SELECT * FROM demands WHERE id=?", req.params.id);
   if (!d) throw Error("Demanda não encontrada.");
   access(req.user, d);
   return d;
 }
-function mutable(d: any) {
-  if (one("SELECT demand_id FROM glpi_intakes WHERE demand_id=? AND confirmed_at IS NULL", d.id)) throw Error("Confira o recebimento GLPI antes de alterar a governança.");
+async function mutable(d: any) {
+  if (await sql.one("SELECT demand_id FROM glpi_intakes WHERE demand_id=? AND confirmed_at IS NULL", d.id)) throw Error("Confira o recebimento GLPI antes de alterar a governança.");
   if (["Concluído", "Cancelado", "Em assinatura"].includes(d.stage))
     throw Error("Esta etapa não permite alterar requisitos ou evidências.");
 }
-function changed(d: any, user: any, action: string) {
-  invalidate(d.id);
-  run(
-    "UPDATE demands SET data_version=data_version+1,confirmed=0,stage=? WHERE id=?",
-    "Em elaboração",
-    d.id,
-  );
-  audit(d.id, user.id, action + "; confirmação e aprovações invalidadas");
+async function changed(d: any, user: any, action: string) {
+  await invalidate(d.id);
+  await sql.run("UPDATE demands SET data_version=data_version+1,confirmed=0,stage=? WHERE id=?", "Em elaboração", d.id);
+  await auditAsync(d.id, user.id, action + "; confirmação e aprovações invalidadas");
 }
 export function fileInfo(file: any) {
   if (!file) throw Error("Selecione um arquivo.");
@@ -64,10 +60,10 @@ export function fileInfo(file: any) {
   );
 }
 export function registerGovernance(app: Express) {
-  app.put("/api/demands/:id/baseline", (req: any, res) => {
+  app.put("/api/demands/:id/baseline", async (req: any, res) => {
     permit(req.user, "confirm");
-    const d = get(req);
-    mutable(d);
+    const d = await get(req);
+    await mutable(d);
     if (d.type !== "Aditivo")
       throw Error("Retrato anterior disponível apenas para aditivos.");
     const b = z
@@ -83,7 +79,7 @@ export function registerGovernance(app: Express) {
         Error("A demanda foi alterada. Reabra antes de confirmar o retrato."),
         { status: 409 },
       );
-    const keys = addendumFields[details(d).subtype];
+    const keys = addendumFields[(await details(d)).subtype];
     if (!keys) throw Error("Defina primeiro o tipo de aditivo.");
     if (keys.includes("banco")) permit(req.user, "bank");
     if (Object.keys(b.data).some((key) => !keys.includes(key)))
@@ -96,28 +92,14 @@ export function registerGovernance(app: Express) {
         error: "Corrija os dados atuais do contrato.",
         fields: errors,
       });
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      run(
-        "INSERT INTO demand_baselines VALUES(?,?,?,?,?,?,?)",
-        id(),
-        d.id,
-        details(d).subtype,
-        JSON.stringify(b.data),
-        b.reference,
-        req.user.id,
-        now(),
-      );
-      changed(
+    await sql.transaction(async () => {
+      await sql.run("INSERT INTO demand_baselines VALUES(?,?,?,?,?,?,?)", id(), d.id, (await details(d)).subtype, JSON.stringify(b.data), b.reference, req.user.id, now());
+      await changed(
         d,
         req.user,
         "Retrato dos dados atuais confirmado por conferência documental",
       );
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
+    });
     res.json({ ok: true });
   });
   app.get("/api/governance/catalog", (_req, res) =>
@@ -130,12 +112,12 @@ export function registerGovernance(app: Express) {
       reportDate: nextReport(),
     }),
   );
-  app.get("/api/demands/:id/governance", (req: any, res) => {
-    const d = get(req),
-      doc = latest(d.id),
-      g = details(d);
-    const matrix = one("SELECT * FROM contracts WHERE id=?", d.contract_id);
-    const report = legalReport(d, doc);
+  app.get("/api/demands/:id/governance", async (req: any, res) => {
+    const d = await get(req),
+      doc = await latest(d.id),
+      g = await details(d);
+    const matrix = await sql.one("SELECT * FROM contracts WHERE id=?", d.contract_id);
+    const report = await legalReport(d, doc);
     if (
       !req.user ||
       ![
@@ -166,27 +148,18 @@ export function registerGovernance(app: Express) {
     res.json({
       data_version: d.data_version,
       details: g,
-      requirements: requirements(d),
-      missing: governanceMissing(d),
-      evidence: all(
-        "SELECT id,kind,name,mime,created,verified_by,verified_at FROM evidence_files WHERE demand_id=? ORDER BY created DESC",
-        d.id,
-      ),
-      history: all(
-        "SELECT sequence,source,reference,signature_date,created FROM signed_history WHERE matrix_id=? ORDER BY sequence DESC",
-        matrix?.parent_id || JSON.parse(d.data).matriz || d.contract_id,
-      ),
-      confirmations: all(
-        "SELECT sequence,source,reference,signature_date,created FROM history_confirmations WHERE matrix_id=? ORDER BY sequence DESC,created DESC",
-        matrix?.parent_id || JSON.parse(d.data).matriz || d.contract_id,
-      ),
+      requirements: await requirements(d),
+      missing: await governanceMissing(d),
+      evidence: await sql.all("SELECT id,kind,name,mime,created,verified_by,verified_at FROM evidence_files WHERE demand_id=? ORDER BY created DESC", d.id),
+      history: await sql.all("SELECT sequence,source,reference,signature_date,created FROM signed_history WHERE matrix_id=? ORDER BY sequence DESC", matrix?.parent_id || JSON.parse(d.data).matriz || d.contract_id),
+      confirmations: await sql.all("SELECT sequence,source,reference,signature_date,created FROM history_confirmations WHERE matrix_id=? ORDER BY sequence DESC,created DESC", matrix?.parent_id || JSON.parse(d.data).matriz || d.contract_id),
       report,
     });
   });
-  app.put("/api/demands/:id/governance", (req: any, res) => {
+  app.put("/api/demands/:id/governance", async (req: any, res) => {
     permit(req.user, "write");
-    const d = get(req);
-    mutable(d);
+    const d = await get(req);
+    await mutable(d);
     if (
       !Number.isInteger(req.body.expected_version) ||
       req.body.expected_version !== d.data_version
@@ -227,48 +200,35 @@ export function registerGovernance(app: Express) {
       })
       .parse(req.body);
     reviewDeadline(b.reportDate);
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      const updated = run(
-        "UPDATE demands SET data_version=data_version+1,confirmed=0,stage='Em elaboração' WHERE id=? AND data_version=?",
-        d.id,
-        req.body.expected_version,
-      );
+    await sql.transaction(async () => {
+      const updated = await sql.run("UPDATE demands SET data_version=data_version+1,confirmed=0,stage='Em elaboração' WHERE id=? AND data_version=?", d.id, req.body.expected_version);
       if (!updated.changes)
         throw Object.assign(
           Error("Conflito de edição: reabra a demanda e revise a governança."),
           { status: 409 },
         );
-      saveDetails(d.id, {
-        ...details(d),
+      await saveDetails(d.id, {
+        ...await details(d),
         ...b,
-        systemLegalFlags: details(d).systemLegalFlags || [],
+        systemLegalFlags: (await details(d)).systemLegalFlags || [],
       });
-      invalidate(d.id);
-      audit(
-        d.id,
-        req.user.id,
-        "Requisitos e signatários atualizados; confirmação e aprovações invalidadas",
-      );
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
+      await invalidate(d.id);
+      await auditAsync(d.id, req.user.id, "Requisitos e signatários atualizados; confirmação e aprovações invalidadas");
+    });
     res.json({ ok: true });
   });
-  app.post("/api/demands/:id/glpi-reference", (req: any, res) => {
+  app.post("/api/demands/:id/glpi-reference", async (req: any, res) => {
     permit(req.user, "write");
-    const d = get(req);
-    mutable(d);
+    const d = await get(req);
+    await mutable(d);
     const b = z
       .object({
         number: z.string().regex(/^[A-Za-z0-9_-]{1,80}$/),
         attested: z.literal(true),
       })
       .parse(req.body);
-    run("UPDATE demands SET glpi_id=? WHERE id=?", b.number, d.id);
-    changed(
+    await sql.run("UPDATE demands SET glpi_id=? WHERE id=?", b.number, d.id);
+    await changed(
       d,
       req.user,
       "Referência GLPI declarada manualmente (sem validação via API)",
@@ -278,26 +238,16 @@ export function registerGovernance(app: Express) {
   app.post(
     "/api/demands/:id/evidence",
     upload.single("file"),
-    (req: any, res) => {
+    async (req: any, res) => {
       permit(req.user, "files");
       permit(req.user, "write");
-      const d = get(req);
-      mutable(d);
+      const d = await get(req);
+      await mutable(d);
       if (!Object.hasOwn(evidenceLabels, req.body.kind))
         throw Error("Tipo de documento não autorizado.");
       const info = fileInfo(req.file);
-      run(
-        "INSERT INTO evidence_files(id,demand_id,kind,name,mime,bytes,uploaded_by,created) VALUES(?,?,?,?,?,?,?,?)",
-        id(),
-        d.id,
-        req.body.kind,
-        info.name,
-        info.mime,
-        req.file.buffer,
-        req.user.id,
-        now(),
-      );
-      changed(
+      await sql.run("INSERT INTO evidence_files(id,demand_id,kind,name,mime,bytes,uploaded_by,created) VALUES(?,?,?,?,?,?,?,?)", id(), d.id, req.body.kind, info.name, info.mime, req.file.buffer, req.user.id, now());
+      await changed(
         d,
         req.user,
         "Evidência anexada: " + evidenceLabels[req.body.kind],
@@ -305,51 +255,35 @@ export function registerGovernance(app: Express) {
       res.json({ ok: true });
     },
   );
-  app.post("/api/demands/:id/evidence/:file/verify", (req: any, res) => {
+  app.post("/api/demands/:id/evidence/:file/verify", async (req: any, res) => {
     permit(req.user, "review");
-    const d = get(req);
-    mutable(d);
-    const f = one(
-      "SELECT * FROM evidence_files WHERE id=? AND demand_id=?",
-      req.params.file,
-      d.id,
-    );
+    const d = await get(req);
+    await mutable(d);
+    const f = await sql.one("SELECT * FROM evidence_files WHERE id=? AND demand_id=?", req.params.file, d.id);
     if (!f) throw Error("Evidência não encontrada.");
     if (req.body.attested !== true)
       throw Error("Confirme a leitura e a adequação do documento.");
-    run(
-      "UPDATE evidence_files SET verified_by=?,verified_at=? WHERE id=?",
-      req.user.id,
-      now(),
-      f.id,
-    );
-    changed(
+    await sql.run("UPDATE evidence_files SET verified_by=?,verified_at=? WHERE id=?", req.user.id, now(), f.id);
+    await changed(
       d,
       req.user,
       "Evidência verificada por pessoa responsável: " + evidenceLabels[f.kind],
     );
     res.json({ ok: true });
   });
-  app.get("/api/demands/:id/evidence/:file/download", (req: any, res) => {
+  app.get("/api/demands/:id/evidence/:file/download", async (req: any, res) => {
     permit(req.user, "files");
     permit(req.user, "bank");
-    const d = get(req);
-    const f = one(
-      "SELECT * FROM evidence_files WHERE id=? AND demand_id=?",
-      req.params.file,
-      d.id,
-    );
+    const d = await get(req);
+    const f = await sql.one("SELECT * FROM evidence_files WHERE id=? AND demand_id=?", req.params.file, d.id);
     if (!f) throw Error("Evidência não encontrada.");
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.type(f.mime).attachment(f.name).send(Buffer.from(f.bytes));
-    audit(d.id, req.user.id, "Download de evidência autorizado");
+    await auditAsync(d.id, req.user.id, "Download de evidência autorizado");
   });
-  app.post("/api/contracts/:id/signed-history", (req: any, res) => {
+  app.post("/api/contracts/:id/signed-history", async (req: any, res) => {
     permit(req.user, "risk");
-    const matrix = one(
-      "SELECT * FROM contract_registry WHERE id=?",
-      req.params.id,
-    );
+    const matrix = await sql.one("SELECT * FROM contract_registry WHERE id=?", req.params.id);
     if (
       !matrix ||
       matrix.instrument_kind !== "Matriz" ||
@@ -367,57 +301,26 @@ export function registerGovernance(app: Express) {
       .parse(req.body);
     if (b.signatureDate > localDate())
       throw Error("Data de assinatura não pode estar no futuro.");
-    const max = one(
-      "SELECT MAX(sequence) n FROM signed_history WHERE matrix_id=?",
-      matrix.id,
-    ).n;
+    const max = (await sql.one("SELECT MAX(sequence) n FROM signed_history WHERE matrix_id=?", matrix.id)).n;
     if (max !== null && b.sequence < max)
       throw Error(
         "Histórico confirmado não pode retroceder. A reconferência do mesmo número fica registrada separadamente.",
       );
     if (
-      !one(
-        "SELECT id FROM signed_history WHERE matrix_id=? AND sequence=?",
-        matrix.id,
-        b.sequence,
-      )
+      !await sql.one("SELECT id FROM signed_history WHERE matrix_id=? AND sequence=?", matrix.id, b.sequence)
     )
-      run(
-        "INSERT INTO signed_history VALUES(?,?,?,?,?,?,?,?)",
-        id(),
-        matrix.id,
-        b.sequence,
-        b.source,
-        b.reference,
-        b.signatureDate,
-        req.user.id,
-        now(),
-      );
-    run(
-      "INSERT OR IGNORE INTO history_confirmations VALUES(?,?,?,?,?,?,?,?)",
-      id(),
-      matrix.id,
-      b.sequence,
-      b.source,
-      b.reference,
-      b.signatureDate,
-      req.user.id,
-      now(),
-    );
-    audit(
-      null,
-      req.user.id,
-      "Histórico assinado confirmado manualmente: matriz " + matrix.id,
-    );
+      await sql.run("INSERT INTO signed_history VALUES(?,?,?,?,?,?,?,?)", id(), matrix.id, b.sequence, b.source, b.reference, b.signatureDate, req.user.id, now());
+    await sql.run("INSERT OR IGNORE INTO history_confirmations VALUES(?,?,?,?,?,?,?,?)", id(), matrix.id, b.sequence, b.source, b.reference, b.signatureDate, req.user.id, now());
+    await auditAsync(null, req.user.id, "Histórico assinado confirmado manualmente: matriz " + matrix.id);
     res.json({ ok: true });
   });
-  app.post("/api/demands/:id/human-check", (req: any, res) => {
+  app.post("/api/demands/:id/human-check", async (req: any, res) => {
     permit(req.user, "review");
-    const d = get(req),
-      doc = latest(d.id);
+    const d = await get(req),
+      doc = await latest(d.id);
     if (!doc || doc.data_version !== d.data_version)
       throw Error("Gere ou anexe a versão atual antes de revisar.");
-    mutable(d);
+    await mutable(d);
     const b = z
       .object({
         axis: z.enum(humanAxes as [string, ...string[]]),
@@ -458,42 +361,20 @@ export function registerGovernance(app: Express) {
       throw Object.assign(Error("Este eixo exige Risco ou Jurídico."), {
         status: 403,
       });
-    if (b.result !== "Aprovado") invalidate(d.id);
+    if (b.result !== "Aprovado") await invalidate(d.id);
     const checkId = id();
-    run(
-      "INSERT INTO human_checks VALUES(?,?,?,?,?,?,?,?)",
-      checkId,
-      doc.id,
-      d.data_version,
-      b.axis,
-      b.result,
-      b.notes,
-      req.user.id,
-      now(),
-    );
+    await sql.run("INSERT INTO human_checks VALUES(?,?,?,?,?,?,?,?)", checkId, doc.id, d.data_version, b.axis, b.result, b.notes, req.user.id, now());
     for (const issue of b.issues)
-      run(
-        "INSERT INTO human_issues VALUES(?,?,?,?,?,?)",
-        id(),
-        checkId,
-        issue.location,
-        issue.problem,
-        issue.correction,
-        issue.severity,
-      );
+      await sql.run("INSERT INTO human_issues VALUES(?,?,?,?,?,?)", id(), checkId, issue.location, issue.problem, issue.correction, issue.severity);
     if (b.result === "Reprovado")
-      run("UPDATE demands SET stage=? WHERE id=?", "Devolvido", d.id);
-    audit(
-      d.id,
-      req.user.id,
-      `Revisão humana: ${b.axis} — ${b.result}; ${b.issues.length} ocorrências registradas`,
-    );
+      await sql.run("UPDATE demands SET stage=? WHERE id=?", "Devolvido", d.id);
+    await auditAsync(d.id, req.user.id, `Revisão humana: ${b.axis} — ${b.result}; ${b.issues.length} ocorrências registradas`);
     res.json({ ok: true });
   });
   /** Attaching the signed file and closing the GLPI ticket stay external while access is read-only. */
-  app.post("/api/demands/:id/glpi-closure", (req: any, res) => {
+  app.post("/api/demands/:id/glpi-closure", async (req: any, res) => {
     permit(req.user, "write");
-    const d = get(req);
+    const d = await get(req);
     if (d.stage !== "Concluído")
       throw Error(
         "Registre o encerramento no GLPI somente após a conclusão local com documento assinado.",
@@ -504,9 +385,9 @@ export function registerGovernance(app: Express) {
         note: z.string().trim().min(5).max(500),
       })
       .parse(req.body);
-    const g = details(d);
+    const g = await details(d);
     if (g.glpiClosure) throw Error("Encerramento no GLPI já registrado.");
-    saveDetails(d.id, {
+    await saveDetails(d.id, {
       ...g,
       glpiClosure: {
         by: req.user.id,
@@ -515,19 +396,15 @@ export function registerGovernance(app: Express) {
         note: b.note,
       },
     });
-    audit(
-      d.id,
-      req.user.id,
-      "Anexação do assinado e encerramento do chamado no GLPI declarados manualmente (sem escrita via API): " +
-        b.note,
-    );
+    await auditAsync(d.id, req.user.id, "Anexação do assinado e encerramento do chamado no GLPI declarados manualmente (sem escrita via API): " +
+        b.note);
     res.json({ ok: true });
   });
-  app.get("/api/demands/:id/legal-report", (req: any, res) => {
+  app.get("/api/demands/:id/legal-report", async (req: any, res) => {
     permit(req.user, "files");
     permit(req.user, "bank");
-    const d = get(req);
-    const r = legalReport(d, latest(d.id));
+    const d = await get(req);
+    const r = await legalReport(d, await latest(d.id));
     const text = [
       r.title,
       "Documento: " + r.document,
@@ -559,52 +436,20 @@ export function registerGovernance(app: Express) {
       .send(text);
   });
 }
-export function seedCatalog() {
+export async function seedCatalog() {
   if (process.env.NODE_ENV === "production" || process.env.DEMO_SEED !== "true")
     return;
-  if (one("SELECT value FROM settings WHERE key='demoDisabled'")?.value === "true") return;
-  run(
-    "INSERT OR IGNORE INTO template_catalog VALUES(?,?,?,?)",
-    "tv1",
-    "Contrato de garantia",
-    "",
-    1,
-  );
+  if ((await sql.one("SELECT value FROM settings WHERE key='demoDisabled'"))?.value === "true") return;
+  await sql.run("INSERT OR IGNORE INTO template_catalog VALUES(?,?,?,?)", "tv1", "Contrato de garantia", "", 1);
   for (const [i, subtype] of subtypes.entries()) {
     const tid = "t-aditivo-" + i,
       vid = "tv-aditivo-" + i;
-    if (one("SELECT id FROM templates WHERE id=?", tid)) continue;
-    run(
-      "INSERT INTO templates VALUES(?,?,?)",
-      tid,
-      "DEMONSTRAÇÃO — Aditivo de " + subtype,
-      "Aditivo",
-    );
-    run(
-      "INSERT INTO template_versions VALUES(?,?,?,?,?,?,?)",
-      vid,
-      tid,
-      1,
-      "aprovado",
-      fixed,
-      demoTemplate("Aditivo de " + subtype),
-      "u0",
-    );
-    run(
-      "INSERT INTO template_catalog VALUES(?,?,?,?)",
-      vid,
-      "Aditivo",
-      subtype,
-      1,
-    );
+    if (await sql.one("SELECT id FROM templates WHERE id=?", tid)) continue;
+    await sql.run("INSERT INTO templates VALUES(?,?,?)", tid, "DEMONSTRAÇÃO — Aditivo de " + subtype, "Aditivo");
+    await sql.run("INSERT INTO template_versions VALUES(?,?,?,?,?,?,?)", vid, tid, 1, "aprovado", fixed, demoTemplate("Aditivo de " + subtype), "u0");
+    await sql.run("INSERT INTO template_catalog VALUES(?,?,?,?)", vid, "Aditivo", subtype, 1);
   }
-  run(
-    "INSERT OR IGNORE INTO template_catalog VALUES(?,?,?,?)",
-    "tv1",
-    "Contrato de garantia",
-    "",
-    1,
-  );
+  await sql.run("INSERT OR IGNORE INTO template_catalog VALUES(?,?,?,?)", "tv1", "Contrato de garantia", "", 1);
   const seeds = [
     {
       tid: "t1",
@@ -620,10 +465,7 @@ export function seedCatalog() {
     })),
   ];
   for (const seed of seeds) {
-    const previous = one(
-      "SELECT v.*,c.demonstration FROM template_versions v JOIN template_catalog c ON c.version_id=v.id WHERE template_id=? ORDER BY version DESC LIMIT 1",
-      seed.tid,
-    );
+    const previous = await sql.one("SELECT v.*,c.demonstration FROM template_versions v JOIN template_catalog c ON c.version_id=v.id WHERE template_id=? ORDER BY version DESC LIMIT 1", seed.tid);
     if (
       !previous ||
       !previous.demonstration ||
@@ -632,33 +474,9 @@ export function seedCatalog() {
     )
       continue;
     const versionId = id();
-    run(
-      "INSERT INTO template_versions VALUES(?,?,?,?,?,?,?)",
-      versionId,
-      seed.tid,
-      previous.version + 1,
-      "aprovado",
-      fixed,
-      seed.bytes,
-      "u0",
-    );
-    run(
-      "INSERT INTO template_catalog VALUES(?,?,?,?)",
-      versionId,
-      seed.type,
-      seed.subtype,
-      1,
-    );
-    run(
-      "INSERT OR IGNORE INTO inactive_template_versions VALUES(?,?,?)",
-      previous.id,
-      "u0",
-      now(),
-    );
-    audit(
-      null,
-      "u0",
-      "Nova versão do modelo demonstrativo; versão anterior preservada",
-    );
+    await sql.run("INSERT INTO template_versions VALUES(?,?,?,?,?,?,?)", versionId, seed.tid, previous.version + 1, "aprovado", fixed, seed.bytes, "u0");
+    await sql.run("INSERT INTO template_catalog VALUES(?,?,?,?)", versionId, seed.type, seed.subtype, 1);
+    await sql.run("INSERT OR IGNORE INTO inactive_template_versions VALUES(?,?,?)", previous.id, "u0", now());
+    await auditAsync(null, "u0", "Nova versão do modelo demonstrativo; versão anterior preservada");
   }
 }

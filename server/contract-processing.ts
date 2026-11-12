@@ -1,7 +1,7 @@
 import {qualifiedCompanyName} from './qualification-reading.js';
 import {contractReadingScope,isFilledContract,isSupportDocument} from './contract-reading-scope.js';
 import {readingFilename} from './reading-format.js';
-import { all,one,run,db,id,now,audit } from "./db.js";
+import { all, one, run, db, id, now, audit, sql, auditAsync } from "./db.js";
 import { downloadGlpiAttachment } from "./glpi-download.js";
 import { analyzeTicket,htmlToText,validCnpj } from "./glpi-analysis.js";
 import { extractProcessingFile,fieldsFromLines,normalizeValue,inputLabels,norm,editableKeys } from "./processing-extract.js";
@@ -41,9 +41,9 @@ import {fileProgress} from './file-progress.js';
 import {readDoclingPage,doclingConfig} from './docling-reader.js';
 import {setImmediate as yieldToServer} from "node:timers/promises";
 // Tiny images without any text (logos, signatures, illustrations) are not unreadable documents.
-export function receivedDocumentTypes(did:string) {
- const {ticket}=processingSource(did);if(!ticket)return [];
- const files=filesFor(did,ticket.hash);
+export async function receivedDocumentTypes(did:string) {
+ const {ticket}=await processingSource(did);if(!ticket)return [];
+ const files=await filesFor(did,ticket.hash);
  const docs=JSON.parse(ticket.payload).documents||[];
  return [...new Set<string>(docs.map((doc:any)=>{const file=files.find(f=>f.document_id===String(doc.id));return receivedDocumentKind(file?.name||doc.name,file?JSON.parse(file.extracted).text||'':'');}))];
 }
@@ -54,33 +54,33 @@ export const resolutionSignature=(field:string,value:string)=>sha256(Buffer.from
 const closedInGlpi=(status:unknown)=>['5','6'].includes(String(status));
 const running=new Set<string>();
 const activeFiles=new Map<string,{documentId:string;targeted?:boolean;page?:number}>();
-function fingerprint(did:string) {
- const d=one("SELECT school_id,contract_id,data_version FROM demands WHERE id=?",did);
+async function fingerprint(did:string) {
+ const d=await sql.one("SELECT school_id,contract_id,data_version FROM demands WHERE id=?", did);
  return sha256(Buffer.from(JSON.stringify([
   'hybrid-local-ocr-v44-approval-docs-and-party-scoping',
-  all('SELECT kind,field,signature,value FROM processing_resolutions WHERE demand_id=? ORDER BY kind,field',did),
+  await sql.all('SELECT kind,field,signature,value FROM processing_resolutions WHERE demand_id=? ORDER BY kind,field', did),
   d,
-  all("SELECT v.id,v.status,s.template_hash,h.template_hash AS approved_hash,i.version_id AS inactive FROM template_sources s JOIN template_versions v ON v.id=s.version_id LEFT JOIN template_homologations h ON h.version_id=v.id LEFT JOIN inactive_template_versions i ON i.version_id=v.id ORDER BY v.id"),
-  all("SELECT id,parent_id,sequence,status FROM contracts WHERE school_id=? ORDER BY id",d?.school_id),
-  all("SELECT h.matrix_id,h.sequence,h.source,h.id FROM signed_history h JOIN contracts c ON c.id=h.matrix_id WHERE c.school_id=? ORDER BY h.id",d?.school_id),
-  all("SELECT h.matrix_id,h.sequence,h.id FROM history_confirmations h JOIN contracts c ON c.id=h.matrix_id WHERE c.school_id=? ORDER BY h.id",d?.school_id),
+  await sql.all("SELECT v.id,v.status,s.template_hash,h.template_hash AS approved_hash,i.version_id AS inactive FROM template_sources s JOIN template_versions v ON v.id=s.version_id LEFT JOIN template_homologations h ON h.version_id=v.id LEFT JOIN inactive_template_versions i ON i.version_id=v.id ORDER BY v.id"),
+  await sql.all("SELECT id,parent_id,sequence,status FROM contracts WHERE school_id=? ORDER BY id", d?.school_id),
+  await sql.all("SELECT h.matrix_id,h.sequence,h.source,h.id FROM signed_history h JOIN contracts c ON c.id=h.matrix_id WHERE c.school_id=? ORDER BY h.id", d?.school_id),
+  await sql.all("SELECT h.matrix_id,h.sequence,h.id FROM history_confirmations h JOIN contracts c ON c.id=h.matrix_id WHERE c.school_id=? ORDER BY h.id", d?.school_id),
  ])));
 }
-export function processingSource(did:string) {
- const demand=one("SELECT * FROM demands WHERE id=?",did);
- const ticket=demand?.glpi_id?one("SELECT * FROM glpi_tickets WHERE external_id=? AND mode='real'",demand.glpi_id):null;
+export async function processingSource(did:string) {
+ const demand=await sql.one("SELECT * FROM demands WHERE id=?", did);
+ const ticket=demand?.glpi_id?await sql.one("SELECT * FROM glpi_tickets WHERE external_id=? AND mode='real'", demand.glpi_id):null;
  return {demand,ticket};
 }
-export function ensureProcessing(did:string) {
- const {ticket}=processingSource(did);if(!ticket)return null;
- run("INSERT OR IGNORE INTO contract_processing(demand_id,ticket_hash,status,updated) VALUES(?,?,'Analisando',?)",did,ticket.hash,now());
- const job=one("SELECT * FROM contract_processing WHERE demand_id=?",did);
- if(job.ticket_hash!==ticket.hash)run("UPDATE contract_processing SET ticket_hash=?,status='Analisando',revision=revision+1,result='{}',updated=? WHERE demand_id=?",ticket.hash,now(),did);
- return one("SELECT * FROM contract_processing WHERE demand_id=?",did);
+export async function ensureProcessing(did:string) {
+ const {ticket}=await processingSource(did);if(!ticket)return null;
+ await sql.run("INSERT OR IGNORE INTO contract_processing(demand_id,ticket_hash,status,updated) VALUES(?,?,'Analisando',?)", did, ticket.hash, now());
+ const job=await sql.one("SELECT * FROM contract_processing WHERE demand_id=?", did);
+ if(job.ticket_hash!==ticket.hash)await sql.run("UPDATE contract_processing SET ticket_hash=?,status='Analisando',revision=revision+1,result='{}',updated=? WHERE demand_id=?", ticket.hash, now(), did);
+ return await sql.one("SELECT * FROM contract_processing WHERE demand_id=?", did);
 }
-function filesFor(did:string,hash:string) {
+async function filesFor(did:string,hash:string) {
  const prefix=hash+":correction:";
- const files=all("SELECT id,demand_id,document_id,ticket_hash,name,mime,extracted,problem,created,length(bytes) AS byteLength,substr(bytes,1,24) AS head FROM processing_files WHERE demand_id=? AND (ticket_hash=? OR substr(ticket_hash,1,?)=?) ORDER BY rowid DESC",did,hash,prefix.length,prefix);
+ const files=await sql.all("SELECT id,demand_id,document_id,ticket_hash,name,mime,extracted,problem,created,length(bytes) AS byteLength,substr(bytes,1,24) AS head FROM processing_files WHERE demand_id=? AND (ticket_hash=? OR substr(ticket_hash,1,?)=?) ORDER BY rowid DESC", did, hash, prefix.length, prefix);
  const seen=new Set<string>();
  return files.filter(f=>{
   if(seen.has(f.document_id))return false;
@@ -88,26 +88,26 @@ function filesFor(did:string,hash:string) {
   return true;
  });
 }
-function extractionReviewed(file:any) {
+async function extractionReviewed(file:any) {
  const hash=sha256(Buffer.from(file.extracted));
- return !!one('SELECT file_id FROM processing_field_reviews WHERE file_id=? AND extraction_hash=? LIMIT 1',file.id,hash)||!!one('SELECT file_id FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?',file.id,hash);
+ return !!await sql.one('SELECT file_id FROM processing_field_reviews WHERE file_id=? AND extraction_hash=? LIMIT 1', file.id, hash)||!!await sql.one('SELECT file_id FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?', file.id, hash);
 }
-function previouslyVerifiedAttachment(did:string,documentId:string,checksum:unknown) {
+async function previouslyVerifiedAttachment(did:string,documentId:string,checksum:unknown) {
  if(typeof checksum!=="string"||!(/^[a-f0-9]{40}$/i.test(checksum.trim())))return null;
- for(const {id} of all("SELECT id FROM processing_files WHERE demand_id=? AND document_id=? AND length(bytes)>0 ORDER BY rowid DESC",did,documentId)){
-  const previous=one("SELECT id,name,mime,bytes,extracted,problem FROM processing_files WHERE id=?",id);
+ for(const {id} of await sql.all("SELECT id FROM processing_files WHERE demand_id=? AND document_id=? AND length(bytes)>0 ORDER BY rowid DESC", did, documentId)){
+  const previous=await sql.one("SELECT id,name,mime,bytes,extracted,problem FROM processing_files WHERE id=?", id);
   if(previous&&matchesImportedAttachment(Buffer.from(previous.bytes),checksum))return previous;
  }
  return null;
 }
 /** A human check belongs to the exact bytes and extraction, not to the ticket version.
  * Copies only checks of the same extraction, keeping author and date; never creates a new one. */
-function carryReviews(fromFileId:string,did:string,documentId:string,hash:string) {
- const target=one('SELECT id,extracted FROM processing_files WHERE demand_id=? AND document_id=? AND ticket_hash=?',did,documentId,hash);
+async function carryReviews(fromFileId:string,did:string,documentId:string,hash:string) {
+ const target=await sql.one('SELECT id,extracted FROM processing_files WHERE demand_id=? AND document_id=? AND ticket_hash=?', did, documentId, hash);
  const extractionHash=sha256(Buffer.from(target.extracted));
- const fields=run('INSERT OR IGNORE INTO processing_field_reviews SELECT ?,field,extraction_hash,value,author,created FROM processing_field_reviews WHERE file_id=? AND extraction_hash=?',target.id,fromFileId,extractionHash).changes;
- const whole=run('INSERT OR IGNORE INTO processing_file_reviews SELECT ?,extraction_hash,author,created FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?',target.id,fromFileId,extractionHash).changes;
- if(fields||whole)audit(did,null,'Conferência humana mantida na nova versão do chamado: mesmo arquivo e mesma extração. Nenhuma nova conferência foi criada.');
+ const fields=(await sql.run('INSERT OR IGNORE INTO processing_field_reviews SELECT ?,field,extraction_hash,value,author,created FROM processing_field_reviews WHERE file_id=? AND extraction_hash=?', target.id, fromFileId, extractionHash)).changes;
+ const whole=(await sql.run('INSERT OR IGNORE INTO processing_file_reviews SELECT ?,extraction_hash,author,created FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?', target.id, fromFileId, extractionHash)).changes;
+ if(fields||whole)await auditAsync(did, null, 'Conferência humana mantida na nova versão do chamado: mesmo arquivo e mesma extração. Nenhuma nova conferência foi criada.');
 }
 function unreadableContractIssue(doc:any,file:any,raw:any,ticketStatus:unknown):{message:string;missingReason:string}{
  if(!file){
@@ -128,8 +128,8 @@ function unreadableContractIssue(doc:any,file:any,raw:any,ticketStatus:unknown):
  if(e.decorative)return {missingReason:'empty_source',message:'O arquivo identificado como contrato contém apenas imagem sem contraste ou sem texto legível para o OCR. Envie uma cópia legível.'};
  return {missingReason:'read_failed',message:'O arquivo do contrato foi aberto, mas não retornou texto legível nem campos reconhecidos. Confira o original no GLPI ou envie uma cópia legível.'};
 }
-export function buildProcessingPlan(did:string) {
- const {demand:d,ticket}=processingSource(did),job=one("SELECT * FROM contract_processing WHERE demand_id=?",did);
+export async function buildProcessingPlan(did:string) {
+ const {demand:d,ticket}=await processingSource(did),job=await sql.one("SELECT * FROM contract_processing WHERE demand_id=?", did);
  if(!d || !ticket || !job)return null;
  const raw=JSON.parse(ticket.payload),analysis=analyzeTicket(raw,{schools:[],matrices:[]});
  const overrides=JSON.parse(job.overrides),values:Record<string,string>={},origins:Record<string,string>={},issues:Issue[]=[];
@@ -138,10 +138,15 @@ export function buildProcessingPlan(did:string) {
  const {fields:request,corrections:conversationCorrections,advanceRates}=conversationReferences(raw,analysis.fields),candidates:Record<string,{value:string;source:string;fileId:string}[]>={};
  const invalidIdentifiers:Record<string,{fileId:string;fileName:string;value:string;excerpt:string;page?:number;available:boolean;contractor?:boolean}[]>={};
  const filesWithQualifiedParties=new Set<string>();
- const resolutions=all('SELECT * FROM processing_resolutions WHERE demand_id=?',did),references:Record<string,{value:string;note:string;original:string}>={};
+ const resolutions=await sql.all('SELECT * FROM processing_resolutions WHERE demand_id=?', did),references:Record<string,{value:string;note:string;original:string}>={};
  for(const r of resolutions)if(r.kind==='reference'&&request[r.field]?.length&&resolutionSignature(r.field,request[r.field].join("; "))===r.signature){references[r.field]={value:r.value,note:r.note,original:request[r.field].join("; ")};request[r.field]=[r.value];}
  // All versions stay available, but a clearly replaced document no longer speaks for the demand.
- const superseded=supersededDocuments(raw.documents||[]),allFiles=filesFor(did,ticket.hash);
+ const superseded=supersededDocuments(raw.documents||[]),allFiles=await filesFor(did,ticket.hash);
+ // Read up front: the comparison callbacks below are synchronous. Both tables have one row per key.
+ const storedDocuments=new Set((await sql.all('SELECT DISTINCT document_id FROM processing_files WHERE demand_id=?',did)).map(r=>r.document_id));
+ const fileReviews=new Map((await sql.all('SELECT r.file_id,r.extraction_hash FROM processing_file_reviews r JOIN processing_files f ON f.id=r.file_id WHERE f.demand_id=?',did)).map(r=>[r.file_id,r.extraction_hash]));
+ const fieldReviews=new Map((await sql.all('SELECT r.* FROM processing_field_reviews r JOIN processing_files f ON f.id=r.file_id WHERE f.demand_id=?',did)).map(r=>[r.file_id+'\u0000'+r.field,r]));
+ const fieldReview=(fileId:string,field:string,hash?:string)=>{const row=fieldReviews.get(fileId+'\u0000'+field);return row&&(hash===undefined||row.extraction_hash===hash)?row:undefined;};
  const currentFiles=allFiles.filter(f=>!superseded.has(f.document_id));
  const files=currentFiles.filter(f=>{
   const reading=JSON.parse(f.extracted);
@@ -176,8 +181,8 @@ export function buildProcessingPlan(did:string) {
   const extracted:any={...partyScope.reading,fields:withDocumentAddress(partyScope.reading.fields||{})};
   extractedByFile.set(f.id,extracted);
   const role='document';
-  const extractedHash=sha256(Buffer.from(f.extracted)),wholeReviewed=!!one('SELECT file_id FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?',f.id,extractedHash);
-  const scopedFields=fieldsForRole(role,extracted.fields),fieldChecks=all('SELECT field,value,extraction_hash FROM processing_field_reviews WHERE file_id=?',f.id);
+  const extractedHash=sha256(Buffer.from(f.extracted)),wholeReviewed=!!await sql.one('SELECT file_id FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?', f.id, extractedHash);
+  const scopedFields=fieldsForRole(role,extracted.fields),fieldChecks=await sql.all('SELECT field,value,extraction_hash FROM processing_field_reviews WHERE file_id=?', f.id);
   const checkedAllFields=Object.keys(scopedFields).length>0&&Object.entries(scopedFields).every(([key,values])=>values.length===1&&fieldChecks.some(check=>check.field===key&&check.extraction_hash===extractedHash&&sameRequestedValue(key,check.value,values[0])));
   if(partyScope.parties.length&&!partyScope.selected)add('review:parties:'+f.id,'Há mais de uma parte contratual possível. Identifique a empresa correspondente ao chamado; os CNPJs das partes não foram misturados.',{label:'Identificação da parte contratual',source:f.name});
   if(extracted.incomplete){
@@ -275,7 +280,7 @@ export function buildProcessingPlan(did:string) {
   const tradeName=key==='razaoSocial'&&!matches&&!guided&&!!candidates[key]?.length&&candidates[key].every(c=>headerTradeName((extractedByFile.get(c.fileId)||JSON.parse(files.find(f=>f.id===c.fileId)!.extracted)).text,c.value));
   // Several values where one equals the request (branches, partners, witnesses) need a check, not a correction.
   const partlyMatches=!matches && expected.length===1 && found.length>1 && found.some(v=>sameRequestedValue(key,v,expected[0]));
-  const previousVersion=!found.length&&pendingContracts.some((doc:any)=>!cachedByDocument.has(String(doc.id))&&one('SELECT id FROM processing_files WHERE demand_id=? AND document_id=? LIMIT 1',did,String(doc.id)));
+  const previousVersion=!found.length&&pendingContracts.some((doc:any)=>!cachedByDocument.has(String(doc.id))&&storedDocuments.has(String(doc.id)));
   const visuallyAbsent=!found.length&&files.length>0&&files.every(f=>!f.problem&&assistedVisualAbsence(extractedByFile.get(f.id)||JSON.parse(f.extracted),key));
   const fieldEvidence={reason:'not_located',message:'O campo não foi localizado no contrato. Confira o trecho correspondente no original.',expectedDocument:'Contrato',sourceDocuments:files.map(f=>f.name)};
   // Shows where the value is printed so a person can check it; the field stays pending.
@@ -294,8 +299,8 @@ export function buildProcessingPlan(did:string) {
    if(hasDigitalField(reading,key,c.value))return true;
    if(reading.incomplete)return false;
    const hash=sha256(Buffer.from(file.extracted));
-   if(one('SELECT file_id FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?',file.id,hash))return true;
-   const checked=one('SELECT value FROM processing_field_reviews WHERE file_id=? AND field=? AND extraction_hash=?',file.id,key,hash);
+   if(fileReviews.get(file.id)===hash)return true;
+   const checked=fieldReview(file.id,key,hash);
    if(checked&&sameRequestedValue(key,checked.value,c.value))return true;
    return !reading.needsReview||automaticReadingCheck({...reading,fields:{[key]:[c.value]}},role,request);
   });
@@ -310,7 +315,7 @@ export function buildProcessingPlan(did:string) {
    if(pending.some(i=>i.field!=='review:'+c.fileId))return true;
    const file=files.find(f=>f.id===c.fileId)!;
    const reading=extractedByFile.get(c.fileId)||JSON.parse(file.extracted),role='document';
-   const confirmed=one('SELECT value FROM processing_field_reviews WHERE file_id=? AND field=? AND extraction_hash=?',file.id,key,sha256(Buffer.from(file.extracted)));
+   const confirmed=fieldReview(file.id,key,sha256(Buffer.from(file.extracted)));
    if(!reading.incomplete&&confirmed&&sameRequestedValue(key,confirmed.value,c.value))return false;
    return !automaticReadingCheck({...reading,fields:{[key]:[c.value]}},role,request);
   }));
@@ -352,11 +357,11 @@ export function buildProcessingPlan(did:string) {
  }
  if(!values.duracaoMeses && values.inicio && values.fim)try{const months=wholeMonths(values.inicio,values.fim);if(months!==null && months>0){values.duracaoMeses=String(months);origins.duracaoMeses="Calculado a partir das datas exatas de início e fim";}}catch{}
  if(!d.school_id)add("organization","Identifique e cadastre a organização correta antes de gerar o contrato.");
- else {const school=one("SELECT cnpj FROM schools WHERE id=?",d.school_id);if(values.cnpj && school?.cnpj.replace(/\D/g,"")!==values.cnpj.replace(/\D/g,""))add("cnpj","O CNPJ informado difere da organização vinculada à demanda.",{found:values.cnpj,expected:school?.cnpj});}
+ else {const school=await sql.one("SELECT cnpj FROM schools WHERE id=?", d.school_id);if(values.cnpj && school?.cnpj.replace(/\D/g,"")!==values.cnpj.replace(/\D/g,""))add("cnpj","O CNPJ informado difere da organização vinculada à demanda.",{found:values.cnpj,expected:school?.cnpj});}
  const documentTypes=[...new Set(files.filter(f=>!f.problem).map(f=>identifyDocumentHeading(f.name,JSON.parse(f.extracted).text||"").type).filter(t=>t && t!=="Contrato"))];
  const type=analysis.suggestion.type || (d.type!=="A classificar"?d.type:documentTypes.length===1?documentTypes[0]:"");
- const subtype=analysis.suggestion.subtype || details(d).subtype || "";
- const templates=listOfficial().filter(t=>!t.inactive && (!type || t.document_type===type) && (t.document_type!=="Aditivo" || !subtype || t.subtype===subtype));
+ const subtype=analysis.suggestion.subtype || (await details(d)).subtype || "";
+ const templates=(await listOfficial()).filter(t=>!t.inactive && (!type || t.document_type===type) && (t.document_type!=="Aditivo" || !subtype || t.subtype===subtype));
  const eligible=templates.filter(t=>!t.modality || t.modality===values.modalidade);
  let template=job.template_id?templates.find(t=>t.version_id===job.template_id):eligible.length===1?eligible[0]:null;
  if(template?.modality && values.modalidade && template.modality!==values.modalidade)template=null;
@@ -366,21 +371,21 @@ export function buildProcessingPlan(did:string) {
  const actualType=template?.document_type || type,actualSubtype=template?.subtype || subtype;
  if(template) {
   if(template.modality && !values.modalidade)values.modalidade=template.modality;
-  version=one("SELECT * FROM template_versions WHERE id=?",template.version_id);
-  if(!version || !homologated(version))add("templateApproval","O modelo correspondente aguarda homologação jurídica em Modelos.");
+  version=await sql.one("SELECT * FROM template_versions WHERE id=?", template.version_id);
+  if(!version || !await homologated(version))add("templateApproval","O modelo correspondente aguarda homologação jurídica em Modelos.");
   if(actualType==="Aditivo") {
-   const own=one("SELECT * FROM contracts WHERE id=?",d.contract_id);
-   const matrices=all("SELECT * FROM contract_registry WHERE school_id=? AND instrument_kind='Matriz' AND status='Assinado'",d.school_id);
+   const own=await sql.one("SELECT * FROM contracts WHERE id=?", d.contract_id);
+   const matrices=await sql.all("SELECT * FROM contract_registry WHERE school_id=? AND instrument_kind='Matriz' AND status='Assinado'", d.school_id);
    matrix=matrices.find(m=>m.id===(values.matriz || own?.parent_id)) || (matrices.length===1?matrices[0]:null);
    if(!matrix)add("matriz","Vincule o contrato matriz assinado desta organização.");
    else {
     values.matriz=matrix.id;
-    const history=one("SELECT * FROM signed_history WHERE matrix_id=? ORDER BY sequence DESC LIMIT 1",matrix.id);
+    const history=await sql.one("SELECT * FROM signed_history WHERE matrix_id=? ORDER BY sequence DESC LIMIT 1", matrix.id);
     if(own?.parent_id===matrix.id)sequence=own.sequence;
     else if(!history)add("history","Confirme o último aditivo efetivamente assinado no cadastro da matriz.");
-    else if(history.source==="Registro local" && !one("SELECT id FROM history_confirmations WHERE matrix_id=? AND sequence=?",matrix.id,history.sequence))add("history","Reconﬁrme o último aditivo assinado no Clicksign/Clint.");
-    else {sequence=history.sequence+1;if(one("SELECT id FROM contracts WHERE parent_id=? AND sequence=?",matrix.id,sequence))add("history","O próximo número já está reservado por outra demanda. Confira a numeração antes de continuar.");}
-    if(!values.dataAssinaturaMatriz){const external=one("SELECT signature_date FROM external_contract_files WHERE contract_id=?",matrix.id);if(external)values.dataAssinaturaMatriz=external.signature_date;}
+    else if(history.source==="Registro local" && !await sql.one("SELECT id FROM history_confirmations WHERE matrix_id=? AND sequence=?", matrix.id, history.sequence))add("history","Reconﬁrme o último aditivo assinado no Clicksign/Clint.");
+    else {sequence=history.sequence+1;if(await sql.one("SELECT id FROM contracts WHERE parent_id=? AND sequence=?", matrix.id, sequence))add("history","O próximo número já está reservado por outra demanda. Confira a numeração antes de continuar.");}
+    if(!values.dataAssinaturaMatriz){const external=await sql.one("SELECT signature_date FROM external_contract_files WHERE contract_id=?", matrix.id);if(external)values.dataAssinaturaMatriz=external.signature_date;}
    }
   }
  }
@@ -393,7 +398,7 @@ export function buildProcessingPlan(did:string) {
  if(version)try {
   derived=deriveOfficial(values,{sequence,notice:""});
   derived.pix=derived.pix||"";
-  for(const slot of JSON.parse(sourceOf(version.id).slots))if(!["avisoHomologacao","pix"].includes(slot) && !derived[slot]?.trim()){
+  for(const slot of JSON.parse((await sourceOf(version.id)).slots))if(!["avisoHomologacao","pix"].includes(slot) && !derived[slot]?.trim()){
    const key=derivedFrom[slot]||slot;
    if(!issues.some(i=>i.field===key) && key!=="aditivo")add(key,"Falta informação necessária para preencher o modelo.");
   }
@@ -407,7 +412,7 @@ export function buildProcessingPlan(did:string) {
    fieldReviews:contractIds.has(f.id)?[...new Set([...Object.keys(candidates).filter(key=>candidates[key].some(c=>c.fileId===f.id)),...Object.keys(request).filter(key=>missingFieldEvidence(key,[{name:f.name,text:e.text||''}]).reason!=='not_sent')])].map(key=>{
     const vs=candidates[key]||[];
     const values=distinctRequestedValues(key,vs.filter(c=>c.fileId===f.id).map(c=>c.value));
-    const check=one('SELECT * FROM processing_field_reviews WHERE file_id=? AND field=?',f.id,key);
+    const check=fieldReview(f.id,key);
     const evidence=values.length===1?(digitalFieldOrigin(e,key,values[0])||identityEvidence(e,key,values[0],attachmentRole(f.name,e.text||''))):null;
     const assisted=values.length===1?assistedVisualField(e,key,values[0],attachmentRole(f.name,e.text||'')):null;
     const observations=values.map(value=>{
@@ -422,35 +427,35 @@ export function buildProcessingPlan(did:string) {
    warnings:e.warnings||[],ocrEngine:e.ocrEngine,preprocessing:e.preprocessing||[],formulaCount:e.formulaCount||0,calculatedFields:Object.entries(e.calculatedFields||{}).map(([key,values])=>({key,label:inputLabels[key]||key,values})),identification:identifyDocumentHeading(f.name,e.text||""),id:f.id,document_id:f.document_id,name:f.name,mime:f.mime,problem:f.problem,method:e.method,confidence:e.confidence,pages:e.pages,
    needsReview:!!e.needsReview && !e.incomplete && issues.some(i=>i.field==='review:'+f.id||i.field==='review:formulas:'+f.id),corrected:f.ticket_hash.includes(":correction:"),text:e.text?.slice(0,500000)||""};})};
 }
-export function saveProcessingResult(did:string) {
- const plan=buildProcessingPlan(did);if(!plan)return null;
- const result={values:plan.values,origins:plan.origins,issues:plan.issues,comparisons:plan.comparisons.map(row=>({...row,evidence:row.evidence||comparisonSources(row,plan.files)})),validationFindings:plan.validationFindings,typeIdentification:plan.typeIdentification,template:plan.template,templates:plan.templates,files:plan.files,type:plan.type,subtype:plan.subtype,fingerprint:fingerprint(did)};
+export async function saveProcessingResult(did:string) {
+ const plan=await buildProcessingPlan(did);if(!plan)return null;
+ const result={values:plan.values,origins:plan.origins,issues:plan.issues,comparisons:plan.comparisons.map(row=>({...row,evidence:row.evidence||comparisonSources(row,plan.files)})),validationFindings:plan.validationFindings,typeIdentification:plan.typeIdentification,template:plan.template,templates:plan.templates,files:plan.files,type:plan.type,subtype:plan.subtype,fingerprint:await fingerprint(did)};
  const hasReadableDocument=plan.files.some(file=>file.contractForComparison&&file.available);
  const status=processingStatus(plan.issues,plan.comparisons,hasReadableDocument);
- run("UPDATE contract_processing SET status=?,result=?,updated=? WHERE demand_id=?",status,JSON.stringify(result),now(),did);
+ await sql.run("UPDATE contract_processing SET status=?,result=?,updated=? WHERE demand_id=?", status, JSON.stringify(result), now(), did);
  return {status,revision:plan.job.revision,ticket_hash:plan.ticket.hash,...result};
 }
 export async function processContract(did:string,userId:string|null=null,download:(ticketId:string,documentId:string,signal:AbortSignal)=>Promise<{bytes:Buffer;name:string;mime:string}>=downloadGlpiAttachment,force=false,targetedOnly=false) {
- if(running.has(did))return;const job=ensureProcessing(did);if(!job)return;
- running.add(did);run("UPDATE contract_processing SET status='Analisando',updated=? WHERE demand_id=?",now(),did);
- const {demand,ticket}=processingSource(did);
+ if(running.has(did))return;const job=await ensureProcessing(did);if(!job)return;
+ running.add(did);await sql.run("UPDATE contract_processing SET status='Analisando',updated=? WHERE demand_id=?", now(), did);
+ const {demand,ticket}=await processingSource(did);
  try {
   const raw=JSON.parse(ticket.payload);
-  const initialFiles=new Map(filesFor(did,ticket.hash).map(file=>[file.document_id,file]));
+  const initialFiles=new Map((await filesFor(did,ticket.hash)).map(file=>[file.document_id,file]));
   const documents=targetedOnly?[]:currentReadingDocuments(raw).map(doc=>{
    const file=initialFiles.get(String(doc.id));
    return {doc,scope:contractReadingScope(doc.name||'',file)};
   }).sort((a,b)=>Number(b.scope.kind==='contract')-Number(a.scope.kind==='contract'));
   for(const {doc,scope} of documents) {
-   if(recoveryPaused()&&!force&&userId===null)break;
-   const cached=filesFor(did,ticket.hash).find(f=>f.document_id===String(doc.id));
-   if(scope.kind==='support'||cached?.byteLength&&!force&&extractionReviewed(cached))continue;
+   if(await recoveryPaused()&&!force&&userId===null)break;
+   const cached=(await filesFor(did,ticket.hash)).find(f=>f.document_id===String(doc.id));
+   if(scope.kind==='support'||cached?.byteLength&&!force&&await extractionReviewed(cached))continue;
    if(!force&&!scope.needsWork)continue;
    activeFiles.set(did,{documentId:String(doc.id)});
    let file:any,extracted:any,reusedFrom:string|undefined;
    try {
-    const provenPrevious=!cached?.byteLength?previouslyVerifiedAttachment(did,String(doc.id),doc.sha1):null;
-    if(cached?.byteLength)file={name:cached.name,mime:cached.mime,bytes:Buffer.from(one('SELECT bytes FROM processing_files WHERE id=?',cached.id).bytes)};
+    const provenPrevious=!cached?.byteLength?await previouslyVerifiedAttachment(did,String(doc.id),doc.sha1):null;
+    if(cached?.byteLength)file={name:cached.name,mime:cached.mime,bytes:Buffer.from((await sql.one('SELECT bytes FROM processing_files WHERE id=?', cached.id)).bytes)};
     else if(provenPrevious)file={name:doc.name||provenPrevious.name,mime:provenPrevious.mime,bytes:Buffer.from(provenPrevious.bytes)};
     else for(let attempt=0;attempt<3;attempt++){
      try {file=await download(demand.glpi_id,String(doc.id),AbortSignal.timeout(30000));if(!file.bytes.length)throw Error('Arquivo vazio.');break;}
@@ -459,7 +464,7 @@ export async function processContract(did:string,userId:string|null=null,downloa
       await new Promise(resolve=>setTimeout(resolve,750*2**attempt));
      }
     }
-    const previous=provenPrevious||(!cached?.byteLength?one('SELECT id,extracted,problem,bytes FROM processing_files WHERE demand_id=? AND document_id=? AND length(bytes)>0 ORDER BY rowid DESC LIMIT 1',did,String(doc.id)):null);
+    const previous=provenPrevious||(!cached?.byteLength?await sql.one('SELECT id,extracted,problem,bytes FROM processing_files WHERE demand_id=? AND document_id=? AND length(bytes)>0 ORDER BY rowid DESC LIMIT 1', did, String(doc.id)):null);
     // A changed ticket can retain the exact same attachment. Verify current GLPI bytes before reuse.
     if(previous&&!previous.problem&&sha256(Buffer.from(previous.bytes))===sha256(file.bytes)&&!contractReadingScope(file.name,{byteLength:file.bytes.length,extracted:previous.extracted}).needsWork){extracted=JSON.parse(previous.extracted);reusedFrom=previous.id;}
     else if(scope.kind==='contract')extracted={...await readProcessingFile(file.bytes,file.name),contractIdentified:!!cached&&JSON.parse(cached.extracted).contractIdentified===true};
@@ -476,43 +481,41 @@ export async function processContract(did:string,userId:string|null=null,downloa
     }
    }
    catch(error){file??={name:doc.name,mime:doc.mime||"application/octet-stream",bytes:Buffer.alloc(0)};extracted={version:readerVersion,text:"",fields:{},problem:file.bytes.length?"O original está disponível, mas a leitura falhou. Confira o arquivo ou envie uma cópia acessível.":"Não foi possível baixar o anexo após as tentativas de recuperação. Confira a disponibilidade no GLPI.",failureDetail:failureDetail(error),method:'inconclusiva',needsReview:false};}
-   if(one("SELECT hash FROM glpi_tickets WHERE external_id=?",demand.glpi_id)?.hash!==ticket.hash)return;
+   if((await sql.one("SELECT hash FROM glpi_tickets WHERE external_id=?", demand.glpi_id))?.hash!==ticket.hash)return;
    // A crashed or unavailable reader never replaces a reading that already worked; it is retried later.
    if(preservePreviousReading(cached?.extracted,extracted)){activeFiles.delete(did);continue;}
-   if(cached?.byteLength)run("UPDATE processing_files SET extracted=?,problem=? WHERE id=?",JSON.stringify(extracted),extracted.problem,cached.id);
+   if(cached?.byteLength)await sql.run("UPDATE processing_files SET extracted=?,problem=? WHERE id=?", JSON.stringify(extracted), extracted.problem, cached.id);
    else {
-    db.exec('BEGIN IMMEDIATE');
-    try {
-     run("INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(demand_id,document_id,ticket_hash) DO UPDATE SET name=excluded.name,mime=excluded.mime,bytes=excluded.bytes,extracted=excluded.extracted,problem=excluded.problem,created=excluded.created",id(),did,String(doc.id),ticket.hash,file.name,file.mime,file.bytes,JSON.stringify(extracted),extracted.problem,now());
-     if(reusedFrom)carryReviews(reusedFrom,did,String(doc.id),ticket.hash);
-     db.exec('COMMIT');
-    }catch(error){db.exec('ROLLBACK');throw error;}
+    await sql.transaction(async () => {
+     await sql.run("INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(demand_id,document_id,ticket_hash) DO UPDATE SET name=excluded.name,mime=excluded.mime,bytes=excluded.bytes,extracted=excluded.extracted,problem=excluded.problem,created=excluded.created", id(), did, String(doc.id), ticket.hash, file.name, file.mime, file.bytes, JSON.stringify(extracted), extracted.problem, now());
+     if(reusedFrom)await carryReviews(reusedFrom,did,String(doc.id),ticket.hash);
+    });
    }
-   run("UPDATE contract_processing SET revision=revision+1 WHERE demand_id=?",did);invalidate(did);
+   await sql.run("UPDATE contract_processing SET revision=revision+1 WHERE demand_id=?", did);await invalidate(did);
    activeFiles.delete(did);
   }
   // Reuse healthy originals and read at most two known pages, one at a time.
-  const pendingPlan=buildProcessingPlan(did);
+  const pendingPlan=await buildProcessingPlan(did);
   let targetedPages=0;
-  for(const entry of targetedRecovery(did,ticket.hash,pendingPlan?.comparisons)){
+  for(const entry of await targetedRecovery(did,ticket.hash,pendingPlan?.comparisons)){
    for(const target of entry.targets){
-    if(targetedPages>=2||recoveryPaused()&&!force&&userId===null)break;
+    if(targetedPages>=2||await recoveryPaused()&&!force&&userId===null)break;
     targetedPages++;
     activeFiles.set(did,{documentId:entry.file.document_id,targeted:true,page:target.page});
-    const current=one('SELECT extracted,bytes FROM processing_files WHERE id=?',entry.file.id);
+    const current=await sql.one('SELECT extracted,bytes FROM processing_files WHERE id=?', entry.file.id);
     const before=JSON.parse(current.extracted);
     const complementary=/\.pdf$/i.test(entry.file.name)&&process.env.DOCUMENT_DOCLING_ENABLED==='true'?await readDoclingPage(Buffer.from(current.bytes),target.page):null;
     const useful=complementary?.ok&&target.fields.some(key=>complementary.fields[key]?.some(value=>plausibleFieldValue(key,value)));
     const reread=useful?{...complementary,problem:'',needsReview:true}:await readProcessingFile(Buffer.from(current.bytes),entry.file.name,{page:target.page,x:0,y:0,width:1,height:1,rotation:0});
-    if(one('SELECT hash FROM glpi_tickets WHERE external_id=?',demand.glpi_id)?.hash!==ticket.hash)return;
+    if((await sql.one('SELECT hash FROM glpi_tickets WHERE external_id=?', demand.glpi_id))?.hash!==ticket.hash)return;
     // A confirmation or manual update made while OCR was running wins.
-    if(one('SELECT extracted FROM processing_files WHERE id=?',entry.file.id)?.extracted!==current.extracted)continue;
-    if(one('SELECT file_id FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?',entry.file.id,sha256(Buffer.from(current.extracted))))continue;
+    if((await sql.one('SELECT extracted FROM processing_files WHERE id=?', entry.file.id))?.extracted!==current.extracted)continue;
+    if(await sql.one('SELECT file_id FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?', entry.file.id, sha256(Buffer.from(current.extracted))))continue;
     const merged=JSON.stringify(mergeTargetedReading(before,reread,target));
-    run('UPDATE processing_files SET extracted=? WHERE id=?',merged,entry.file.id);
+    await sql.run('UPDATE processing_files SET extracted=? WHERE id=?', merged, entry.file.id);
     // Confirmed fields were excluded from targets and their original values/evidence remain intact.
-    run('UPDATE processing_field_reviews SET extraction_hash=? WHERE file_id=? AND extraction_hash=?',sha256(Buffer.from(merged)),entry.file.id,sha256(Buffer.from(current.extracted)));
-    run('UPDATE contract_processing SET revision=revision+1 WHERE demand_id=?',did);invalidate(did);
+    await sql.run('UPDATE processing_field_reviews SET extraction_hash=? WHERE file_id=? AND extraction_hash=?', sha256(Buffer.from(merged)), entry.file.id, sha256(Buffer.from(current.extracted)));
+    await sql.run('UPDATE contract_processing SET revision=revision+1 WHERE demand_id=?', did);await invalidate(did);
     activeFiles.delete(did);
    }
    if(targetedPages>=2)break;
@@ -520,68 +523,72 @@ export async function processContract(did:string,userId:string|null=null,downloa
   // Auxiliary extraction never modifies local fields or human reviews. Explicit recheck runs
   // at most two documents, with persistent deduplication and no automatic retry storm.
   if(visionConfig().ready&&userId!==null){
-   const plan=buildProcessingPlan(did),keys=(plan?.comparisons||[]).filter(c=>['missing','review'].includes(c.status)).map(c=>c.field);
+   const plan=await buildProcessingPlan(did),keys=(plan?.comparisons||[]).filter(c=>['missing','review'].includes(c.status)).map(c=>c.field);
    let calls=0;
-   for(const cached of filesFor(did,ticket.hash)){
-    if(calls>=2||!keys.length)break;if(!cached.byteLength||!plan?.files.some(f=>f.id===cached.id&&f.contractForComparison)||extractionReviewed(cached))continue;
-    const reading=JSON.parse(cached.extracted),bytes=Buffer.from(one('SELECT bytes FROM processing_files WHERE id=?',cached.id).bytes);
+   for(const cached of await filesFor(did,ticket.hash)){
+    if(calls>=2||!keys.length)break;if(!cached.byteLength||!plan?.files.some(f=>f.id===cached.id&&f.contractForComparison)||await extractionReviewed(cached))continue;
+    const reading=JSON.parse(cached.extracted),bytes=Buffer.from((await sql.one('SELECT bytes FROM processing_files WHERE id=?', cached.id)).bytes);
     if(!shouldReadVision(reading.vision,visionSignature(bytes,keys,visionConfig().model)))continue;
     calls++;const vision=await readWithVision(bytes,cached.name,reading.text||'',keys);
-    if(one('SELECT hash FROM glpi_tickets WHERE external_id=?',demand.glpi_id)?.hash!==ticket.hash)return;
-    if(vision){run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify({...reading,vision}),cached.id);run('UPDATE contract_processing SET revision=revision+1 WHERE demand_id=?',did);invalidate(did);}
+    if((await sql.one('SELECT hash FROM glpi_tickets WHERE external_id=?', demand.glpi_id))?.hash!==ticket.hash)return;
+    if(vision){await sql.run('UPDATE processing_files SET extracted=? WHERE id=?', JSON.stringify({...reading,vision}), cached.id);await sql.run('UPDATE contract_processing SET revision=revision+1 WHERE demand_id=?', did);await invalidate(did);}
    }
   }
-  if(one("SELECT hash FROM glpi_tickets WHERE external_id=?",demand.glpi_id)?.hash===ticket.hash){saveProcessingResult(did);audit(did,userId,"Leitura automática do GLPI e validação do preenchimento concluídas; sem escrita no helpdesk.");}
- }catch(error){lastProcessingError.set(did,failureDetail(error));run("UPDATE contract_processing SET status='Aguardando análise',result=?,updated=? WHERE demand_id=?",JSON.stringify({issues:[{field:"processing",label:"Leitura do chamado",message:"Não foi possível concluir a leitura. Tente novamente."}],values:{},files:[],templates:[]}),now(),did);}
+  if((await sql.one("SELECT hash FROM glpi_tickets WHERE external_id=?", demand.glpi_id))?.hash===ticket.hash){await saveProcessingResult(did);await auditAsync(did, userId, "Leitura automática do GLPI e validação do preenchimento concluídas; sem escrita no helpdesk.");}
+ }catch(error){lastProcessingError.set(did,failureDetail(error));await sql.run("UPDATE contract_processing SET status='Aguardando análise',result=?,updated=? WHERE demand_id=?", JSON.stringify({issues:[{field:"processing",label:"Leitura do chamado",message:"Não foi possível concluir a leitura. Tente novamente."}],values:{},files:[],templates:[]}), now(), did);}
  finally{running.delete(did);activeFiles.delete(did);}
 }
 let durableQueue:ReadingJobQueue|undefined,draining=false;
-const recoveryPaused=()=>one('SELECT value FROM settings WHERE key=?','documentReadingPaused')?.value==='true';
+const recoveryPaused=async ()=>(await sql.one('SELECT value FROM settings WHERE key=?', 'documentReadingPaused'))?.value==='true';
 function currentReadingDocuments(raw:any):{id:string;name:string;mime?:string;sha1?:string}[]{
  const docs=raw.documents||[],superseded=supersededDocuments(docs);
  return docs.filter((doc:any)=>!superseded.has(String(doc.id)));
 }
-function recoveryFiles(raw:any,cached:ReturnType<typeof filesFor>){
+async function recoveryFiles(raw:any,cached:Awaited<ReturnType<typeof filesFor>>){
  const byId=new Map(cached.map(file=>[file.document_id,file]));
- return currentReadingDocuments(raw).flatMap(doc=>{
+ const pending=[];
+ for(const doc of currentReadingDocuments(raw)){
   const file=byId.get(String(doc.id));
   const scope=contractReadingScope(doc.name||'',file);
-  return scope.needsWork&&!(file&&extractionReviewed(file))?[{doc,file,scope}]:[];
- });
+  if(scope.needsWork&&!(file&&await extractionReviewed(file)))pending.push({doc,file,scope});
+ }
+ return pending;
 }
-export function processingFileProgress(did:string){
- const {ticket}=processingSource(did);if(!ticket)return {demandId:did,files:[],paused:recoveryPaused()};
- const raw=JSON.parse(ticket.payload),cached=filesFor(did,ticket.hash);
- const queue=one('SELECT state,available_at FROM reading_jobs WHERE demand_id=? AND ticket_hash=?',did,ticket.hash);
- const targets=new Set(targetedRecovery(did,ticket.hash).map(({file})=>file.document_id));
+export async function processingFileProgress(did:string){
+ const {ticket}=await processingSource(did);if(!ticket)return {demandId:did,files:[],paused:await recoveryPaused()};
+ const raw=JSON.parse(ticket.payload),cached=await filesFor(did,ticket.hash);
+ const queue=await sql.one('SELECT state,available_at FROM reading_jobs WHERE demand_id=? AND ticket_hash=?', did, ticket.hash);
+ const targets=new Set((await targetedRecovery(did,ticket.hash)).map(({file})=>file.document_id));
  const superseded=supersededDocuments(raw.documents||[]);
- return {demandId:did,paused:recoveryPaused(),attachmentsUnavailable:raw.documentsAvailable===false,files:(raw.documents||[]).map((doc:any)=>{
+ return {demandId:did,paused:await recoveryPaused(),attachmentsUnavailable:raw.documentsAvailable===false,files:(raw.documents||[]).map((doc:any)=>{
   const file=cached.find(f=>f.document_id===String(doc.id));
   const scope=contractReadingScope(doc.name||'',file);
   const excluded=superseded.has(String(doc.id))?'superseded':scope.kind==='support'?'support':scope.kind==='unknown'&&!scope.needsWork?'unknown':undefined;
   return fileProgress(doc,file,queue,activeFiles.get(did),targets.has(String(doc.id)),excluded,scope.needsWork);
  })};
 }
-function targetedRecovery(did:string,hash:string,comparisons?:any[]){
- const pending=comparisons||JSON.parse(one('SELECT result FROM contract_processing WHERE demand_id=?',did)?.result||'{}').comparisons||[];
- const {ticket}=processingSource(did);
+async function targetedRecovery(did:string,hash:string,comparisons?:any[]){
+ const pending=comparisons||JSON.parse((await sql.one('SELECT result FROM contract_processing WHERE demand_id=?', did))?.result||'{}').comparisons||[];
+ const {ticket}=await processingSource(did);
  const current=new Set(currentReadingDocuments(JSON.parse(ticket?.payload||'{}')).map(doc=>String(doc.id)));
- return filesFor(did,hash).flatMap(file=>{
-  if(!current.has(file.document_id)||!file.byteLength||file.problem||!isFilledContract(JSON.parse(file.extracted).text||'',file.name)||JSON.parse(file.extracted).triageOnly)return [];
+ const recovery=[];
+ for(const file of await filesFor(did,hash)){
+  if(!current.has(file.document_id)||!file.byteLength||file.problem||!isFilledContract(JSON.parse(file.extracted).text||'',file.name)||JSON.parse(file.extracted).triageOnly)continue;
   const extractedHash=sha256(Buffer.from(file.extracted));
-  if(one('SELECT file_id FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?',file.id,extractedHash))return [];
-  const protectedFields=all('SELECT field FROM processing_field_reviews WHERE file_id=? AND extraction_hash=?',file.id,extractedHash).map(r=>r.field);
+  if(await sql.one('SELECT file_id FROM processing_file_reviews WHERE file_id=? AND extraction_hash=?', file.id, extractedHash))continue;
+  const protectedFields=(await sql.all('SELECT field FROM processing_field_reviews WHERE file_id=? AND extraction_hash=?', file.id, extractedHash)).map(r=>r.field);
   const reader=/\.pdf$/i.test(file.name)&&process.env.DOCUMENT_DOCLING_ENABLED==='true'&&doclingConfig().ready?'docling':'ocr';
   const targets=targetedReadingTargets(file.name,JSON.parse(file.extracted),pending,protectedFields,reader);
-  return targets.length?[{file,targets}]:[];
- });
+  if(targets.length)recovery.push({file,targets});
+ }
+ return recovery;
 }
-function needsFileRecovery(did:string,hash:string) {
- const cached=filesFor(did,hash),ticket=one('SELECT payload FROM glpi_tickets WHERE external_id=(SELECT glpi_id FROM demands WHERE id=?)',did);
- return recoveryFiles(JSON.parse(ticket?.payload||'{}'),cached).length>0;
+async function needsFileRecovery(did:string,hash:string) {
+ const cached=await filesFor(did,hash),ticket=await sql.one('SELECT payload FROM glpi_tickets WHERE external_id=(SELECT glpi_id FROM demands WHERE id=?)', did);
+ return (await recoveryFiles(JSON.parse(ticket?.payload||'{}'),cached)).length>0;
 }
-function needsDemandRecovery(did:string,hash:string) {
- return targetedRecovery(did,hash).length>0||needsFileRecovery(did,hash);
+async function needsDemandRecovery(did:string,hash:string) {
+ return (await targetedRecovery(did,hash)).length>0||await needsFileRecovery(did,hash);
 }
 /** Short operator-facing cause; GLPI client messages are already sanitized (no tokens or URLs). */
 function failureDetail(error:any){
@@ -593,10 +600,10 @@ const lastProcessingError=new Map<string,string>();
 /** Every pending file was held back by the machine (memory, reader start), not by the file itself. */
 export const onlyTemporary=(reason:string)=>!!reason&&reason.split(' | ').every(part=>/Memória disponível insuficiente|falha temporária do leitor|temporariamente indisponível|não pôde ser iniciado/.test(part));
 /** Why each document of the demand still needs recovery, recorded on the reading job. */
-export function recoveryReason(did:string,hash:string,ignorePause=false){
- if(!ignorePause&&recoveryPaused())return 'Leitura automática pausada (documentReadingPaused).';
- const cached=filesFor(did,hash),ticket=one('SELECT payload FROM glpi_tickets WHERE external_id=(SELECT glpi_id FROM demands WHERE id=?)',did);
- const reasons=recoveryFiles(JSON.parse(ticket?.payload||'{}'),cached).flatMap(({doc,file})=>{
+export async function recoveryReason(did:string,hash:string,ignorePause=false){
+ if(!ignorePause&&await recoveryPaused())return 'Leitura automática pausada (documentReadingPaused).';
+ const cached=await filesFor(did,hash),ticket=await sql.one('SELECT payload FROM glpi_tickets WHERE external_id=(SELECT glpi_id FROM demands WHERE id=?)', did);
+ const reasons=(await recoveryFiles(JSON.parse(ticket?.payload||'{}'),cached)).flatMap(({doc,file})=>{
   const name=String(file?.name||doc.name||doc.id).slice(0,60);
   if(!file)return [`${name}: anexo ainda não baixado`];
   let e:any={};try{e=JSON.parse(file.extracted);}catch{return [`${name}: leitura salva corrompida`];}
@@ -607,18 +614,18 @@ export function recoveryReason(did:string,hash:string,ignorePause=false){
   return [`${name}: lido sem texto nem campos reconhecidos`];
  });
  const outer=lastProcessingError.get(did);lastProcessingError.delete(did);
- const targets=targetedRecovery(did,hash).map(({file,targets})=>`${file.name}: releitura direcionada das páginas ${targets.map(t=>t.page).join(', ')}`);
+ const targets=(await targetedRecovery(did,hash)).map(({file,targets})=>`${file.name}: releitura direcionada das páginas ${targets.map(t=>t.page).join(', ')}`);
  return [outer&&'Erro no processamento: '+outer,...reasons,...targets].filter(Boolean).join(' | ')||'Recuperação pendente sem causa identificada';
 }
-function recoveryProgress(did:string,hash:string){return filesFor(did,hash).reduce((total,f)=>{const e=JSON.parse(f.extracted);return total+(f.byteLength?1:0)+(e.completedPages?.length||0)+Object.keys(e.fields||{}).length;},0);}
+async function recoveryProgress(did:string,hash:string){return (await filesFor(did,hash)).reduce((total,f)=>{const e=JSON.parse(f.extracted);return total+(f.byteLength?1:0)+(e.completedPages?.length||0)+Object.keys(e.fields||{}).length;},0);}
 async function drainReadingQueue() {
- if(draining||recoveryPaused())return;
+ if(draining||await recoveryPaused())return;
  draining=true;
  try {
-  while(!recoveryPaused()){
+  while(!await recoveryPaused()){
    await yieldToServer();
    const job=durableQueue!.claim();if(!job)break;
-   const source=processingSource(job.demand_id);
+   const source=await processingSource(job.demand_id);
    if(!source.ticket||source.ticket.hash!==job.ticket_hash||['Concluído','Cancelado','Em assinatura'].includes(source.demand?.stage)){
     durableQueue!.finish(job,'superseded');continue;
    }
@@ -626,17 +633,17 @@ async function drainReadingQueue() {
    if(closedInGlpi(source.ticket.status)){durableQueue!.finish(job,'superseded','Chamado encerrado no GLPI: leitura automática pausada; releitura manual disponível.');continue;}
    try {
     if(running.has(job.demand_id)){durableQueue!.finish(job,'retry','Leitura manual em andamento');continue;}
-    const fileRecovery=needsFileRecovery(job.demand_id,job.ticket_hash);
-    const targets=targetedRecovery(job.demand_id,job.ticket_hash);
+    const fileRecovery=await needsFileRecovery(job.demand_id,job.ticket_hash);
+    const targets=await targetedRecovery(job.demand_id,job.ticket_hash);
     if(!fileRecovery&&!targets.length){durableQueue!.finish(job,'done');continue;}
-    const before=recoveryProgress(job.demand_id,job.ticket_hash);
+    const before=await recoveryProgress(job.demand_id,job.ticket_hash);
     const targetedOnly=!fileRecovery;
     await processContract(job.demand_id,null,downloadGlpiAttachment,false,targetedOnly);
-    const after=recoveryProgress(job.demand_id,job.ticket_hash);
-    const current=processingSource(job.demand_id);
+    const after=await recoveryProgress(job.demand_id,job.ticket_hash);
+    const current=await processingSource(job.demand_id);
     if(current.ticket?.hash!==job.ticket_hash)durableQueue!.finish(job,'superseded');
-    else if(needsDemandRecovery(job.demand_id,job.ticket_hash)){
-     const reason=targetedOnly?'targeted-fields':recoveryReason(job.demand_id,job.ticket_hash);
+    else if(await needsDemandRecovery(job.demand_id,job.ticket_hash)){
+     const reason=targetedOnly?'targeted-fields':await recoveryReason(job.demand_id,job.ticket_hash);
      durableQueue!.finish(job,'retry',reason,after>before?after:undefined,!targetedOnly&&onlyTemporary(reason));
     }
     else durableQueue!.finish(job,'done','',after>before?after:undefined);
@@ -645,23 +652,23 @@ async function drainReadingQueue() {
  }finally{draining=false;}
 }
 let scanningRecovery=false;
-export function scheduleContractProcessing() {
- if(process.env.NODE_ENV==='test'||recoveryPaused()||scanningRecovery)return;
+export async function scheduleContractProcessing() {
+ if(process.env.NODE_ENV==='test'||await recoveryPaused()||scanningRecovery)return;
  scanningRecovery=true;
  void (async()=>{
   durableQueue??=new ReadingJobQueue(db);
   void drainReadingQueue();
-  for(const d of all("SELECT d.id,t.status FROM demands d JOIN glpi_tickets t ON t.external_id=d.glpi_id WHERE t.mode='real' AND d.stage NOT IN('Concluído','Cancelado','Em assinatura')")){
+  for(const d of await sql.all("SELECT d.id,t.status FROM demands d JOIN glpi_tickets t ON t.external_id=d.glpi_id WHERE t.mode='real' AND d.stage NOT IN('Concluído','Cancelado','Em assinatura')")){
    await yieldToServer();
-   if(recoveryPaused())break;
+   if(await recoveryPaused())break;
    if(running.has(d.id))continue;
-   const job=ensureProcessing(d.id);
+   const job=await ensureProcessing(d.id);
    if(!job)continue;
    const result=JSON.parse(job.result);
-   if(job.status==='Analisando'||result.fingerprint!==fingerprint(d.id))
-    saveProcessingResult(d.id);
+   if(job.status==='Analisando'||result.fingerprint!==await fingerprint(d.id))
+    await saveProcessingResult(d.id);
    if(closedInGlpi(d.status))continue;
-   const fileRecovery=needsFileRecovery(d.id,job.ticket_hash),targeted=targetedRecovery(d.id,job.ticket_hash).length>0;
+   const fileRecovery=await needsFileRecovery(d.id,job.ticket_hash),targeted=(await targetedRecovery(d.id,job.ticket_hash)).length>0;
    if(fileRecovery||targeted)durableQueue.enqueue(d.id,job.ticket_hash,targeted&&!fileRecovery,fileRecovery);
    else durableQueue.settleIdle(d.id,job.ticket_hash);
   }
@@ -669,8 +676,8 @@ export function scheduleContractProcessing() {
  })().catch(error=>console.error("Falha ao verificar a fila de leitura:",failureDetail(error)))
    .finally(()=>{scanningRecovery=false;});
 }
-export function processingSummary(did:string) {
- const j=one(`SELECT d.stage,t.hash,p.status,p.ticket_hash,p.revision,
+export async function processingSummary(did:string) {
+ const j=await sql.one(`SELECT d.stage,t.hash,p.status,p.ticket_hash,p.revision,
   json_array_length(p.result,'$.issues') AS issues,
   CASE WHEN p.status='Aguardando análise' THEN (
    SELECT CASE
@@ -694,13 +701,13 @@ export function processingSummary(did:string) {
   CASE WHEN p.status='Aguardando correção' THEN json_extract(p.result,'$.issues') END AS saved_issues,
   CASE WHEN p.status='Aguardando correção' THEN json_extract(p.result,'$.comparisons') END AS saved_comparisons
   FROM demands d JOIN glpi_tickets t ON t.external_id=d.glpi_id AND t.mode='real'
-  LEFT JOIN contract_processing p ON p.demand_id=d.id WHERE d.id=?`,did);
+  LEFT JOIN contract_processing p ON p.demand_id=d.id WHERE d.id=?`, did);
  if(!j)return null;
  if(["Concluído","Cancelado","Em assinatura"].includes(j.stage))return {status:j.stage,revision:j.revision||0,issues:0};
  if(j.ticket_hash!==j.hash)return {status:"Analisando",revision:j.revision||0};
  const status=j.status==='Aguardando correção'
   ? processingStatus(JSON.parse(j.saved_issues||'[]'),JSON.parse(j.saved_comparisons||'[]')) : j.status;
- if(status!==j.status)run("UPDATE contract_processing SET status=? WHERE demand_id=?",status,did);
+ if(status!==j.status)await sql.run("UPDATE contract_processing SET status=? WHERE demand_id=?", status, did);
  return {status,revision:j.revision,issues:j.issues||0,contractStage:j.contract_stage||undefined,contractReason:j.contract_reason||undefined};
 }
 
