@@ -7,6 +7,7 @@ import { analyzeTicket,htmlToText,validCnpj } from "./glpi-analysis.js";
 import { extractProcessingFile,fieldsFromLines,normalizeValue,inputLabels,norm,editableKeys } from "./processing-extract.js";
 import { details } from "./governance.js";
 import { listOfficial,sourceOf,homologated,sha256 } from "./official-templates.js";
+import { byteHeadSql,byteSizeSql,fileBytes,saveProcessingFile,storedHash } from "./processing-files.js";
 import { officialRequired,officialProblems,deriveOfficial,derivedFrom } from "../shared/official-fields.js";
 import { validateData } from "../shared/data-validation.js";
 import { wholeMonths } from "../shared/extenso.js";
@@ -80,7 +81,7 @@ export async function ensureProcessing(did:string) {
 }
 async function filesFor(did:string,hash:string) {
  const prefix=hash+":correction:";
- const files=await sql.all("SELECT id,demand_id,document_id,ticket_hash,name,mime,extracted,problem,created,length(bytes) AS byteLength,substr(bytes,1,24) AS head FROM processing_files WHERE demand_id=? AND (ticket_hash=? OR substr(ticket_hash,1,?)=?) ORDER BY rowid DESC", did, hash, prefix.length, prefix);
+ const files=await sql.all(`SELECT id,demand_id,document_id,ticket_hash,name,mime,extracted,problem,created,${byteSizeSql()} AS byteLength,${byteHeadSql()} AS head FROM processing_files WHERE demand_id=? AND (ticket_hash=? OR substr(ticket_hash,1,?)=?) ORDER BY rowid DESC`, did, hash, prefix.length, prefix);
  const seen=new Set<string>();
  return files.filter(f=>{
   if(seen.has(f.document_id))return false;
@@ -94,9 +95,10 @@ async function extractionReviewed(file:any) {
 }
 async function previouslyVerifiedAttachment(did:string,documentId:string,checksum:unknown) {
  if(typeof checksum!=="string"||!(/^[a-f0-9]{40}$/i.test(checksum.trim())))return null;
- for(const {id} of await sql.all("SELECT id FROM processing_files WHERE demand_id=? AND document_id=? AND length(bytes)>0 ORDER BY rowid DESC", did, documentId)){
-  const previous=await sql.one("SELECT id,name,mime,bytes,extracted,problem FROM processing_files WHERE id=?", id);
-  if(previous&&matchesImportedAttachment(Buffer.from(previous.bytes),checksum))return previous;
+ for(const {id} of await sql.all(`SELECT id FROM processing_files WHERE demand_id=? AND document_id=? AND ${byteSizeSql()}>0 ORDER BY rowid DESC`, did, documentId)){
+  const previous=await sql.one("SELECT * FROM processing_files WHERE id=?", id);
+  const bytes=await fileBytes(previous);
+  if(previous&&matchesImportedAttachment(bytes,checksum))return {...previous,bytes};
  }
  return null;
 }
@@ -455,7 +457,7 @@ export async function processContract(did:string,userId:string|null=null,downloa
    let file:any,extracted:any,reusedFrom:string|undefined;
    try {
     const provenPrevious=!cached?.byteLength?await previouslyVerifiedAttachment(did,String(doc.id),doc.sha1):null;
-    if(cached?.byteLength)file={name:cached.name,mime:cached.mime,bytes:Buffer.from((await sql.one('SELECT bytes FROM processing_files WHERE id=?', cached.id)).bytes)};
+    if(cached?.byteLength)file={name:cached.name,mime:cached.mime,bytes:await fileBytes(await sql.one('SELECT * FROM processing_files WHERE id=?', cached.id))};
     else if(provenPrevious)file={name:doc.name||provenPrevious.name,mime:provenPrevious.mime,bytes:Buffer.from(provenPrevious.bytes)};
     else for(let attempt=0;attempt<3;attempt++){
      try {file=await download(demand.glpi_id,String(doc.id),AbortSignal.timeout(30000));if(!file.bytes.length)throw Error('Arquivo vazio.');break;}
@@ -464,9 +466,9 @@ export async function processContract(did:string,userId:string|null=null,downloa
       await new Promise(resolve=>setTimeout(resolve,750*2**attempt));
      }
     }
-    const previous=provenPrevious||(!cached?.byteLength?await sql.one('SELECT id,extracted,problem,bytes FROM processing_files WHERE demand_id=? AND document_id=? AND length(bytes)>0 ORDER BY rowid DESC LIMIT 1', did, String(doc.id)):null);
+    const previous=provenPrevious||(!cached?.byteLength?await sql.one(`SELECT * FROM processing_files WHERE demand_id=? AND document_id=? AND ${byteSizeSql()}>0 ORDER BY rowid DESC LIMIT 1`, did, String(doc.id)):null);
     // A changed ticket can retain the exact same attachment. Verify current GLPI bytes before reuse.
-    if(previous&&!previous.problem&&sha256(Buffer.from(previous.bytes))===sha256(file.bytes)&&!contractReadingScope(file.name,{byteLength:file.bytes.length,extracted:previous.extracted}).needsWork){extracted=JSON.parse(previous.extracted);reusedFrom=previous.id;}
+    if(previous&&!previous.problem&&storedHash(previous)===sha256(file.bytes)&&!contractReadingScope(file.name,{byteLength:file.bytes.length,extracted:previous.extracted}).needsWork){extracted=JSON.parse(previous.extracted);reusedFrom=previous.id;}
     else if(scope.kind==='contract')extracted={...await readProcessingFile(file.bytes,file.name),contractIdentified:!!cached&&JSON.parse(cached.extracted).contractIdentified===true};
     else {
      const detected=readingFilename(file.bytes,file.name);
@@ -487,7 +489,7 @@ export async function processContract(did:string,userId:string|null=null,downloa
    if(cached?.byteLength)await sql.run("UPDATE processing_files SET extracted=?,problem=? WHERE id=?", JSON.stringify(extracted), extracted.problem, cached.id);
    else {
     await sql.transaction(async () => {
-     await sql.run("INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(demand_id,document_id,ticket_hash) DO UPDATE SET name=excluded.name,mime=excluded.mime,bytes=excluded.bytes,extracted=excluded.extracted,problem=excluded.problem,created=excluded.created", id(), did, String(doc.id), ticket.hash, file.name, file.mime, file.bytes, JSON.stringify(extracted), extracted.problem, now());
+     await saveProcessingFile({id:id(),demand_id:did,document_id:String(doc.id),ticket_hash:ticket.hash,name:file.name,mime:file.mime,bytes:file.bytes,extracted:JSON.stringify(extracted),problem:extracted.problem,created:now()},true);
      if(reusedFrom)await carryReviews(reusedFrom,did,String(doc.id),ticket.hash);
     });
    }
@@ -502,9 +504,9 @@ export async function processContract(did:string,userId:string|null=null,downloa
     if(targetedPages>=2||await recoveryPaused()&&!force&&userId===null)break;
     targetedPages++;
     activeFiles.set(did,{documentId:entry.file.document_id,targeted:true,page:target.page});
-    const current=await sql.one('SELECT extracted,bytes FROM processing_files WHERE id=?', entry.file.id);
+    const current=await sql.one('SELECT * FROM processing_files WHERE id=?', entry.file.id);
     const before=JSON.parse(current.extracted);
-    const complementary=/\.pdf$/i.test(entry.file.name)&&process.env.DOCUMENT_DOCLING_ENABLED==='true'?await readDoclingPage(Buffer.from(current.bytes),target.page):null;
+    const complementary=/\.pdf$/i.test(entry.file.name)&&process.env.DOCUMENT_DOCLING_ENABLED==='true'?await readDoclingPage(await fileBytes(current),target.page):null;
     const useful=complementary?.ok&&target.fields.some(key=>complementary.fields[key]?.some(value=>plausibleFieldValue(key,value)));
     const reread=useful?{...complementary,problem:'',needsReview:true}:await readProcessingFile(Buffer.from(current.bytes),entry.file.name,{page:target.page,x:0,y:0,width:1,height:1,rotation:0});
     if((await sql.one('SELECT hash FROM glpi_tickets WHERE external_id=?', demand.glpi_id))?.hash!==ticket.hash)return;
@@ -527,7 +529,7 @@ export async function processContract(did:string,userId:string|null=null,downloa
    let calls=0;
    for(const cached of await filesFor(did,ticket.hash)){
     if(calls>=2||!keys.length)break;if(!cached.byteLength||!plan?.files.some(f=>f.id===cached.id&&f.contractForComparison)||await extractionReviewed(cached))continue;
-    const reading=JSON.parse(cached.extracted),bytes=Buffer.from((await sql.one('SELECT bytes FROM processing_files WHERE id=?', cached.id)).bytes);
+    const reading=JSON.parse(cached.extracted),bytes=await fileBytes(await sql.one('SELECT * FROM processing_files WHERE id=?', cached.id));
     if(!shouldReadVision(reading.vision,visionSignature(bytes,keys,visionConfig().model)))continue;
     calls++;const vision=await readWithVision(bytes,cached.name,reading.text||'',keys);
     if((await sql.one('SELECT hash FROM glpi_tickets WHERE external_id=?', demand.glpi_id))?.hash!==ticket.hash)return;

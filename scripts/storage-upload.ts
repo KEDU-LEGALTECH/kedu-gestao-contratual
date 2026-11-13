@@ -2,12 +2,11 @@ import "dotenv/config";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { storagePath } from "../server/object-path.js";
 import { supabaseConfig } from "../server/supabase-config.js";
 
 type ManifestObject = { table: string; column: string; key: Record<string, string>; sha256: string; size: number; object: string };
 const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
-/** Content-addressed path: identical attachments are stored once. */
-export const storagePath = (hash: string) => "sha256/" + hash.slice(0, 2) + "/" + hash;
 
 async function pool<T>(items: T[], size: number, task: (item: T) => Promise<void>) {
   let next = 0;

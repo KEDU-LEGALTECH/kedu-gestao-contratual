@@ -40,7 +40,8 @@ async function buildTemplate() {
 function runFile(file: string, database: string) {
   return new Promise<{ file: string; code: number; output: string }>(resolve => {
     const child = spawn(process.execPath, ["--import", "tsx", "--test", "--test-reporter=spec", file], {
-      env: { ...process.env, KEDU_DATABASE: "postgres", KEDU_PG_URL: databaseUrl(database), KEDU_PG_SCHEMA: "public", KEDU_PG_POOL: "2" },
+      env: { ...process.env, KEDU_DATABASE: "postgres", KEDU_PG_URL: databaseUrl(database), KEDU_PG_SCHEMA: "public", KEDU_PG_POOL: "2",
+        KEDU_FILE_STORE_DIR: mkdtempSync(join(tmpdir(), "kedu-pg-files-")) },
     });
     let output = "";
     child.stdout.on("data", chunk => { output += chunk; });

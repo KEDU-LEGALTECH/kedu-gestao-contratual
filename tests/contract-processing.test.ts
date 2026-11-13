@@ -10,6 +10,7 @@ process.env.DATABASE_PATH=join(mkdtempSync(join(tmpdir(),"kedu-process-")),"test
 process.env.NODE_ENV="test";process.env.DEMO_SEED="false";process.env.GLPI_MODE="demo";
 const { one, all, run, now, sql } = await import("../server/db.js");
 const {registerOfficialCatalog,sha256}=await import("../server/official-templates.js");
+const {fileBytes,storedSize}=await import("../server/processing-files.js");
 const {demoTemplate,paragraphs}=await import("../server/documents.js");
 const {processContract,saveProcessingResult,buildProcessingPlan,ensureProcessing,processingSummary,recoveryReason}=await import("../server/contract-processing.js");
 const {registerProcessingRoutes,processingView}=await import("../server/processing-routes.js");
@@ -36,12 +37,12 @@ const mock=(values:Record<string,string>=data,name="Contrato.docx")=>async()=>({
 test('falha transitória de download é recuperada e arquivo inválido continua disponível como original',async()=>{
  await fixture('retry');let attempts=0;
  await processContract('retry','u',async()=>{attempts++;if(attempts===1)throw Error('temporário');return mock()();});
- assert.equal(attempts,2);assert.ok((await sql.one('SELECT length(bytes) size FROM processing_files WHERE demand_id=?', 'retry')).size);
+ assert.equal(attempts,2);assert.ok(storedSize(await sql.one('SELECT * FROM processing_files WHERE demand_id=?', 'retry')));
  await fixture('denied');let denied=0;
  await processContract('denied','u',async()=>{denied++;throw Object.assign(Error('sem acesso'),{status:403});});
  assert.equal(denied,1);assert.ok((await buildProcessingPlan('denied'))!.issues.some(i=>i.field==='file:7'));
  await fixture('invalid');await processContract('invalid','u',async()=>({bytes:Buffer.from('arquivo corrompido'),name:'original.docx',mime:'application/octet-stream'}));
- assert.equal(Buffer.from((await sql.one('SELECT bytes FROM processing_files WHERE demand_id=?', 'invalid')).bytes).toString(),'arquivo corrompido');
+ assert.equal((await fileBytes(await sql.one('SELECT * FROM processing_files WHERE demand_id=?', 'invalid'))).toString(),'arquivo corrompido');
 });
 test('revisão de uma planilha não torna campos de um DOCX independente inconclusivos',async()=>{
  await fixture('scope');await processContract('scope','u',mock());
@@ -58,7 +59,7 @@ test('atualizar leitura reprocessa anexo saudável em cache sem baixar ou altera
  await sql.run('UPDATE processing_files SET extracted=? WHERE id=?', JSON.stringify({...reading,fields:{razaoSocial:['Leitura antiga incorreta']}}), file.id);
  let downloads=0;await processContract('force-reading','u',async()=>{downloads++;throw Error('Não deveria baixar');},true);
  const after=await sql.one('SELECT * FROM processing_files WHERE id=?', file.id);
- assert.equal(downloads,0);assert.deepEqual(JSON.parse(after.extracted).fields.razaoSocial,[data.razaoSocial]);assert.deepEqual(Buffer.from(after.bytes),Buffer.from(file.bytes));
+ assert.equal(downloads,0);assert.deepEqual(JSON.parse(after.extracted).fields.razaoSocial,[data.razaoSocial]);assert.deepEqual(await fileBytes(after),await fileBytes(file));
 });
 
 test('nova versão reutiliza leitura saudável somente após confirmar bytes atuais idênticos',async()=>{
@@ -68,11 +69,11 @@ test('nova versão reutiliza leitura saudável somente após confirmar bytes atu
  await sql.run('UPDATE processing_files SET extracted=? WHERE id=?', JSON.stringify(reading), original.id);
  await sql.run('UPDATE glpi_tickets SET hash=? WHERE external_id=?', 'new-identical', 'identical-original');
  let downloads=0;
- await processContract('identical-original','u',async()=>{downloads++;return {bytes:Buffer.from(original.bytes),name:original.name,mime:original.mime};});
+ await processContract('identical-original','u',async()=>{downloads++;return {bytes:await fileBytes(original),name:original.name,mime:original.mime};});
  assert.equal(downloads,1);
  const current=await sql.one('SELECT * FROM processing_files WHERE demand_id=? AND ticket_hash=?', 'identical-original', 'new-identical');
  assert.equal(JSON.parse(current.extracted).reuseMarker,'leitura anterior');
- assert.deepEqual(Buffer.from(current.bytes),Buffer.from(original.bytes));
+ assert.deepEqual(await fileBytes(current),await fileBytes(original));
  await sql.run('UPDATE glpi_tickets SET hash=? WHERE external_id=?', 'new-changed', 'identical-original');
  await processContract('identical-original','u',mock({...data,razaoSocial:'Outra escola'}));
  const changed=await sql.one('SELECT extracted FROM processing_files WHERE demand_id=? AND ticket_hash=?', 'identical-original', 'new-changed');
@@ -88,7 +89,7 @@ test('conferência humana acompanha nova versão só com mesmos bytes e mesma ex
  assert.ok((await buildProcessingPlan('keep-review'))!.issues.some(i=>i.field==='review:'+original.id));
  await sql.run('INSERT INTO processing_file_reviews VALUES(?,?,?,?)', original.id, hash, 'u', when);
  await sql.run('INSERT INTO processing_field_reviews VALUES(?,?,?,?,?,?)', original.id, 'cnpj', hash, '11.444.777/0001-61', 'u', when);
- const same=async()=>({bytes:Buffer.from(original.bytes),name:original.name,mime:original.mime});
+ const same=async()=>({bytes:await fileBytes(original),name:original.name,mime:original.mime});
  await sql.run('UPDATE glpi_tickets SET hash=? WHERE external_id=?', 'keep-v2', 'keep-review');
  await processContract('keep-review',null,same);
  const kept=await sql.one('SELECT * FROM processing_files WHERE demand_id=? AND ticket_hash=?', 'keep-review', 'keep-v2');
@@ -115,7 +116,7 @@ test('sem conferência anterior, a nova versão não cria conferência nem regis
  await fixture('no-review');await processContract('no-review','u',mock());
  const original=await sql.one('SELECT * FROM processing_files WHERE demand_id=?', 'no-review');
  await sql.run('UPDATE glpi_tickets SET hash=? WHERE external_id=?', 'no-review-v2', 'no-review');
- await processContract('no-review',null,async()=>({bytes:Buffer.from(original.bytes),name:original.name,mime:original.mime}));
+ await processContract('no-review',null,async()=>({bytes:await fileBytes(original),name:original.name,mime:original.mime}));
  const current=await sql.one('SELECT id FROM processing_files WHERE demand_id=? AND ticket_hash=?', 'no-review', 'no-review-v2');
  assert.equal((await sql.one('SELECT count(*) n FROM processing_file_reviews WHERE file_id=?', current.id)).n,0);
  assert.equal((await sql.one('SELECT count(*) n FROM processing_field_reviews WHERE file_id=?', current.id)).n,0);
@@ -186,14 +187,14 @@ test('campo sustentado por fonte confiável não herda dúvida de outra leitura 
 test('conferência e correção de leitura alimentam gabarito do original, nunca o valor esperado no GLPI',async()=>{
  await fixture('human-gold');await processContract('human-gold','u',mock({...data,remuneracao:'11,00%'}));
  let result=await completed('human-gold');const file=result.files[0];
- const original=Buffer.from((await sql.one('SELECT bytes FROM processing_files WHERE id=?', file.id)).bytes);
+ const original=await fileBytes(await sql.one('SELECT * FROM processing_files WHERE id=?', file.id));
  let response=await fetch(base+`/human-gold/processing/files/${file.id}/fields/remuneracao/confirm`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:result.revision,value:'11,00%',confirmed:true})});
  assert.equal(response.status,200);assert.equal((await sql.one('SELECT value FROM reading_gold_fields WHERE file_id=?', file.id)).value,'11,00%');
  result=await response.json();
  response=await fetch(base+`/human-gold/processing/files/${file.id}/fields/razaoSocial/correct-reading`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:result.revision,value:'Escola teste',evidence:'Razão social: Escola teste',confirmed:true})});
  assert.equal(response.status,200,await response.clone().text());
  assert.equal((await sql.one('SELECT value FROM reading_gold_fields WHERE file_id=? AND field=?', file.id, 'razaoSocial')).value,'Escola teste');
- assert.deepEqual(Buffer.from((await sql.one('SELECT bytes FROM processing_files WHERE id=?', file.id)).bytes),original);
+ assert.deepEqual(await fileBytes(await sql.one('SELECT * FROM processing_files WHERE id=?', file.id)),original);
  const count=(await sql.one('SELECT COUNT(*) n FROM reading_gold_fields')).n;
  response=await fetch(base+`/human-gold/processing/files/${file.id}/fields/razaoSocial/correct-reading`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:result.revision,value:'Inventado',evidence:'Não consta no original',confirmed:true})});
  assert.equal(response.status,400);assert.equal((await sql.one('SELECT COUNT(*) n FROM reading_gold_fields')).n,count);
@@ -226,10 +227,10 @@ test("Divergência bloqueia download, correção explícita gera nova análise e
  await fixture("wrong");await processContract("wrong","u",mock({...data,remuneracao:"11,00%"}) as any);
  const before=await completed("wrong");assert.equal(before.status,"Aguardando correção");assert.ok(before.issues.some((i:any)=>i.field==="remuneracao"));
  const denied=await fetch(base+"/wrong/processing/export",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({revision:before.revision})});assert.equal(denied.status,409);
- const source=Buffer.from((await sql.one("SELECT bytes FROM processing_files WHERE demand_id='wrong'")).bytes);
+ const source=await fileBytes(await sql.one("SELECT * FROM processing_files WHERE demand_id='wrong'"));
  const form=new FormData();form.set("revision",String(before.revision));form.set("values",JSON.stringify({remuneracao:"11,84%"}));
  const response=await fetch(base+"/wrong/processing/correct",{method:"POST",body:form});assert.equal(response.status,200);const corrected=await response.json();assert.equal(corrected.status,"Sem erros",JSON.stringify(corrected.issues));
- assert.deepEqual(Buffer.from((await sql.one("SELECT bytes FROM processing_files WHERE demand_id='wrong'")).bytes),source);
+ assert.deepEqual(await fileBytes(await sql.one("SELECT * FROM processing_files WHERE demand_id='wrong'")),source);
  const stale=new FormData();stale.set("revision",String(before.revision));stale.set("values","{}");assert.equal((await fetch(base+"/wrong/processing/correct",{method:"POST",body:stale})).status,409);
 });
 test("Confronta valor, remuneração e parcelas do pedido com o documento e não aceita correção divergente",async()=>{
@@ -241,12 +242,12 @@ test("Confronta valor, remuneração e parcelas do pedido com o documento e não
   assert.ok(before.issues.some((i:any)=>i.field===key&&i.expected===expected&&i.found===found));
   assert.ok(before.comparisons.some((i:any)=>i.field===key&&i.status==='different'));
  }
- const original=Buffer.from((await sql.one('SELECT bytes FROM processing_files WHERE demand_id=?', raw.externalId)).bytes);
+ const original=await fileBytes(await sql.one('SELECT * FROM processing_files WHERE demand_id=?', raw.externalId));
  await sql.run('UPDATE contract_processing SET overrides=? WHERE demand_id=?', JSON.stringify({valor:'1700,00'}), raw.externalId);
  assert.ok((await buildProcessingPlan(raw.externalId))!.issues.some(i=>i.field==='valor'&&i.expected==='1507,90'));
  await sql.run('UPDATE contract_processing SET overrides=? WHERE demand_id=?', JSON.stringify({valor:'1507,90',remuneracao:'4,58%',parcelas:'3'}), raw.externalId);
  assert.equal((await buildProcessingPlan(raw.externalId))!.comparisons.find(i=>i.field==='valor')?.status,'corrected');
- assert.deepEqual(Buffer.from((await sql.one('SELECT bytes FROM processing_files WHERE demand_id=?', raw.externalId)).bytes),original);
+ assert.deepEqual(await fileBytes(await sql.one('SELECT * FROM processing_files WHERE demand_id=?', raw.externalId)),original);
 });
 
 test("Cada chamado usa sua própria referência e a mesma referência aparece na tela GLPI",async()=>{
@@ -300,7 +301,7 @@ test("OCR permanece bloqueado até conferência humana; confirmação respeita r
  assert.equal((await post(result.revision-1)).status,409);
  const response=await post(result.revision);assert.equal(response.status,200);const confirmed=await response.json();assert.equal(confirmed.files[0].needsReview,false);assert.equal(confirmed.status,"Conferência parcial","campos ainda não lidos continuam pendentes");
  assert.equal((await post(result.revision)).status,409);
- assert.deepEqual(Buffer.from((await sql.one("SELECT bytes FROM processing_files WHERE demand_id='ocr'")).bytes),bytes);
+ assert.deepEqual(await fileBytes(await sql.one("SELECT * FROM processing_files WHERE demand_id='ocr'")),bytes);
 });
 test('leitura parcial preservada não pode ser confirmada como documento completo',async()=>{
  await fixture('partial');await processContract('partial','u',mock());
@@ -403,11 +404,11 @@ test('resumos respeitam etapa, seleção e permissões de acesso aos documentos'
  assert.equal((await empty.json()).count,0);
 });
 test("Substituição manual de imagem por DOCX legível preenche os dados e libera a validação",async()=>{
- const before=await completed("image"),original=await sql.one("SELECT id,bytes FROM processing_files WHERE demand_id='image' ORDER BY rowid LIMIT 1");
+ const before=await completed("image"),original=await sql.one("SELECT * FROM processing_files WHERE demand_id='image' ORDER BY rowid LIMIT 1");
  const f=new FormData();f.set("revision",String(before.revision));f.set("values","{}");f.set("document_id","7");f.set("file",new Blob([new Uint8Array(doc(data))]),"Contrato-corrigido.docx");
  const response=await fetch(base+"/image/processing/correct",{method:"POST",body:f});assert.equal(response.status,200);const result=await response.json();assert.equal(result.status,"Sem erros",JSON.stringify(result.issues));
  assert.equal((await sql.one("SELECT COUNT(*) n FROM processing_files WHERE demand_id='image'")).n,2);
- assert.deepEqual(Buffer.from((await sql.one("SELECT bytes FROM processing_files WHERE id=?", original.id)).bytes),Buffer.from(original.bytes));
+ assert.deepEqual(await fileBytes(await sql.one("SELECT * FROM processing_files WHERE id=?", original.id)),await fileBytes(original));
 });
 test("Prévia permite homologar o modelo sem liberar contrato pendente",async()=>{
  const response=await fetch(base+"/draft/processing/preview",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});assert.equal(response.status,200);const result=await response.json();
@@ -490,7 +491,7 @@ test('tarefa de leitura registra o motivo da recuperação pendente',async()=>{
 test('checksum importado do documento reutiliza bytes locais idênticos sem novo download',async()=>{
  const raw=await fixture('checksum-reuse');await processContract('checksum-reuse','u',mock());
  const f=await sql.one('SELECT * FROM processing_files WHERE demand_id=?', 'checksum-reuse');
- const {createHash}=await import('node:crypto');(raw.documents[0] as any).sha1=createHash('sha1').update(Buffer.from(f.bytes)).digest('hex');
+ const {createHash}=await import('node:crypto');(raw.documents[0] as any).sha1=createHash('sha1').update(await fileBytes(f)).digest('hex');
  await sql.run('UPDATE glpi_tickets SET hash=?,payload=? WHERE external_id=?', 'hash-checksum-current', JSON.stringify(raw), 'checksum-reuse');
  let downloads=0;await processContract('checksum-reuse','u',async()=>{downloads++;throw Error('Não deveria baixar bytes iguais');});
  assert.equal(downloads,0);

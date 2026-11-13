@@ -7,6 +7,7 @@ import { ensureProcessing,processContract,processingSource,saveProcessingResult,
 import {plausibleFieldValue} from "./field-plausibility.js";
 import { editableKeys,extractProcessingFile,normalizeValue } from "./processing-extract.js";
 import { sha256,officialValues } from "./official-templates.js";
+import { fileBytes,saveProcessingFile,storedSize } from "./processing-files.js";
 import { generate,review } from "./documents.js";
 import { readProcessingFile,supportedReading } from "./file-reading.js";
 import sharp from "sharp";
@@ -61,9 +62,9 @@ export function registerProcessingRoutes(app:Express,process:(did:string,userId?
   const {demand:d}=await get(req,true);
   const body=z.object({revision:z.number().int(),region:z.object({page:z.number().int().min(1).max(200),x:z.number().min(0).max(1),y:z.number().min(0).max(1),width:z.number().min(.02).max(1),height:z.number().min(.02).max(1),rotation:z.union([z.literal(0),z.literal(90),z.literal(180),z.literal(270)])})}).parse(req.body);
   const current=await processingView(d.id),file=await sql.one('SELECT * FROM processing_files WHERE id=? AND demand_id=?', req.params.file, d.id);
-  if(!file?.bytes?.length||!current?.files?.some((f:any)=>f.id===file.id))throw Object.assign(Error('Arquivo não disponível nesta versão.'),{status:404});
+  if(!storedSize(file)||!current?.files?.some((f:any)=>f.id===file.id))throw Object.assign(Error('Arquivo não disponível nesta versão.'),{status:404});
   if(current.revision!==body.revision||current.status==='Analisando')throw Object.assign(Error('A demanda mudou. Atualize a página.'),{status:409});
-  const hash=current.ticket_hash,reading=await readProcessingFile(Buffer.from(file.bytes),file.name,body.region);
+  const hash=current.ticket_hash,reading=await readProcessingFile(await fileBytes(file),file.name,body.region);
   const latest=await processingView(d.id);
   if(latest?.revision!==body.revision||latest?.ticket_hash!==hash)throw Object.assign(Error('A demanda mudou durante a leitura. Tente novamente.'),{status:409});
   res.json(reading);
@@ -95,7 +96,7 @@ export function registerProcessingRoutes(app:Express,process:(did:string,userId?
   if(!value||!compact(value)||!compact(body.evidence).includes(compact(value)))throw Error('Transcreva o trecho do original que contém o valor informado.');
   await sql.transaction(async()=>{
    const plan=await buildProcessingPlan(d.id),file=await sql.one('SELECT * FROM processing_files WHERE id=? AND demand_id=?', req.params.file, d.id);
-   if(!plan||plan.job.status==='Analisando'||plan.job.revision!==body.revision||!plan.files.some(f=>f.id===file?.id)||!file?.bytes?.length)throw Object.assign(Error('O documento mudou ou está indisponível. Atualize a página.'),{status:409});
+   if(!plan||plan.job.status==='Analisando'||plan.job.revision!==body.revision||!plan.files.some(f=>f.id===file?.id)||!storedSize(file))throw Object.assign(Error('O documento mudou ou está indisponível. Atualize a página.'),{status:409});
    const reading=JSON.parse(file.extracted);
    if(reading.incomplete||file.problem)throw Error('Conclua a leitura do arquivo antes de corrigir um campo.');
    reading.fields[req.params.field]=[value];
@@ -179,7 +180,7 @@ export function registerProcessingRoutes(app:Express,process:(did:string,userId?
   await sql.transaction(async () => {
    const latest=await ensureProcessing(d.id);
    if(latest.revision!==b.revision || latest.ticket_hash!==ticket.hash || latest.status==="Analisando")throw Object.assign(Error("A análise mudou durante a leitura. Reabra a demanda."),{status:409});
-   if(file)await sql.run("INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)", id(), d.id, b.document_id, ticket.hash+":correction:"+id(), file.name, req.file.mimetype||"application/octet-stream", req.file.buffer, JSON.stringify(file.extracted), "", now());
+   if(file)await saveProcessingFile({id:id(),demand_id:d.id,document_id:b.document_id!,ticket_hash:ticket.hash+":correction:"+id(),name:file.name,mime:req.file.mimetype||"application/octet-stream",bytes:req.file.buffer,extracted:JSON.stringify(file.extracted),problem:"",created:now()});
    const changed=await sql.run("UPDATE contract_processing SET overrides=?,template_id=?,revision=revision+1,updated=? WHERE demand_id=? AND revision=?", JSON.stringify({...JSON.parse(job.overrides),...values}), b.template_id||job.template_id, now(), d.id, b.revision);
    if(!changed.changes)throw Error("Conflito de edição. Reabra a demanda.");
    await invalidate(d.id);
@@ -225,13 +226,14 @@ export function registerProcessingRoutes(app:Express,process:(did:string,userId?
  });
  app.get("/api/demands/:id/processing/files/:file",async (req:any,res)=>{
   const {demand:d}=await get(req),file=await sql.one("SELECT * FROM processing_files WHERE id=? AND demand_id=?", req.params.file, d.id);
-  if(!file || !file.bytes.length)throw Error("Arquivo não disponível.");
-  res.setHeader("Cache-Control","no-store");res.type(file.mime).attachment(file.name).send(Buffer.from(file.bytes));
+  if(!file || !storedSize(file))throw Error("Arquivo não disponível.");
+  const bytes=await fileBytes(file);
+  res.setHeader("Cache-Control","no-store");res.type(file.mime).attachment(file.name).send(bytes);
  });
  app.get("/api/demands/:id/processing/files/:file/view",async(req:any,res)=>{
   const {demand:d}=await get(req),file=await sql.one("SELECT * FROM processing_files WHERE id=? AND demand_id=?", req.params.file, d.id);
-  if(!file || !file.bytes.length)throw Object.assign(Error("Arquivo não disponível."),{status:404});
-  const bytes=Buffer.from(file.bytes);
+  if(!file || !storedSize(file))throw Object.assign(Error("Arquivo não disponível."),{status:404});
+  const bytes=await fileBytes(file);
   const mime=bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))?"image/png":bytes[0]===255 && bytes[1]===216 && bytes[2]===255?"image/jpeg":bytes.subarray(0,5).toString()==="%PDF-"?"application/pdf":null;
   if(!mime){
    if(!/\.(webp|gif|tiff?|bmp)$/i.test(file.name))throw Object.assign(Error("Use a visualização de texto ou baixe o original deste documento."),{status:415});
