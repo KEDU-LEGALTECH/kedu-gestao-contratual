@@ -94,26 +94,48 @@ export const postgresTypes = {
   boolean: { to: 16, from: [16], parse: (value: string) => (value === "t" ? 1 : 0), serialize: (value: unknown) => (value ? "t" : "f") },
 };
 
+type ReadCache = { entries: Map<string, Promise<Row[]>>; open: boolean };
+/** Reads repeated within one request (same SQL and parameters) reach the remote database once.
+ * Any write clears it; transactions and work outliving the request bypass it. */
+export const readCache = new AsyncLocalStorage<ReadCache>();
+export const withReadCache = <T>(work: () => T, store: ReadCache = { entries: new Map(), open: true }) => readCache.run(store, work);
+
 export function postgresSql(pool: postgres.Sql): Sql {
   const scope = new AsyncLocalStorage<postgres.TransactionSql>();
+  // Named statements skip the parameter description round trip after the first use on a connection.
   const exec = (query: string, params: unknown[]) =>
-    (scope.getStore() ?? pool).unsafe(toPostgres(query), params as any[]);
+    (scope.getStore() ?? pool).unsafe(toPostgres(query), params as any[], { prepare: true });
   // `SELECT *` would expose the imported insertion order column, which SQLite rows never carry.
   // It stays only when the select list names rowid; ORDER BY rowid alone does not return it.
-  const rows = async (query: string, params: unknown[]) => {
+  const fetchRows = async (query: string, params: unknown[]) => {
     const result = [...await exec(query, params)] as Row[];
     const selectList = query.slice(0, Math.max(0, query.search(/\bFROM\b/i)));
     if (!/\browid\b/i.test(selectList)) for (const row of result) delete row._rowid;
     return result;
   };
+  const rows = async (query: string, params: unknown[]) => {
+    const cache = readCache.getStore();
+    if (!cache?.open || scope.getStore() || !/^\s*SELECT\b/i.test(query)) return fetchRows(query, params);
+    const key = query + "\u0000" + JSON.stringify(params);
+    let pending = cache.entries.get(key);
+    if (!pending) {
+      pending = fetchRows(query, params);
+      cache.entries.set(key, pending);
+      pending.catch(() => cache.entries.delete(key));
+    }
+    // Callers may change the rows they receive; each one gets its own copies.
+    return (await pending).map(row => ({ ...row }));
+  };
+  const written = () => readCache.getStore()?.entries.clear();
   return {
     dialect: "postgres",
     async all(query, ...params) { return rows(query, params); },
     async one(query, ...params) { return (await rows(query, params))[0]; },
-    async run(query, ...params) { return { changes: (await exec(query, params)).count }; },
+    async run(query, ...params) { written(); try { return { changes: (await exec(query, params)).count }; } finally { written(); } },
     async transaction(work) {
       if (scope.getStore()) return work();
-      return pool.begin(tx => scope.run(tx, work)) as Promise<any>;
+      written();
+      try { return await pool.begin(tx => scope.run(tx, work)) as any; } finally { written(); }
     },
   };
 }

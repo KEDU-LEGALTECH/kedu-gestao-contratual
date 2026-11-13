@@ -60,18 +60,21 @@ export async function registerOfficialCatalog(path = join(dir, "catalog.json")) 
   return { registered, skipped };
 }
 
-export async function sourceOf(versionId: string) {
-  return await sql.one("SELECT * FROM template_sources WHERE version_id=?", versionId);
-}
+// The catalog tables hold a few rows per model. Reading them whole lets one GET request reuse the
+// result (see the request read cache in server/sql.ts) instead of one remote query per version.
+const rowFor = async (table: string, versionId: string) => (await sql.all(`SELECT * FROM ${table}`)).find(r => r.version_id === versionId);
+export const sourceOf = (versionId: string) => rowFor("template_sources", versionId);
+export const catalogOf = (versionId: string) => rowFor("template_catalog", versionId);
+const homologationOf = (versionId: string) => rowFor("template_homologations", versionId);
 /** A structured version is homologated only for the exact bytes reviewed by the legal team. */
 export async function homologated(version: any) {
   const source = await sourceOf(version.id);
   if (!source) return false;
-  const h = await sql.one("SELECT * FROM template_homologations WHERE version_id=?", version.id);
+  const h = await homologationOf(version.id);
   return !!h && h.template_hash === sha256(Buffer.from(version.bytes)) && version.status === "aprovado";
 }
 export async function matches(demand: any, details: any, version: any) {
-  const catalog = await sql.one("SELECT * FROM template_catalog WHERE version_id=?", version.id);
+  const catalog = await catalogOf(version.id);
   if (!catalog || catalog.document_type !== demand.type) return false;
   if (demand.type === "Aditivo") return catalog.subtype === details.subtype;
   const source = await sourceOf(version.id);

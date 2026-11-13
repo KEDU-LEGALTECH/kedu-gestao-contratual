@@ -8,6 +8,7 @@ import { extractProcessingFile,fieldsFromLines,normalizeValue,inputLabels,norm,e
 import { details } from "./governance.js";
 import { listOfficial,sourceOf,homologated,sha256 } from "./official-templates.js";
 import { byteHeadSql,byteSizeSql,fileBytes,saveProcessingFile,storedHash } from "./processing-files.js";
+import { readCache } from "./sql.js";
 import { officialRequired,officialProblems,deriveOfficial,derivedFrom } from "../shared/official-fields.js";
 import { validateData } from "../shared/data-validation.js";
 import { wholeMonths } from "../shared/extenso.js";
@@ -47,25 +48,26 @@ const textHead=2000;
  * the first ten non-empty lines, and a text cut before ten complete lines is read in full. */
 export async function receivedDocumentTypesAll() {
  const tickets=await sql.all("SELECT d.id AS demand_id,t.hash,json_extract(t.payload,'$.documents') AS documents FROM demands d JOIN glpi_tickets t ON t.external_id=d.glpi_id AND t.mode='real'");
- const files=await sql.all(`SELECT id,demand_id,document_id,ticket_hash,name,substr(coalesce(json_extract(extracted,'$.text'),''),1,${textHead}) AS text_head,
-  length(coalesce(json_extract(extracted,'$.text'),'')) AS text_length FROM processing_files ORDER BY rowid DESC`);
+ // Only files of the current ticket version, or corrections made on it, can be listed.
+ const files=await sql.all(`SELECT f.id,f.demand_id,f.document_id,f.ticket_hash,f.name,substr(coalesce(json_extract(f.extracted,'$.text'),''),1,${textHead}) AS text_head,
+  length(coalesce(json_extract(f.extracted,'$.text'),'')) AS text_length FROM processing_files f JOIN demands d ON d.id=f.demand_id
+  JOIN glpi_tickets t ON t.external_id=d.glpi_id AND t.mode='real'
+  WHERE f.ticket_hash=t.hash OR substr(f.ticket_hash,1,length(t.hash)+12)=t.hash||':correction:' ORDER BY f.rowid DESC`);
  const byDemand=new Map<string,any[]>();
  for(const file of files){const list=byDemand.get(file.demand_id);if(list)list.push(file);else byDemand.set(file.demand_id,[file]);}
- const text=async(file:any)=>{
-  if(file.text_length<=textHead)return file.text_head;
-  const complete=file.text_head.split(/\r?\n/).slice(0,-1).map((s:string)=>s.trim()).filter(Boolean).length;
-  return complete>=10?file.text_head:JSON.parse((await sql.one('SELECT extracted FROM processing_files WHERE id=?',file.id)).extracted).text||'';
- };
- const kinds=new Map<string,string[]>();
- for(const ticket of tickets){
-  const prefix=ticket.hash+':correction:',seen=new Set<string>(),current=[];
+ const listed=tickets.map(ticket=>{
+  const prefix=ticket.hash+':correction:',seen=new Set<string>(),current:any[]=[];
   for(const file of byDemand.get(ticket.demand_id)||[])
    if((file.ticket_hash===ticket.hash||file.ticket_hash.startsWith(prefix))&&!seen.has(file.document_id)){seen.add(file.document_id);current.push(file);}
   const docs=(typeof ticket.documents==='string'?JSON.parse(ticket.documents):ticket.documents)||[];
-  const found=new Set<string>();
-  for(const doc of docs){const file=current.find(f=>f.document_id===String(doc.id));found.add(receivedDocumentKind(file?.name||doc.name,file?await text(file):''));}
-  kinds.set(ticket.demand_id,[...found]);
- }
+  return {demand:ticket.demand_id,entries:docs.map((doc:any)=>({doc,file:current.find(f=>f.document_id===String(doc.id))}))};
+ });
+ const cut=(file:any)=>file.text_length>textHead&&file.text_head.split(/\r?\n/).slice(0,-1).map((s:string)=>s.trim()).filter(Boolean).length<10;
+ const fullIds=[...new Set(listed.flatMap(l=>l.entries.filter((e:any)=>e.file&&cut(e.file)).map((e:any)=>e.file.id)))];
+ const full=new Map(fullIds.length?(await sql.all(`SELECT id,extracted FROM processing_files WHERE id IN (${fullIds.map(()=>'?').join(',')})`,...fullIds)).map(r=>[r.id,JSON.parse(r.extracted).text||'']):[]);
+ const kinds=new Map<string,string[]>();
+ for(const {demand,entries} of listed)
+  kinds.set(demand,[...new Set<string>(entries.map(({doc,file}:any)=>receivedDocumentKind(file?.name||doc.name,file?(full.has(file.id)?full.get(file.id):file.text_head):'')))]);
  return kinds;
 }
 export async function receivedDocumentTypes(did:string) {
@@ -83,15 +85,15 @@ const running=new Set<string>();
 const activeFiles=new Map<string,{documentId:string;targeted?:boolean;page?:number}>();
 async function fingerprint(did:string) {
  const d=await sql.one("SELECT school_id,contract_id,data_version FROM demands WHERE id=?", did);
- return sha256(Buffer.from(JSON.stringify([
-  'hybrid-local-ocr-v44-approval-docs-and-party-scoping',
-  await sql.all('SELECT kind,field,signature,value FROM processing_resolutions WHERE demand_id=? ORDER BY kind,field', did),
-  d,
-  await sql.all("SELECT v.id,v.status,s.template_hash,h.template_hash AS approved_hash,i.version_id AS inactive FROM template_sources s JOIN template_versions v ON v.id=s.version_id LEFT JOIN template_homologations h ON h.version_id=v.id LEFT JOIN inactive_template_versions i ON i.version_id=v.id ORDER BY v.id"),
-  await sql.all("SELECT id,parent_id,sequence,status FROM contracts WHERE school_id=? ORDER BY id", d?.school_id),
-  await sql.all("SELECT h.matrix_id,h.sequence,h.source,h.id FROM signed_history h JOIN contracts c ON c.id=h.matrix_id WHERE c.school_id=? ORDER BY h.id", d?.school_id),
-  await sql.all("SELECT h.matrix_id,h.sequence,h.id FROM history_confirmations h JOIN contracts c ON c.id=h.matrix_id WHERE c.school_id=? ORDER BY h.id", d?.school_id),
- ])));
+ // Independent reads fetched together; the array order is part of the fingerprint.
+ const [resolutions,templates,contracts,signed,confirmed]=await Promise.all([
+  sql.all('SELECT kind,field,signature,value FROM processing_resolutions WHERE demand_id=? ORDER BY kind,field', did),
+  sql.all("SELECT v.id,v.status,s.template_hash,h.template_hash AS approved_hash,i.version_id AS inactive FROM template_sources s JOIN template_versions v ON v.id=s.version_id LEFT JOIN template_homologations h ON h.version_id=v.id LEFT JOIN inactive_template_versions i ON i.version_id=v.id ORDER BY v.id"),
+  sql.all("SELECT id,parent_id,sequence,status FROM contracts WHERE school_id=? ORDER BY id", d?.school_id),
+  sql.all("SELECT h.matrix_id,h.sequence,h.source,h.id FROM signed_history h JOIN contracts c ON c.id=h.matrix_id WHERE c.school_id=? ORDER BY h.id", d?.school_id),
+  sql.all("SELECT h.matrix_id,h.sequence,h.id FROM history_confirmations h JOIN contracts c ON c.id=h.matrix_id WHERE c.school_id=? ORDER BY h.id", d?.school_id),
+ ]);
+ return sha256(Buffer.from(JSON.stringify(['hybrid-local-ocr-v44-approval-docs-and-party-scoping',resolutions,d,templates,contracts,signed,confirmed])));
 }
 export async function processingSource(did:string) {
  const demand=await sql.one("SELECT * FROM demands WHERE id=?", did);
@@ -157,7 +159,7 @@ function unreadableContractIssue(doc:any,file:any,raw:any,ticketStatus:unknown):
  return {missingReason:'read_failed',message:'O arquivo do contrato foi aberto, mas não retornou texto legível nem campos reconhecidos. Confira o original no GLPI ou envie uma cópia legível.'};
 }
 export async function buildProcessingPlan(did:string) {
- const {demand:d,ticket}=await processingSource(did),job=await sql.one("SELECT * FROM contract_processing WHERE demand_id=?", did);
+ const [{demand:d,ticket},job]=await Promise.all([processingSource(did),sql.one("SELECT * FROM contract_processing WHERE demand_id=?", did)]);
  if(!d || !ticket || !job)return null;
  const raw=JSON.parse(ticket.payload),analysis=analyzeTicket(raw,{schools:[],matrices:[]});
  const overrides=JSON.parse(job.overrides),values:Record<string,string>={},origins:Record<string,string>={},issues:Issue[]=[];
@@ -166,14 +168,22 @@ export async function buildProcessingPlan(did:string) {
  const {fields:request,corrections:conversationCorrections,advanceRates}=conversationReferences(raw,analysis.fields),candidates:Record<string,{value:string;source:string;fileId:string}[]>={};
  const invalidIdentifiers:Record<string,{fileId:string;fileName:string;value:string;excerpt:string;page?:number;available:boolean;contractor?:boolean}[]>={};
  const filesWithQualifiedParties=new Set<string>();
- const resolutions=await sql.all('SELECT * FROM processing_resolutions WHERE demand_id=?', did),references:Record<string,{value:string;note:string;original:string}>={};
+ // Reads that depend only on the demand and ticket version, fetched together.
+ const [resolutions,allFiles,storedRows,reviewRows,fieldReviewRows]=await Promise.all([
+  sql.all('SELECT * FROM processing_resolutions WHERE demand_id=?', did),
+  filesFor(did,ticket.hash),
+  sql.all('SELECT DISTINCT document_id FROM processing_files WHERE demand_id=?',did),
+  sql.all('SELECT r.file_id,r.extraction_hash FROM processing_file_reviews r JOIN processing_files f ON f.id=r.file_id WHERE f.demand_id=?',did),
+  sql.all('SELECT r.* FROM processing_field_reviews r JOIN processing_files f ON f.id=r.file_id WHERE f.demand_id=?',did),
+ ]);
+ const references:Record<string,{value:string;note:string;original:string}>={};
  for(const r of resolutions)if(r.kind==='reference'&&request[r.field]?.length&&resolutionSignature(r.field,request[r.field].join("; "))===r.signature){references[r.field]={value:r.value,note:r.note,original:request[r.field].join("; ")};request[r.field]=[r.value];}
  // All versions stay available, but a clearly replaced document no longer speaks for the demand.
- const superseded=supersededDocuments(raw.documents||[]),allFiles=await filesFor(did,ticket.hash);
+ const superseded=supersededDocuments(raw.documents||[]);
  // Read up front: the comparison callbacks below are synchronous. Both tables have one row per key.
- const storedDocuments=new Set((await sql.all('SELECT DISTINCT document_id FROM processing_files WHERE demand_id=?',did)).map(r=>r.document_id));
- const fileReviews=new Map((await sql.all('SELECT r.file_id,r.extraction_hash FROM processing_file_reviews r JOIN processing_files f ON f.id=r.file_id WHERE f.demand_id=?',did)).map(r=>[r.file_id,r.extraction_hash]));
- const fieldReviews=new Map((await sql.all('SELECT r.* FROM processing_field_reviews r JOIN processing_files f ON f.id=r.file_id WHERE f.demand_id=?',did)).map(r=>[r.file_id+'\u0000'+r.field,r]));
+ const storedDocuments=new Set(storedRows.map(r=>r.document_id));
+ const fileReviews=new Map(reviewRows.map(r=>[r.file_id,r.extraction_hash]));
+ const fieldReviews=new Map(fieldReviewRows.map(r=>[r.file_id+'\u0000'+r.field,r]));
  const fieldReview=(fileId:string,field:string,hash?:string)=>{const row=fieldReviews.get(fileId+'\u0000'+field);return row&&(hash===undefined||row.extraction_hash===hash)?row:undefined;};
  const currentFiles=allFiles.filter(f=>!superseded.has(f.document_id));
  const files=currentFiles.filter(f=>{
@@ -683,7 +693,8 @@ let scanningRecovery=false;
 export async function scheduleContractProcessing() {
  if(process.env.NODE_ENV==='test'||await recoveryPaused()||scanningRecovery)return;
  scanningRecovery=true;
- void (async()=>{
+ // Background work continues after the request that started it: no request read cache.
+ void readCache.exit(()=>(async()=>{
   durableQueue??=new ReadingJobQueue(sql);
   void drainReadingQueue();
   for(const d of await sql.all("SELECT d.id,t.status FROM demands d JOIN glpi_tickets t ON t.external_id=d.glpi_id WHERE t.mode='real' AND d.stage NOT IN('Concluído','Cancelado','Em assinatura')")){
@@ -701,7 +712,7 @@ export async function scheduleContractProcessing() {
    else await durableQueue.settleIdle(d.id,job.ticket_hash);
   }
   void drainReadingQueue();
- })().catch(error=>console.error("Falha ao verificar a fila de leitura:",failureDetail(error)))
+ })()).catch(error=>console.error("Falha ao verificar a fila de leitura:",failureDetail(error)))
    .finally(()=>{scanningRecovery=false;});
 }
 const sqliteSummary=`SELECT d.id AS demand_id,d.stage,t.hash,p.status,p.ticket_hash,p.revision,

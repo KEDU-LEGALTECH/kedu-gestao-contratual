@@ -1,6 +1,7 @@
 import {isOpenDemand,demandDisplayStage} from "../shared/glpi-ticket-meta.js";
 import "dotenv/config";
 import {acquireBackendInstance,backendVersion} from './backend-instance.js';
+import { withReadCache } from "./sql.js";
 import express from "express";
 import { contractParagraphs } from "./attachment-analysis.js";
 import helmet from "helmet";
@@ -99,6 +100,13 @@ app.disable("x-powered-by");
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
+// On PostgreSQL, repeated reads within one GET request share a cache (see server/sql.ts).
+app.use((req, res, next) => {
+  if (req.method !== "GET") return next();
+  const store = { entries: new Map(), open: true };
+  res.on("close", () => { store.open = false; store.entries.clear(); });
+  withReadCache(next, store);
+});
 // Supabase keeps PostgreSQL backups; the local job copies the SQLite file only.
 if(!postgresMode)startBackups();
 app.get("/healthz",async (_req,res)=>{res.set("Cache-Control","no-store");res.set('X-Kedu-Build',backendVersion.build);try{await sql.one("SELECT 1");res.json({status:"ok"});}catch{res.status(503).json({status:"unavailable"});}});
@@ -199,14 +207,33 @@ app.get("/api/bootstrap", async (req: any, res) => {
   await scheduleContractProcessing();
   const where = req.user.role === "Solicitante" ? " WHERE d.owner=?" : "";
   // A fixed number of queries for the whole list: per-demand lookups are slow on a remote database.
-  const [documentTypes, summaries] = [await receivedDocumentTypesAll(), await processingSummaries()];
+  // Independent reads for the whole list, fetched together (each one is a round trip on a remote database).
+  const [documentTypes, summaries, checkRows, demandRows, registry, closureRows, contracts, users, templates, sync, settings, triage] = await Promise.all([
+    receivedDocumentTypesAll(),
+    processingSummaries(),
+    sql.all("SELECT c.demand_id,c.status,c.data_version,c.ticket_hash FROM attachment_checks c WHERE c.rowid=(SELECT MAX(x.rowid) FROM attachment_checks x WHERE x.demand_id=c.demand_id AND x.document_id=c.document_id)"),
+    sql.all(`SELECT d.*,COALESCE(s.name,json_extract(d.data,'$.razaoSocial'),'Organização a identificar') AS school,s.cnpj,COALESCE(u.name,'Não atribuído') AS owner_name,t.external_id AS glpi_ticket,t.status AS glpi_status,json_extract(t.payload,'$.priority') AS glpi_priority,t.hash AS glpi_hash FROM demands d LEFT JOIN schools s ON s.id=d.school_id LEFT JOIN users u ON u.id=d.owner LEFT JOIN glpi_tickets t ON t.external_id=d.glpi_id${where} ORDER BY d.created DESC,d.rowid`, ...(where ? [req.user.id] : [])),
+    organizations(req.user.role === "Solicitante" ? req.user.id : undefined),
+    sql.all("SELECT demand_id,payload FROM case_details"),
+    sql.all("SELECT c.*,s.name AS school FROM contract_registry c JOIN schools s ON s.id=c.school_id" +
+        (req.user.role === "Solicitante"
+          ? " WHERE EXISTS(SELECT 1 FROM demands d WHERE d.contract_id=c.id AND d.owner=?)"
+          : ""), ...(req.user.role === "Solicitante" ? [req.user.id] : [])),
+    req.user.role === "Solicitante"
+        ? sql.all("SELECT id,name,role,email FROM users WHERE id=?", req.user.id)
+        : sql.all("SELECT id,name,role,email FROM users"),
+    sql.all("SELECT t.*,c.document_type,c.subtype,c.demonstration,EXISTS(SELECT 1 FROM template_sources ts WHERE ts.version_id=v.id) AS official,v.id AS version_id,v.version,CASE WHEN EXISTS(SELECT 1 FROM inactive_template_versions iv WHERE iv.version_id=v.id) THEN 'inativo' ELSE v.status END AS status FROM templates t JOIN template_versions v ON v.template_id=t.id LEFT JOIN template_catalog c ON c.version_id=v.id"),
+    sql.all("SELECT * FROM sync_logs ORDER BY created DESC LIMIT 20"),
+    sql.all("SELECT * FROM settings WHERE key IN ('legalPolicies','glpiMapping')"),
+    sql.one("SELECT COUNT(*) n FROM glpi_tickets WHERE demand_id IS NULL OR state LIKE 'alterado%'"),
+  ]);
   const latestChecks = new Map<string, any[]>();
-  for (const c of await sql.all("SELECT c.demand_id,c.status,c.data_version,c.ticket_hash FROM attachment_checks c WHERE c.rowid=(SELECT MAX(x.rowid) FROM attachment_checks x WHERE x.demand_id=c.demand_id AND x.document_id=c.document_id)")) {
+  for (const c of checkRows) {
     const list = latestChecks.get(c.demand_id);
     if (list) list.push(c); else latestChecks.set(c.demand_id, [c]);
   }
   const demands: any[] = [];
-  for (const { glpi_ticket, glpi_status, glpi_priority, glpi_hash, ...d } of await sql.all(`SELECT d.*,COALESCE(s.name,json_extract(d.data,'$.razaoSocial'),'Organização a identificar') AS school,s.cnpj,COALESCE(u.name,'Não atribuído') AS owner_name,t.external_id AS glpi_ticket,t.status AS glpi_status,json_extract(t.payload,'$.priority') AS glpi_priority,t.hash AS glpi_hash FROM demands d LEFT JOIN schools s ON s.id=d.school_id LEFT JOIN users u ON u.id=d.owner LEFT JOIN glpi_tickets t ON t.external_id=d.glpi_id${where} ORDER BY d.created DESC,d.rowid`, ...(where ? [req.user.id] : []))) {
+  for (const { glpi_ticket, glpi_status, glpi_priority, glpi_hash, ...d } of demandRows) {
     const checks = latestChecks.get(d.id) || [];
     const check = checks.find(c=>c.status==="divergente") || checks.find(c=>c.status==="inconclusiva") || checks[0];
     demands.push({ ...d, receivedDocumentTypes:documentTypes.get(d.id) || [],glpiOrigin:glpi_ticket == null ? null : {status:glpi_status,priority:glpi_priority}, processing:summaries.get(d.id) ?? null,data: safeData(req.user, JSON.parse(d.data)), documentCheck: check ? {status:check.status,stale:checks.some(c=>c.data_version!==d.data_version || c.ticket_hash!==glpi_hash)} : null });
@@ -220,26 +247,19 @@ app.get("/api/bootstrap", async (req: any, res) => {
       d.completed &&
       localDate(d.completed).slice(0, 7) === localDate().slice(0, 7),
   );
-  const registry = await organizations(req.user.role === "Solicitante" ? req.user.id : undefined);
-  const closures = new Map((await sql.all("SELECT demand_id,payload FROM case_details")).map(r => [r.demand_id, r.payload]));
+  const closures = new Map(closureRows.map(r => [r.demand_id, r.payload]));
   res.json({
     demands,
     schools: registry.filter(s => s.organization_kind === "Escola"),
     organizations: registry,
-    contracts: await sql.all("SELECT c.*,s.name AS school FROM contract_registry c JOIN schools s ON s.id=c.school_id" +
-        (req.user.role === "Solicitante"
-          ? " WHERE EXISTS(SELECT 1 FROM demands d WHERE d.contract_id=c.id AND d.owner=?)"
-          : ""), ...(req.user.role === "Solicitante" ? [req.user.id] : [])),
-    users:
-      req.user.role === "Solicitante"
-        ? await sql.all("SELECT id,name,role,email FROM users WHERE id=?", req.user.id)
-        : await sql.all("SELECT id,name,role,email FROM users"),
-    templates: await sql.all("SELECT t.*,c.document_type,c.subtype,c.demonstration,EXISTS(SELECT 1 FROM template_sources ts WHERE ts.version_id=v.id) AS official,v.id AS version_id,v.version,CASE WHEN EXISTS(SELECT 1 FROM inactive_template_versions iv WHERE iv.version_id=v.id) THEN 'inativo' ELSE v.status END AS status FROM templates t JOIN template_versions v ON v.template_id=t.id LEFT JOIN template_catalog c ON c.version_id=v.id"),
-    sync: await sql.all("SELECT * FROM sync_logs ORDER BY created DESC LIMIT 20"),
-    settings: await sql.all("SELECT * FROM settings WHERE key IN ('legalPolicies','glpiMapping')"),
+    contracts,
+    users,
+    templates,
+    sync,
+    settings,
     glpi: { mode: process.env.GLPI_MODE === "real" ? "real" : "demo" },
     metrics: {
-      glpiTriage: (await sql.one("SELECT COUNT(*) n FROM glpi_tickets WHERE demand_id IS NULL OR state LIKE 'alterado%'")).n,
+      glpiTriage: triage.n,
       glpiClosure: demands.filter(
         (d) =>
           d.stage === "Concluído" &&
@@ -419,8 +439,14 @@ app.post("/api/demands", async (req: any, res) => {
 });
 app.get("/api/demands/:id", async (req: any, res) => {
   const d = await demand(req);
-  const docs = await sql.all("SELECT id,version,template_version,data_version,created,signed IS NOT NULL AS is_signed FROM documents WHERE demand_id=? ORDER BY version DESC", d.id);
-  const reviews = (await sql.all("SELECT r.* FROM reviews r JOIN documents doc ON doc.id=r.document_id WHERE doc.demand_id=? ORDER BY r.created DESC", d.id)).map((r) => ({
+  // Independent reads fetched together.
+  const [docs, reviewRows, caseDetails, officialList] = await Promise.all([
+    sql.all("SELECT id,version,template_version,data_version,created,signed IS NOT NULL AS is_signed FROM documents WHERE demand_id=? ORDER BY version DESC", d.id),
+    sql.all("SELECT r.* FROM reviews r JOIN documents doc ON doc.id=r.document_id WHERE doc.demand_id=? ORDER BY r.created DESC", d.id),
+    details(d),
+    listOfficial(),
+  ]);
+  const reviews = reviewRows.map((r) => ({
     ...r,
     results: JSON.parse(r.results).map((v: any) =>
       permissions[req.user.role].includes("bank")
@@ -435,50 +461,27 @@ app.get("/api/demands/:id", async (req: any, res) => {
           : v,
     ),
   }));
-  const caseDetails = await details(d);
   const officialTemplates: any[] = [];
-  for (const t of await listOfficial())
+  for (const t of officialList)
     if (!t.inactive && await matches(d, caseDetails, { id: t.version_id })) officialTemplates.push({ ...t, homologated: !!t.homologated_at });
-  res.json({
-    ...d,
-    processing: permissions[req.user.role].includes("files") && permissions[req.user.role].includes("bank") ? await processingView(d.id) : await processingSummary(d.id),
-    attachmentChecks: await attachmentChecks(d,req.user),
-    glpiIntake: await (async () => {
+  // processingView may record the current status; the remaining parts only read and are fetched together.
+  const processing = permissions[req.user.role].includes("files") && permissions[req.user.role].includes("bank") ? await processingView(d.id) : await processingSummary(d.id);
+  const currentDetails = await details(d);
+  const [checks, glpiIntake, previews, baselineData, missing, requirementList, documentBundle, approvals, glpiTicket, history] = await Promise.all([
+    attachmentChecks(d,req.user),
+    (async () => {
       const intake = await intakeForDemand(d.id);
       if (!intake || permissions[req.user.role].includes("bank")) return intake;
       return { ...intake, text: "Conteúdo restrito ao perfil autorizado.", conversation: [], documents: [], analysis: { suggestion: intake.analysis.suggestion, pendencies: ["Conferência por pessoa autorizada pendente"] } };
     })(),
-    data: safeData(req.user, JSON.parse(d.data)),
-    subtype: (await details(d)).subtype || "",
-    requiredFields: requiredFor(
-      d.type,
-      (await details(d)).subtype,
-      JSON.parse(d.data).modalidade,
-    ),
-    visibleFields: visibleFor(
-      d.type,
-      (await details(d)).subtype,
-      JSON.parse(d.data).modalidade,
-    ),
-    officialFields: officialVisible(
-      d.type,
-      (await details(d)).subtype,
-      JSON.parse(d.data).modalidade,
-    ),
-    official: {
-      missing: officialMissing(d, (await details(d)).subtype),
-      problems: officialPending(d, (await details(d)).subtype),
-      templates: officialTemplates,
-      previews: await sql.all("SELECT p.id,p.template_version,p.data_version,p.created,u.name AS author FROM template_previews p JOIN users u ON u.id=p.author WHERE p.demand_id=? ORDER BY p.created DESC", d.id),
-    },
-    baseline: await (async () => {
+    sql.all("SELECT p.id,p.template_version,p.data_version,p.created,u.name AS author FROM template_previews p JOIN users u ON u.id=p.author WHERE p.demand_id=? ORDER BY p.created DESC", d.id),
+    (async () => {
       const b = await baseline(d.id);
       return b ? { ...b, data: safeData(req.user, b.data) } : null;
     })(),
-    missing: await required(d),
-    requirements: await requirements(d),
-    documents: docs,
-    documentBundle: await (async () => {
+    required(d),
+    requirements(d),
+    (async () => {
       if (!permissions[req.user.role].includes("files") || !permissions[req.user.role].includes("bank")) return null;
       const contract = await sql.one("SELECT * FROM contracts WHERE id=?", d.contract_id);
       const matrixId = contract?.parent_id || JSON.parse(d.data).matriz || d.contract_id;
@@ -489,15 +492,52 @@ app.get("/api/demands/:id", async (req: any, res) => {
         evidence: await sql.all("SELECT id,kind,name,verified_at FROM evidence_files WHERE demand_id=? ORDER BY created DESC", d.id),
       };
     })(),
+    sql.all("SELECT a.*,u.name FROM approvals a JOIN documents d ON d.id=a.document_id JOIN users u ON u.id=a.user_id WHERE d.demand_id=?", d.id),
+    d.glpi_id
+      ? sql.one("SELECT external_id,state,mode,changed_at FROM glpi_tickets WHERE external_id=? AND demand_id=?", d.glpi_id, d.id).then(row => row || null)
+      : null,
+    sql.all("SELECT a.*,u.name FROM audit a LEFT JOIN users u ON u.id=a.user_id WHERE demand_id=? ORDER BY created DESC", d.id),
+  ]);
+  res.json({
+    ...d,
+    processing,
+    attachmentChecks: checks,
+    glpiIntake,
+    data: safeData(req.user, JSON.parse(d.data)),
+    subtype: currentDetails.subtype || "",
+    requiredFields: requiredFor(
+      d.type,
+      currentDetails.subtype,
+      JSON.parse(d.data).modalidade,
+    ),
+    visibleFields: visibleFor(
+      d.type,
+      currentDetails.subtype,
+      JSON.parse(d.data).modalidade,
+    ),
+    officialFields: officialVisible(
+      d.type,
+      currentDetails.subtype,
+      JSON.parse(d.data).modalidade,
+    ),
+    official: {
+      missing: officialMissing(d, currentDetails.subtype),
+      problems: officialPending(d, currentDetails.subtype),
+      templates: officialTemplates,
+      previews,
+    },
+    baseline: baselineData,
+    missing,
+    requirements: requirementList,
+    documents: docs,
+    documentBundle,
     evidenceLabels,
     reviews,
-    approvals: await sql.all("SELECT a.*,u.name FROM approvals a JOIN documents d ON d.id=a.document_id JOIN users u ON u.id=a.user_id WHERE d.demand_id=?", d.id),
-    origins: (await details(d)).origins || {},
-    glpiClosure: (await details(d)).glpiClosure || null,
-    glpiTicket: d.glpi_id
-      ? await sql.one("SELECT external_id,state,mode,changed_at FROM glpi_tickets WHERE external_id=? AND demand_id=?", d.glpi_id, d.id) || null
-      : null,
-    history: await sql.all("SELECT a.*,u.name FROM audit a LEFT JOIN users u ON u.id=a.user_id WHERE demand_id=? ORDER BY created DESC", d.id),
+    approvals,
+    origins: currentDetails.origins || {},
+    glpiClosure: currentDetails.glpiClosure || null,
+    glpiTicket,
+    history,
   });
 });
 const percent = /^(?:\d{1,2}|100),\d{2}%$/;

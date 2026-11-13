@@ -310,11 +310,10 @@ export async function governanceMissing(d: any) {
     missing.push(
       "Representante legal do documento deve constar entre os signatários com poderes conferidos",
     );
+  // Kinds whose latest file is verified, in one query instead of one per kind.
+  const verified = new Set((await sql.all("SELECT e.kind FROM evidence_files e WHERE e.demand_id=? AND e.verified_by IS NOT NULL AND e.rowid=(SELECT MAX(x.rowid) FROM evidence_files x WHERE x.demand_id=e.demand_id AND x.kind=e.kind)", d.id)).map(row => row.kind));
   for (const kind of r.evidence)
-    if (
-      !await sql.one("SELECT id FROM evidence_files WHERE demand_id=? AND kind=? AND verified_by IS NOT NULL AND rowid=(SELECT MAX(rowid) FROM evidence_files WHERE demand_id=? AND kind=?)", d.id, kind, d.id, kind)
-    )
-      missing.push(evidenceLabels[kind]);
+    if (!verified.has(kind)) missing.push(evidenceLabels[kind]);
   const signers = g.signers || [];
   if (!g.signingMode) missing.push("Regra de poderes de assinatura");
   if (!signers.length) missing.push("Signatários da escola");
