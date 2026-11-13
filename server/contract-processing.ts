@@ -42,6 +42,32 @@ import {fileProgress} from './file-progress.js';
 import {readDoclingPage,doclingConfig} from './docling-reader.js';
 import {setImmediate as yieldToServer} from "node:timers/promises";
 // Tiny images without any text (logos, signatures, illustrations) are not unreadable documents.
+const textHead=2000;
+/** receivedDocumentTypes of every demand. Only the start of each saved text is read: the kind depends on
+ * the first ten non-empty lines, and a text cut before ten complete lines is read in full. */
+export async function receivedDocumentTypesAll() {
+ const tickets=await sql.all("SELECT d.id AS demand_id,t.hash,json_extract(t.payload,'$.documents') AS documents FROM demands d JOIN glpi_tickets t ON t.external_id=d.glpi_id AND t.mode='real'");
+ const files=await sql.all(`SELECT id,demand_id,document_id,ticket_hash,name,substr(coalesce(json_extract(extracted,'$.text'),''),1,${textHead}) AS text_head,
+  length(coalesce(json_extract(extracted,'$.text'),'')) AS text_length FROM processing_files ORDER BY rowid DESC`);
+ const byDemand=new Map<string,any[]>();
+ for(const file of files){const list=byDemand.get(file.demand_id);if(list)list.push(file);else byDemand.set(file.demand_id,[file]);}
+ const text=async(file:any)=>{
+  if(file.text_length<=textHead)return file.text_head;
+  const complete=file.text_head.split(/\r?\n/).slice(0,-1).map((s:string)=>s.trim()).filter(Boolean).length;
+  return complete>=10?file.text_head:JSON.parse((await sql.one('SELECT extracted FROM processing_files WHERE id=?',file.id)).extracted).text||'';
+ };
+ const kinds=new Map<string,string[]>();
+ for(const ticket of tickets){
+  const prefix=ticket.hash+':correction:',seen=new Set<string>(),current=[];
+  for(const file of byDemand.get(ticket.demand_id)||[])
+   if((file.ticket_hash===ticket.hash||file.ticket_hash.startsWith(prefix))&&!seen.has(file.document_id)){seen.add(file.document_id);current.push(file);}
+  const docs=(typeof ticket.documents==='string'?JSON.parse(ticket.documents):ticket.documents)||[];
+  const found=new Set<string>();
+  for(const doc of docs){const file=current.find(f=>f.document_id===String(doc.id));found.add(receivedDocumentKind(file?.name||doc.name,file?await text(file):''));}
+  kinds.set(ticket.demand_id,[...found]);
+ }
+ return kinds;
+}
 export async function receivedDocumentTypes(did:string) {
  const {ticket}=await processingSource(did);if(!ticket)return [];
  const files=await filesFor(did,ticket.hash);
@@ -678,7 +704,7 @@ export async function scheduleContractProcessing() {
  })().catch(error=>console.error("Falha ao verificar a fila de leitura:",failureDetail(error)))
    .finally(()=>{scanningRecovery=false;});
 }
-const sqliteSummary=`SELECT d.stage,t.hash,p.status,p.ticket_hash,p.revision,
+const sqliteSummary=`SELECT d.id AS demand_id,d.stage,t.hash,p.status,p.ticket_hash,p.revision,
   json_array_length(p.result,'$.issues') AS issues,
   CASE WHEN p.status='Aguardando análise' THEN (
    SELECT CASE
@@ -702,9 +728,9 @@ const sqliteSummary=`SELECT d.stage,t.hash,p.status,p.ticket_hash,p.revision,
   CASE WHEN p.status='Aguardando correção' THEN json_extract(p.result,'$.issues') END AS saved_issues,
   CASE WHEN p.status='Aguardando correção' THEN json_extract(p.result,'$.comparisons') END AS saved_comparisons
   FROM demands d JOIN glpi_tickets t ON t.external_id=d.glpi_id AND t.mode='real'
-  LEFT JOIN contract_processing p ON p.demand_id=d.id WHERE d.id=?`;
+  LEFT JOIN contract_processing p ON p.demand_id=d.id`;
 // Same query for PostgreSQL: JSON is stored as text, so it is cast to jsonb and false is compared as JSON.
-const postgresSummary=`SELECT d.stage,t.hash,p.status,p.ticket_hash,p.revision,
+const postgresSummary=`SELECT d.id AS demand_id,d.stage,t.hash,p.status,p.ticket_hash,p.revision,
   jsonb_array_length(p.result::jsonb->'issues') AS issues,
   CASE WHEN p.status='Aguardando análise' THEN (
    SELECT CASE
@@ -728,15 +754,24 @@ const postgresSummary=`SELECT d.stage,t.hash,p.status,p.ticket_hash,p.revision,
   CASE WHEN p.status='Aguardando correção' THEN (p.result::jsonb->'issues')::text END AS saved_issues,
   CASE WHEN p.status='Aguardando correção' THEN (p.result::jsonb->'comparisons')::text END AS saved_comparisons
   FROM demands d JOIN glpi_tickets t ON t.external_id=d.glpi_id AND t.mode='real'
-  LEFT JOIN contract_processing p ON p.demand_id=d.id WHERE d.id=?`;
-export async function processingSummary(did:string) {
- const j=await sql.one(sql.dialect==='postgres'?postgresSummary:sqliteSummary, did);
- if(!j)return null;
+  LEFT JOIN contract_processing p ON p.demand_id=d.id`;
+const summarySql=()=>sql.dialect==='postgres'?postgresSummary:sqliteSummary;
+async function summaryFromRow(j:any){
  if(["Concluído","Cancelado","Em assinatura"].includes(j.stage))return {status:j.stage,revision:j.revision||0,issues:0};
  if(j.ticket_hash!==j.hash)return {status:"Analisando",revision:j.revision||0};
  const status=j.status==='Aguardando correção'
   ? processingStatus(JSON.parse(j.saved_issues||'[]'),JSON.parse(j.saved_comparisons||'[]')) : j.status;
- if(status!==j.status)await sql.run("UPDATE contract_processing SET status=? WHERE demand_id=?", status, did);
+ if(status!==j.status)await sql.run("UPDATE contract_processing SET status=? WHERE demand_id=?", status, j.demand_id);
  return {status,revision:j.revision,issues:j.issues||0,contractStage:j.contract_stage||undefined,contractReason:j.contract_reason||undefined};
+}
+export async function processingSummary(did:string) {
+ const j=await sql.one(summarySql()+" WHERE d.id=?", did);
+ return j?summaryFromRow(j):null;
+}
+/** processingSummary of every demand with a real ticket, in one query (demand list). */
+export async function processingSummaries() {
+ const summaries=new Map<string,Awaited<ReturnType<typeof summaryFromRow>>>();
+ for(const j of await sql.all(summarySql()))summaries.set(j.demand_id,await summaryFromRow(j));
+ return summaries;
 }
 

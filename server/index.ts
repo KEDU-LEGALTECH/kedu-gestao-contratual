@@ -60,7 +60,7 @@ import { organizationAllowed } from "../shared/organization-policy.js";
 import { intakeForDemand, confirmGlpiIntake } from "./glpi-intake.js";
 import { registerMatrixRoutes } from "./matrix-registration.js";
 import { attachmentChecks, registerAttachmentRoutes } from "./attachment-routes.js";
-import { scheduleContractProcessing,processingSummary,receivedDocumentTypes } from "./contract-processing.js";
+import { scheduleContractProcessing,processingSummary,processingSummaries,receivedDocumentTypesAll } from "./contract-processing.js";
 import { processingView,registerProcessingRoutes } from "./processing-routes.js";
 import { fieldLabels as officialInputs } from "../shared/official-fields.js";
 import { officialVisible } from "../shared/request-policy.js";
@@ -198,14 +198,20 @@ function safeData(user: any, data: any) {
 app.get("/api/bootstrap", async (req: any, res) => {
   await scheduleContractProcessing();
   const where = req.user.role === "Solicitante" ? " WHERE d.owner=?" : "";
-  const demands: any[] = [];
-  for (const d of await sql.all(`SELECT d.*,COALESCE(s.name,json_extract(d.data,'$.razaoSocial'),'Organização a identificar') AS school,s.cnpj,COALESCE(u.name,'Não atribuído') AS owner_name FROM demands d LEFT JOIN schools s ON s.id=d.school_id LEFT JOIN users u ON u.id=d.owner${where} ORDER BY d.created DESC`, ...(where ? [req.user.id] : []))) {
-    const checks = await sql.all("SELECT c.status,c.data_version,c.ticket_hash FROM attachment_checks c WHERE c.demand_id=? AND c.rowid=(SELECT MAX(x.rowid) FROM attachment_checks x WHERE x.demand_id=c.demand_id AND x.document_id=c.document_id)", d.id);
-    const check = checks.find(c=>c.status==="divergente") || checks.find(c=>c.status==="inconclusiva") || checks[0];
-    const glpiTicket=await sql.one("SELECT status,json_extract(payload,'$.priority') AS priority FROM glpi_tickets WHERE external_id=?", d.glpi_id);
-    const ticketHash = (await sql.one("SELECT hash FROM glpi_tickets WHERE external_id=?", d.glpi_id))?.hash;
-    demands.push({ ...d, receivedDocumentTypes:await receivedDocumentTypes(d.id),glpiOrigin:glpiTicket || null, processing:await processingSummary(d.id),data: safeData(req.user, JSON.parse(d.data)), documentCheck: check ? {status:check.status,stale:checks.some(c=>c.data_version!==d.data_version || c.ticket_hash!==ticketHash)} : null });
+  // A fixed number of queries for the whole list: per-demand lookups are slow on a remote database.
+  const [documentTypes, summaries] = [await receivedDocumentTypesAll(), await processingSummaries()];
+  const latestChecks = new Map<string, any[]>();
+  for (const c of await sql.all("SELECT c.demand_id,c.status,c.data_version,c.ticket_hash FROM attachment_checks c WHERE c.rowid=(SELECT MAX(x.rowid) FROM attachment_checks x WHERE x.demand_id=c.demand_id AND x.document_id=c.document_id)")) {
+    const list = latestChecks.get(c.demand_id);
+    if (list) list.push(c); else latestChecks.set(c.demand_id, [c]);
   }
+  const demands: any[] = [];
+  for (const { glpi_ticket, glpi_status, glpi_priority, glpi_hash, ...d } of await sql.all(`SELECT d.*,COALESCE(s.name,json_extract(d.data,'$.razaoSocial'),'Organização a identificar') AS school,s.cnpj,COALESCE(u.name,'Não atribuído') AS owner_name,t.external_id AS glpi_ticket,t.status AS glpi_status,json_extract(t.payload,'$.priority') AS glpi_priority,t.hash AS glpi_hash FROM demands d LEFT JOIN schools s ON s.id=d.school_id LEFT JOIN users u ON u.id=d.owner LEFT JOIN glpi_tickets t ON t.external_id=d.glpi_id${where} ORDER BY d.created DESC`, ...(where ? [req.user.id] : []))) {
+    const checks = latestChecks.get(d.id) || [];
+    const check = checks.find(c=>c.status==="divergente") || checks.find(c=>c.status==="inconclusiva") || checks[0];
+    demands.push({ ...d, receivedDocumentTypes:documentTypes.get(d.id) || [],glpiOrigin:glpi_ticket == null ? null : {status:glpi_status,priority:glpi_priority}, processing:summaries.get(d.id) ?? null,data: safeData(req.user, JSON.parse(d.data)), documentCheck: check ? {status:check.status,stale:checks.some(c=>c.data_version!==d.data_version || c.ticket_hash!==glpi_hash)} : null });
+  }
+
 
   const open = demands.filter(isOpenDemand);
   const completed = demands.filter(
@@ -1171,8 +1177,8 @@ async function reportRows(req: any) {
       : "2000-01-01",
     to = req.query.to ? z.iso.date().parse(req.query.to) : "2100-12-31";
   if (from > to) throw Error("O início do período deve ser anterior ao fim.");
-  const rows: any[] = [];
-  for (const d of await sql.all("SELECT d.id,d.created,d.completed,d.due,d.owner,d.stage,d.type,COALESCE(s.name,json_extract(d.data,'$.razaoSocial'),'Organização a identificar') AS school,COALESCE(u.name,'Não atribuído') AS owner_name,(SELECT t.status FROM glpi_tickets t WHERE t.external_id=d.glpi_id) AS glpi_status FROM demands d LEFT JOIN schools s ON s.id=d.school_id LEFT JOIN users u ON u.id=d.owner")) {const glpiOrigin=d.glpi_status?{status:d.glpi_status}:null;rows.push({...d,workflow_stage:d.stage,glpiOrigin,stage:demandDisplayStage({stage:d.stage,glpiOrigin,processing:await processingSummary(d.id)})});}
+  const rows: any[] = [], summaries = await processingSummaries();
+  for (const d of await sql.all("SELECT d.id,d.created,d.completed,d.due,d.owner,d.stage,d.type,COALESCE(s.name,json_extract(d.data,'$.razaoSocial'),'Organização a identificar') AS school,COALESCE(u.name,'Não atribuído') AS owner_name,(SELECT t.status FROM glpi_tickets t WHERE t.external_id=d.glpi_id) AS glpi_status FROM demands d LEFT JOIN schools s ON s.id=d.school_id LEFT JOIN users u ON u.id=d.owner")) {const glpiOrigin=d.glpi_status?{status:d.glpi_status}:null;rows.push({...d,workflow_stage:d.stage,glpiOrigin,stage:demandDisplayStage({stage:d.stage,glpiOrigin,processing:summaries.get(d.id) ?? null})});}
   return rows.filter(
     (d) =>
       localDate(d.created) >= from &&
@@ -1185,9 +1191,10 @@ app.get("/api/reports", async (req: any, res) => {
   const rows = await reportRows(req),
     completed = rows.filter((d) => d.completed),
     divergences: any[] = [],
-    closedPendencies: any[] = [];
+    closedPendencies: any[] = [],
+    summaries = await processingSummaries();
   for (const d of rows) {
-    const processing=await processingSummary(d.id);
+    const processing=summaries.get(d.id) ?? null;
     if(processing && !["Concluído","Cancelado","Em assinatura"].includes(d.workflow_stage)){
       if(["Aguardando análise","Conferência parcial","Aguardando correção"].includes(processing.status))(isOpenDemand(d)?divergences:closedPendencies).push({id:d.id,school:d.school,status:processing.status,count:processing.issues||0,glpiStage:d.stage});
       continue;
