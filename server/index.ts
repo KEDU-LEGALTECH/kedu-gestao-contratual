@@ -206,7 +206,7 @@ app.get("/api/bootstrap", async (req: any, res) => {
     if (list) list.push(c); else latestChecks.set(c.demand_id, [c]);
   }
   const demands: any[] = [];
-  for (const { glpi_ticket, glpi_status, glpi_priority, glpi_hash, ...d } of await sql.all(`SELECT d.*,COALESCE(s.name,json_extract(d.data,'$.razaoSocial'),'Organização a identificar') AS school,s.cnpj,COALESCE(u.name,'Não atribuído') AS owner_name,t.external_id AS glpi_ticket,t.status AS glpi_status,json_extract(t.payload,'$.priority') AS glpi_priority,t.hash AS glpi_hash FROM demands d LEFT JOIN schools s ON s.id=d.school_id LEFT JOIN users u ON u.id=d.owner LEFT JOIN glpi_tickets t ON t.external_id=d.glpi_id${where} ORDER BY d.created DESC`, ...(where ? [req.user.id] : []))) {
+  for (const { glpi_ticket, glpi_status, glpi_priority, glpi_hash, ...d } of await sql.all(`SELECT d.*,COALESCE(s.name,json_extract(d.data,'$.razaoSocial'),'Organização a identificar') AS school,s.cnpj,COALESCE(u.name,'Não atribuído') AS owner_name,t.external_id AS glpi_ticket,t.status AS glpi_status,json_extract(t.payload,'$.priority') AS glpi_priority,t.hash AS glpi_hash FROM demands d LEFT JOIN schools s ON s.id=d.school_id LEFT JOIN users u ON u.id=d.owner LEFT JOIN glpi_tickets t ON t.external_id=d.glpi_id${where} ORDER BY d.created DESC,d.rowid`, ...(where ? [req.user.id] : []))) {
     const checks = latestChecks.get(d.id) || [];
     const check = checks.find(c=>c.status==="divergente") || checks.find(c=>c.status==="inconclusiva") || checks[0];
     demands.push({ ...d, receivedDocumentTypes:documentTypes.get(d.id) || [],glpiOrigin:glpi_ticket == null ? null : {status:glpi_status,priority:glpi_priority}, processing:summaries.get(d.id) ?? null,data: safeData(req.user, JSON.parse(d.data)), documentCheck: check ? {status:check.status,stale:checks.some(c=>c.data_version!==d.data_version || c.ticket_hash!==glpi_hash)} : null });
@@ -1178,7 +1178,7 @@ async function reportRows(req: any) {
     to = req.query.to ? z.iso.date().parse(req.query.to) : "2100-12-31";
   if (from > to) throw Error("O início do período deve ser anterior ao fim.");
   const rows: any[] = [], summaries = await processingSummaries();
-  for (const d of await sql.all("SELECT d.id,d.created,d.completed,d.due,d.owner,d.stage,d.type,COALESCE(s.name,json_extract(d.data,'$.razaoSocial'),'Organização a identificar') AS school,COALESCE(u.name,'Não atribuído') AS owner_name,(SELECT t.status FROM glpi_tickets t WHERE t.external_id=d.glpi_id) AS glpi_status FROM demands d LEFT JOIN schools s ON s.id=d.school_id LEFT JOIN users u ON u.id=d.owner")) {const glpiOrigin=d.glpi_status?{status:d.glpi_status}:null;rows.push({...d,workflow_stage:d.stage,glpiOrigin,stage:demandDisplayStage({stage:d.stage,glpiOrigin,processing:summaries.get(d.id) ?? null})});}
+  for (const d of await sql.all("SELECT d.id,d.created,d.completed,d.due,d.owner,d.stage,d.type,COALESCE(s.name,json_extract(d.data,'$.razaoSocial'),'Organização a identificar') AS school,COALESCE(u.name,'Não atribuído') AS owner_name,(SELECT t.status FROM glpi_tickets t WHERE t.external_id=d.glpi_id) AS glpi_status FROM demands d LEFT JOIN schools s ON s.id=d.school_id LEFT JOIN users u ON u.id=d.owner ORDER BY d.rowid")) {const glpiOrigin=d.glpi_status?{status:d.glpi_status}:null;rows.push({...d,workflow_stage:d.stage,glpiOrigin,stage:demandDisplayStage({stage:d.stage,glpiOrigin,processing:summaries.get(d.id) ?? null})});}
   return rows.filter(
     (d) =>
       localDate(d.created) >= from &&

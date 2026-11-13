@@ -86,10 +86,12 @@ export function toPostgres(query: string) {
   return result;
 }
 
-/** Integer and numeric results come back as JavaScript numbers, as they do from SQLite. */
+/** Integer, numeric and boolean results come back as JavaScript numbers, as they do from SQLite. */
 export const postgresTypes = {
   bigint: { to: 20, from: [20], parse: Number, serialize: String },
   numeric: { to: 0, from: [1700], parse: Number, serialize: String },
+  // SQLite has no booleans: comparisons and EXISTS return 1 or 0.
+  boolean: { to: 16, from: [16], parse: (value: string) => (value === "t" ? 1 : 0), serialize: (value: unknown) => (value ? "t" : "f") },
 };
 
 export function postgresSql(pool: postgres.Sql): Sql {
@@ -97,9 +99,11 @@ export function postgresSql(pool: postgres.Sql): Sql {
   const exec = (query: string, params: unknown[]) =>
     (scope.getStore() ?? pool).unsafe(toPostgres(query), params as any[]);
   // `SELECT *` would expose the imported insertion order column, which SQLite rows never carry.
+  // It stays only when the select list names rowid; ORDER BY rowid alone does not return it.
   const rows = async (query: string, params: unknown[]) => {
     const result = [...await exec(query, params)] as Row[];
-    if (!/\browid\b/i.test(query)) for (const row of result) delete row._rowid;
+    const selectList = query.slice(0, Math.max(0, query.search(/\bFROM\b/i)));
+    if (!/\browid\b/i.test(selectList)) for (const row of result) delete row._rowid;
     return result;
   };
   return {

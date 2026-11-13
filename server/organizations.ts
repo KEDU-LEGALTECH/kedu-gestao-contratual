@@ -4,7 +4,7 @@ export async function organizations(owner?: string) {
   return await sql.all(`SELECT s.*,o.first_ticket AS glpi_ticket,o.imported_at AS glpi_imported_at,o.reviewed_at AS glpi_reviewed_at,
     COALESCE(c.kind,CASE WHEN o.school_id IS NOT NULL THEN 'Aguardando classificação' ELSE 'Escola' END) AS organization_kind,COALESCE(c.version,0) AS classification_version,c.note AS classification_note
     FROM schools s LEFT JOIN school_glpi_origins o ON o.school_id=s.id LEFT JOIN organization_classifications c ON c.school_id=s.id
-    ${owner ? "WHERE EXISTS(SELECT 1 FROM demands d WHERE d.school_id=s.id AND d.owner=?)" : ""} ORDER BY s.name`, ...(owner ? [owner] : []));
+    ${owner ? "WHERE EXISTS(SELECT 1 FROM demands d WHERE d.school_id=s.id AND d.owner=?)" : ""} ORDER BY s.name,s.rowid`, ...(owner ? [owner] : []));
 }
 export async function classifyOrganization(schoolId: string, kind: string, version: number, note: string, userId: string, ownTransaction = true) {
   await sql.transaction(async () => {
