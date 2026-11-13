@@ -149,7 +149,8 @@ async function image(bytes:Buffer,name='') {
  if(paddleUsed)reading.method+=' + PaddleOCR / OpenCV';
  return {...reading,verifiedFields,ocrEngine:paddleUsed?'Tesseract + PaddleOCR PP-OCRv5':'Tesseract',preprocessing:[...operations],warnings:paddleConfigured()&&!paddleUsed?['PaddleOCR indisponível nesta tentativa; leitura alternativa preservada.']:[]};
 }
-async function pdf(bytes:Buffer,progress?:(reading:Reading)=>void,nativeOnly=false,layerOnly=false,name='') {
+type PdfReadingOptions={deadline?:number;savedPages?:Record<number,Reading>;savePage?:(page:number,reading:Reading)=>void};
+async function pdf(bytes:Buffer,progress?:(reading:Reading)=>void,nativeOnly=false,layerOnly=false,name='',options:PdfReadingOptions={}) {
  const {getDocument,OPS}=await import("pdfjs-dist/legacy/build/pdf.mjs");
  const root=dirname(require.resolve("pdfjs-dist/package.json"));
  const loading=getDocument({data:new Uint8Array(bytes),useSystemFonts:false,standardFontDataUrl:join(root,"standard_fonts")+"/",cMapUrl:join(root,"cmaps")+"/",cMapPacked:true,wasmUrl:join(root,"wasm")+"/",verbosity:0});
@@ -203,22 +204,32 @@ async function pdf(bytes:Buffer,progress?:(reading:Reading)=>void,nativeOnly=fal
   // Pages without a usable text layer first; complementary OCR uses what time is left.
   pendingPages.sort((a,b)=>Number(complementary.has(a))-Number(complementary.has(b))||a-b);
   const required=pendingPages.filter(n=>!complementary.has(n)).length;
-  const deadline=Date.now()+140000;let skipComplementary=false;
+  const deadline=Math.min(Date.now()+140000,options.deadline??Infinity);let skipComplementary=false;
+  const appendOcrText=(page:number,ocrText:string,confidence?:number)=>{
+   const tokens=(text:string)=>text.normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().match(/[a-z0-9]+/g)||[];
+   const text=texts[page-1],digital=new Set(tokens(text));
+   if(!text.trim()||tokens(ocrText).some(token=>!digital.has(token))){
+    usedOcr=true;texts[page-1]=text.trim()?text+'\n'+ocrText:ocrText;
+    if(confidence!==undefined)scores.push(confidence);
+   }
+  };
   for(let index=0;index<pendingPages.length;index++){
    const n=pendingPages[index],registrationPage=/cart[aã]o|cnpj/i.test(name)||/cadastro nacional|comprovante de inscri|situa[çc][ãa]o cadastral/i.test(digitalTexts[pendingPages[index]-1]||''),budget=pdfPageBudget(deadline-Date.now(),registrationPage);
-   const cached=cachedPdfPage(originalHash,n);
+   const cached=options.savedPages?options.savedPages[n]:cachedPdfPage(originalHash,n);
    if(cached&&!cached.problem&&!cached.incomplete){
     Object.assign(fieldConfidence,cached.fieldConfidence||{});
-    captureFieldOrigins(fieldOrigins,cached.fields,cached.text,n);
-    texts[n-1]+='\n'+cached.text;mergeExtractedFields(ocrFields,cached.fields);verified.push(cached.verifiedFields||[]);usedOcr=true;
-    if(cached.confidence!==undefined)scores.push(cached.confidence);
+    if(cached.fieldOrigins){
+     for(const [field,origins] of Object.entries(cached.fieldOrigins))(fieldOrigins[field]??=[]).push(...origins);
+    }else captureFieldOrigins(fieldOrigins,cached.fields,cached.text,n);
+    mergeExtractedFields(ocrFields,cached.fields);verified.push(cached.verifiedFields||[]);
+    appendOcrText(n,cached.text,cached.confidence);
     if(cached.ocrEngine?.includes('Paddle'))paddleUsed=true;
     completedPages.add(n);progress?.(snapshot(true));continue;
    }
    if(complementary.has(n)&&skipComplementary){warnings.push(`Página ${n}: texto digital mantido; OCR complementar não executado.`);continue;}
    if(budget<2000){if(complementary.has(n))warnings.push(`Página ${n}: texto digital mantido; OCR complementar não executado por tempo.`);else unreadPages.push(n);continue;}
    const page=await document.getPage(n);
-   const pageStarted=Date.now();let blockFields:Record<string,string[]>={};
+   const pageStarted=Date.now();let blockFields:Record<string,string[]>={},pageOcrFields:Record<string,string[]>={},pageConfidence:Record<string,number>={};
    let active=true;
    try {
     await withinBudget(async()=>{
@@ -243,11 +254,11 @@ async function pdf(bytes:Buffer,progress?:(reading:Reading)=>void,nativeOnly=fal
     if(!active)throw Error('Leitura cancelada.');
     if(paddle){
      const combined=combineOcrFields(fieldsFromLines(recognition.data.text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean)),recognition.data.verifiedFields,paddle);
-     mergeExtractedFields(ocrFields,combined.fields);recognition.data.text+='\n'+combined.text;recognition.data.verifiedFields=combined.verifiedFields;paddleUsed=true;
+     mergeExtractedFields(pageOcrFields,combined.fields);mergeExtractedFields(ocrFields,combined.fields);recognition.data.text+='\n'+combined.text;recognition.data.verifiedFields=combined.verifiedFields;paddleUsed=true;
     }
     if(/cadastro nacional|comprovante de inscri|situa[çc][ãa]o cadastral/i.test(digitalTexts[n-1]+' '+recognition.data.text)&&!fieldsFromLines(recognition.data.text.split(/\r?\n/)).cnpj?.some(validCnpj)&&budget-(Date.now()-pageStarted)>12000){
      worker??=await ocrSession();const blocks=await registrationPdfBlocks(worker,png);
-     if(!active)throw Error('Leitura cancelada.');Object.assign(fieldConfidence,blocks.fieldConfidence);blockFields=blocks.fields;mergeExtractedFields(ocrFields,blockFields);
+     if(!active)throw Error('Leitura cancelada.');pageConfidence=blocks.fieldConfidence;Object.assign(fieldConfidence,pageConfidence);blockFields=blocks.fields;mergeExtractedFields(ocrFields,blockFields);
      recognition.data.text+='\n\nBLOCOS DO CARTAO CNPJ\n'+blocks.text;
      recognition.data.verifiedFields=[...new Set([...recognition.data.verifiedFields,...blocks.verifiedFields])];
      captureFieldOrigins(fieldOrigins,blockFields,recognition.data.text,n);
@@ -255,19 +266,17 @@ async function pdf(bytes:Buffer,progress?:(reading:Reading)=>void,nativeOnly=fal
     if(recognition.data.text.trim()){
      captureFieldOrigins(fieldOrigins,fieldsFromLines(recognition.data.text.split(/\r?\n/)),recognition.data.text,n);
      completedPages.add(n);
-     storePdfPage(originalHash,n,{...result(recognition.data.text,'OCR de página PDF',true,recognition.data.confidence),fields:mergeExtractedFields(fieldsFromLines(recognition.data.text.split(/\r?\n/)),blockFields),fieldConfidence:{...fieldConfidence},verifiedFields:recognition.data.verifiedFields,ocrEngine:paddle?'PaddleOCR / OpenCV':'Tesseract'});
+     const pageResult=result(recognition.data.text,'OCR de página PDF',true,recognition.data.confidence);
+     const origins:Record<string,FieldOrigin[]>={};
+     captureFieldOrigins(origins,blockFields,recognition.data.text,n);
+     captureFieldOrigins(origins,fieldsFromLines(recognition.data.text.split(/\r?\n/)),recognition.data.text,n);
+     const reading={...pageResult,fields:mergeExtractedFields(pageOcrFields,blockFields),fieldOrigins:origins,fieldConfidence:pageConfidence,verifiedFields:recognition.data.verifiedFields,ocrEngine:paddle?'PaddleOCR / OpenCV':'Tesseract'};
+     if(options.savePage){if(paddle||!paddleConfigured())options.savePage(n,reading);}
+     else storePdfPage(originalHash,n,reading);
+     appendOcrText(n,recognition.data.text,recognition.data.confidence);
     }
     verified.push(recognition.data.verifiedFields);
-    // Keep digital text when OCR cannot read a sparse page; an unreadable scanned page blocks.
-    if(recognition.data.text.trim()){
-    const tokens=(s:string)=>s.normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().match(/[a-z0-9]+/g)||[];
-     const text=texts[n-1];
-     const digital=new Set(tokens(text));
-     const novel=tokens(recognition.data.text).filter(token=>!digital.has(token));
-     // When OCR only repeats existing digital text, do not turn digital fields into OCR fields.
-     if(!text.trim() || novel.length){usedOcr=true;texts[n-1]=text.trim()?text+'\n'+recognition.data.text:recognition.data.text;scores.push(recognition.data.confidence);}
-    }
-    else throw Error(`Página ${n}: nenhum texto legível encontrado. Confira a digitalização.`);
+    if(!recognition.data.text.trim())throw Error(`Página ${n}: nenhum texto legível encontrado. Confira a digitalização.`);
     },budget,()=>{active=false;void worker?.terminate();worker=undefined;closePaddle();});
    }catch(error:any){
     // One timeout restarts the OCR engine; further complementary pages keep their digital text instead of cascading.
@@ -359,7 +368,7 @@ export async function readDocumentRegion(bytes:Buffer,name:string,region:Reading
  const reading=await image(cropped);
  return {...reading,needsReview:true,method:'OCR de região',warnings:[`Trecho da página ${region.page}. Resultado auxiliar: confira no original antes de corrigir qualquer campo.`]};
 }
-export async function readDocument(bytes:Buffer,name:string,progress?:(reading:Reading)=>void,identification=false):Promise<Reading> {
+export async function readDocument(bytes:Buffer,name:string,progress?:(reading:Reading)=>void,identification=false,options:PdfReadingOptions={}):Promise<Reading> {
  const extension=extname(name).toLowerCase();
  if(extension==='.docx'){
   const native=extractProcessingFile(bytes,name);
@@ -384,7 +393,7 @@ export async function readDocument(bytes:Buffer,name:string,progress?:(reading:R
  }
  if(extension===".pdf") {
   if(bytes.subarray(0,5).toString()!=="%PDF-")throw Error("O conteúdo recebido não corresponde a um PDF válido.");
-  return pdf(bytes,progress,false,false,name);
+  return pdf(bytes,progress,false,false,name,options);
  }
  if(/\.(png|jpe?g|webp|tiff?|bmp|gif)$/i.test(extension))return image(bytes,name);
  if([".odt",".xlsx",".pptx"].includes(extension))return office(bytes,name,progress,identification);

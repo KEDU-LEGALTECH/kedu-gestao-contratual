@@ -31,10 +31,13 @@ COPY --from=build --chown=node:node /app/server ./server
 COPY --from=build --chown=node:node /app/shared ./shared
 COPY --from=build --chown=node:node /app/migrations ./migrations
 COPY --from=build --chown=node:node /app/templates ./templates
-COPY --from=build --chown=node:node /app/package.json ./package.json
+COPY --from=build --chown=node:node /app/package.json /app/package-lock.json ./
 COPY --chown=node:node deploy/docker-entrypoint.sh /usr/local/bin/kedu-entrypoint
 RUN sed -i 's/\r$//' /usr/local/bin/kedu-entrypoint && chmod 0755 /usr/local/bin/kedu-entrypoint && mkdir -p /app/data /app/backups && chown node:node /app/data /app/backups
 USER node
+# Store the validated models outside /app/data so mounting a data volume keeps them visible.
+ENV KEDU_OCR_RUNTIME=/app/ocr/ocr-runtime.json KEDU_OCR_MODELS=/app/ocr/models OCR_ENGINE=paddle
+RUN mkdir -p /app/ocr && /opt/ocr-venv/bin/python -u /app/server/ocr/worker.py --setup
 EXPOSE 3001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 CMD node -e "fetch('http://127.0.0.1:3001/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 ENTRYPOINT ["/usr/local/bin/kedu-entrypoint"]

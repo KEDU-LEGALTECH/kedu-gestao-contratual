@@ -11,6 +11,8 @@ import {readingFilename} from './reading-format.js';
 import {acquireReadingLease} from './reading-runtime-lock.js';
 import {freemem,tmpdir} from 'node:os';
 import {recoverTextFields} from './text-recovery.js';
+import type {Sql} from './sql.js';
+import {paddleRuntimePath} from './paddle-ocr.js';
 export const readerVersion=4;
 export const supportedReading=/\.(docx|doc|pdf|png|jpe?g|webp|tiff?|bmp|gif|txt|csv|odt|xlsx|pptx)$/i;
 export type Reading={version:number;text:string;fields:Record<string,string[]>;problem:string;method:string;needsReview:boolean;incomplete?:boolean;completedPages?:number[];pendingPages?:number[];confidence?:number;fieldConfidence?:Record<string,number>;pages?:number;formulaCount?:number;warnings?:string[];verifiedFields?:string[];digitalFields?:Record<string,string[]>;tableFields?:Record<string,string[]>;ocrEngine?:string;preprocessing?:string[];calculatedFields?:Record<string,string[]>;transient?:boolean;fieldOrigins?:Record<string,{value:string;page:number;excerpt:string}[]>;timings?:{queueMs:number;readMs:number;shutdownMs:number;totalMs:number;cacheHit?:boolean}};
@@ -21,13 +23,14 @@ export type ReadingRegion={page:number;x:number;y:number;width:number;height:num
 export function validReadingRegion(region:ReadingRegion) {
  return region && Number.isInteger(region.page)&&region.page>=1&&region.page<=200&&[0,90,180,270].includes(region.rotation)&&[region.x,region.y,region.width,region.height].every(Number.isFinite)&&region.x>=0&&region.y>=0&&region.width>=0.02&&region.height>=0.02&&region.x+region.width<=1.000001&&region.y+region.height<=1.000001;
 }
-export async function readProcessingFile(bytes:Buffer,name:string,region?:ReadingRegion,identification=false):Promise<Reading> {
+export type ReadingOptions = {deadline?: number; pageStore?: Sql};
+export async function readProcessingFile(bytes:Buffer,name:string,region?:ReadingRegion,identification=false,options:ReadingOptions={}):Promise<Reading> {
  const queued=performance.now();
  const task=async()=>{
   let release:(()=>void)|undefined,started:number|undefined;
   try{
-   release=await acquireReadingLease();started=performance.now();
-   const reading=await readSingleFile(bytes,name,region,identification);
+   release=await acquireReadingLease(options.deadline);started=performance.now();
+   const reading=await readSingleFile(bytes,name,region,identification,options);
    if(!reading.problem){
     const recovered=recoverTextFields(reading.text,reading.fields||{});
     reading.fields={...reading.fields,...recovered};
@@ -40,7 +43,7 @@ export async function readProcessingFile(bytes:Buffer,name:string,region?:Readin
  };
  const pending=queue.then(task,task);queue=pending.then(()=>{},()=>{});return pending;
 }
-async function readSingleFile(bytes:Buffer,name:string,region?:ReadingRegion,identification=false):Promise<Reading> {
+async function readSingleFile(bytes:Buffer,name:string,region:ReadingRegion|undefined,identification:boolean,options:ReadingOptions):Promise<Reading> {
  if(!bytes.length)return readingFailure("O arquivo recebido está vazio. Obtenha uma cópia legível.");
  if(bytes.length>20*1024*1024)return readingFailure("O arquivo excede o limite de leitura de 20 MB. Separe o documento em partes para conferência.");
  const detected=readingFilename(bytes,name);if(detected!==name)name=name.replace(/\.[^./\\]+$/,'')+'.'+detected.split('.').pop();
@@ -61,25 +64,56 @@ async function readSingleFile(bytes:Buffer,name:string,region?:ReadingRegion,ide
  const cached=key?cachedReading(key):undefined;
  if(cached)return {...cached,timings:{queueMs:0,readMs:0,shutdownMs:0,totalMs:0,cacheHit:true}};
  if(process.env.NODE_ENV!=='test'&&!process.env.NODE_TEST_CONTEXT&&freemem()<512*1024*1024)return {...readingFailure('Memória disponível insuficiente; leitura adiada para preservar a estabilidade.'),transient:true};
+ const pageStore=!region&&!identification&&/\.pdf$/i.test(name)?options.pageStore:undefined;
+ const originalHash=pageStore?createHash('sha256').update(bytes).digest('hex'):'';
+ const pageFingerprint=pageStore?readerFingerprint()+(/cart[aã]o|cnpj/i.test(name)?':registration':':standard'):'';
+ const savedPages: Record<number,Reading>={};
+ if(pageStore){
+  const cutoff=new Date(Date.now()-30*86400000).toISOString();
+  await pageStore.run('DELETE FROM reading_pages WHERE created<?',cutoff);
+  for(const row of await pageStore.all('SELECT page,reading FROM reading_pages WHERE original_hash=? AND reader_fingerprint=?',originalHash,pageFingerprint))
+   savedPages[Number(row.page)]=JSON.parse(row.reading);
+ }
+ const remaining=Math.min(180000,(options.deadline??Infinity)-Date.now());
+ if(remaining<=0)return {...readingFailure('Ciclo encerrado; nova tentativa pendente.'),transient:true};
  const task=()=>new Promise<Reading>(resolve=>{
   const started=performance.now();
   const current=acquireWorker(),child=current.child;
   let done=false,partial:Reading|undefined;
+  let writes=Promise.resolve(),saveFailed=false;
   const finish=async(result:Reading,healthy:boolean,rss=0)=>{
    if(done)return;done=true;clearTimeout(timer);
    child.off("message",onMessage);child.off("error",onError);child.off("exit",onExit);
    const readMs=Math.round(performance.now()-started),shutdown=performance.now();
    if(healthy&&rss<256*1024*1024)await releaseWorker(current);else await retireWorker(current);
+   await writes;
+   if(saveFailed)result={...result,transient:true,problem:'Não foi possível salvar o progresso da leitura no banco.'};
    if(key)storeReading(key,result);
    resolve({...result,timings:{queueMs:0,readMs,shutdownMs:Math.round(performance.now()-shutdown),totalMs:Math.round(performance.now()-started)}});
   };
-  const timer=setTimeout(()=>finish(partial?.text?interruptedReading(partial,'Leitura parcial: o tempo limite foi atingido. As páginas restantes precisam ser conferidas; este resultado não permite aprovação automática.'):readingFailure("A leitura excedeu 180 segundos. Divida o arquivo ou confira manualmente."),false),180000);
-  const onMessage=(result:any)=>{if(result.partial){partial=result.partial;return;}const {readerRssBytes,...reading}=result;void finish(reading.problem && partial?.text?interruptedReading(partial,'Leitura incompleta: '+reading.problem):reading,true,readerRssBytes);};
+  const timer=setTimeout(()=>{
+   const reason='Leitura interrompida pelo limite de tempo.';
+   const result=partial?.text?interruptedReading(partial,reason):readingFailure(reason);
+   void finish({...result,transient:remaining<180000||result.transient},false);
+  },remaining);
+  const onMessage=(result:any)=>{
+   if(result.partial){partial=result.partial;return;}
+   if(result.pageReading){
+    const {page,reading}=result.pageReading as {page:number;reading:Reading};
+    if(pageStore&&cacheableReading(reading))writes=writes.then(async()=>{
+     await pageStore.run('INSERT INTO reading_pages(original_hash,reader_fingerprint,page,reading,created) VALUES(?,?,?,?,?) ON CONFLICT(original_hash,reader_fingerprint,page) DO NOTHING',originalHash,pageFingerprint,page,JSON.stringify(reading),new Date().toISOString());
+    }).catch(()=>{saveFailed=true;});
+    return;
+   }
+  const {readerRssBytes,...reading}=result;
+  if(remaining<180000&&reading.incomplete&&Date.now()>=options.deadline!-2000)reading.transient=true;
+   void finish(reading.problem && partial?.text?{...interruptedReading(partial,'Leitura incompleta: '+reading.problem),transient:reading.transient}:reading,true,readerRssBytes);
+  };
   // Engine start failures and crashed workers (e.g. memory pressure) say nothing about the file itself.
   const onError=()=>finish({...readingFailure("O leitor local não pôde ser iniciado. Tente novamente."),transient:true},false);
   const onExit=()=>finish(partial?.text?{...interruptedReading(partial,'Leitura parcial: o leitor foi interrompido antes de concluir o arquivo.'),transient:true}:{...readingFailure("Não foi possível concluir a leitura deste arquivo. Confira se está íntegro e sem senha."),transient:true},false);
   child.on("message",onMessage);child.on("error",onError);child.on("exit",onExit);
-  child.send({bytes,name,region,identification},error=>{if(error)onError();});
+  child.send({bytes,name,region,identification,deadline:options.deadline,savedPages,durablePages:!!pageStore},error=>{if(error)onError();});
  });
  return task();
 }
@@ -111,14 +145,17 @@ async function releaseWorker(current:Worker) {
 }
 /** Completed readings are reused for identical bytes and name while the reader code and OCR setup stay the same.
  * Failures, partial readings and readings without the configured OCR engine are always repeated. */
-let cache:DatabaseSync|null|undefined,fingerprint="";
+let cache:DatabaseSync|null|undefined,fingerprint="",computedFingerprint:string|undefined;
 // The worker never imports these files: changing them must not discard saved OCR pages.
 const outsideReader=/^server[\\/](?:index|glpi|glpi-sync|glpi-download|glpi-intake|glpi-schedule|glpi-check|contract-processing|processing-routes|reading-job-queue|backup|backup-service|backup-verify|readiness)\.ts$/;
 function readerFingerprint() {
+ if(computedFingerprint)return computedFingerprint;
  const root=fileURLToPath(new URL("..",import.meta.url)),hash=createHash("sha256");
  const files=[...["server","shared"].flatMap(folder=>(readdirSync(join(root,folder),{recursive:true}) as string[]).filter(f=>/\.(ts|py)$/.test(f)).map(f=>join(folder,f)).filter(f=>!outsideReader.test(f))),"package-lock.json","data/ocr-runtime.json"].sort();
  for(const file of files)if(existsSync(join(root,file)))hash.update(file+"\0").update(readFileSync(join(root,file)));
- return hash.update(String(readerVersion)+(process.env.OCR_ENGINE||"")).digest("hex");
+ const runtime=paddleRuntimePath();
+ if(existsSync(runtime))hash.update(readFileSync(runtime));
+ return computedFingerprint=hash.update(String(readerVersion)+(process.env.OCR_ENGINE||"")).digest("hex");
 }
 function readingCache() {
  if(cache!==undefined)return cache;
@@ -138,8 +175,11 @@ function cachedReading(key:string):Reading|undefined {
  try{const row=readingCache()?.prepare("SELECT reading FROM readings WHERE key=? AND fingerprint=?").get(key,fingerprint) as any;return row?JSON.parse(row.reading):undefined;}
  catch{return undefined;}
 }
+function cacheableReading(reading:Reading) {
+ return !reading.problem&&!reading.incomplete&&!reading.transient&&!reading.warnings?.some(w=>/indispon[íi]vel/i.test(w));
+}
 function storeReading(key:string,reading:Reading) {
- if(reading.problem||reading.incomplete||reading.warnings?.some(w=>/indispon[íi]vel/i.test(w)))return;
+ if(!cacheableReading(reading))return;
  try{readingCache()?.prepare("INSERT OR REPLACE INTO readings VALUES(?,?,?,?)").run(key,fingerprint,JSON.stringify(reading),new Date().toISOString());}catch{}
 }
 /** Completed page OCR survives a file deadline; partial pages are never reused. */

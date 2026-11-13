@@ -474,10 +474,11 @@ export async function saveProcessingResult(did:string) {
  await sql.run("UPDATE contract_processing SET status=?,result=?,updated=? WHERE demand_id=?", status, JSON.stringify(result), now(), did);
  return {status,revision:plan.job.revision,ticket_hash:plan.ticket.hash,...result};
 }
-export async function processContract(did:string,userId:string|null=null,download:(ticketId:string,documentId:string,signal:AbortSignal)=>Promise<{bytes:Buffer;name:string;mime:string}>=downloadGlpiAttachment,force=false,targetedOnly=false) {
+export async function processContract(did:string,userId:string|null=null,download:(ticketId:string,documentId:string,signal:AbortSignal)=>Promise<{bytes:Buffer;name:string;mime:string}>=downloadGlpiAttachment,force=false,targetedOnly=false,deadline=Infinity) {
  if(running.has(did))return;const job=await ensureProcessing(did);if(!job)return;
  running.add(did);await sql.run("UPDATE contract_processing SET status='Analisando',updated=? WHERE demand_id=?", now(), did);
  const {demand,ticket}=await processingSource(did);
+ const readingOptions={deadline,pageStore:sql.dialect==='postgres'?sql:undefined};
  try {
   const raw=JSON.parse(ticket.payload);
   const initialFiles=new Map((await filesFor(did,ticket.hash)).map(file=>[file.document_id,file]));
@@ -486,7 +487,7 @@ export async function processContract(did:string,userId:string|null=null,downloa
    return {doc,scope:contractReadingScope(doc.name||'',file)};
   }).sort((a,b)=>Number(b.scope.kind==='contract')-Number(a.scope.kind==='contract'));
   for(const {doc,scope} of documents) {
-   if(await recoveryPaused()&&!force&&userId===null)break;
+   if(Date.now()>=deadline||await recoveryPaused()&&!force&&userId===null)break;
    const cached=(await filesFor(did,ticket.hash)).find(f=>f.document_id===String(doc.id));
    if(scope.kind==='support'||cached?.byteLength&&!force&&await extractionReviewed(cached))continue;
    if(!force&&!scope.needsWork)continue;
@@ -497,23 +498,27 @@ export async function processContract(did:string,userId:string|null=null,downloa
     if(cached?.byteLength)file={name:cached.name,mime:cached.mime,bytes:await fileBytes(await sql.one('SELECT * FROM processing_files WHERE id=?', cached.id))};
     else if(provenPrevious)file={name:doc.name||provenPrevious.name,mime:provenPrevious.mime,bytes:Buffer.from(provenPrevious.bytes)};
     else for(let attempt=0;attempt<3;attempt++){
-     try {file=await download(demand.glpi_id,String(doc.id),AbortSignal.timeout(30000));if(!file.bytes.length)throw Error('Arquivo vazio.');break;}
+     const remaining=deadline-Date.now();
+     if(remaining<=0)break;
+     try {file=await download(demand.glpi_id,String(doc.id),AbortSignal.timeout(Math.min(30000,remaining)));if(!file.bytes.length)throw Error('Arquivo vazio.');break;}
      catch(error:any){
+      if(Date.now()>=deadline)break;
       if(attempt===2 || [400,401,403,404].includes(error?.status))throw error;
-      await new Promise(resolve=>setTimeout(resolve,750*2**attempt));
+      await new Promise(resolve=>setTimeout(resolve,Math.min(750*2**attempt,Math.max(0,deadline-Date.now()))));
      }
     }
+    if(!file)break;
     const previous=provenPrevious||(!cached?.byteLength?await sql.one(`SELECT * FROM processing_files WHERE demand_id=? AND document_id=? AND ${byteSizeSql()}>0 ORDER BY rowid DESC LIMIT 1`, did, String(doc.id)):null);
     // A changed ticket can retain the exact same attachment. Verify current GLPI bytes before reuse.
     if(previous&&!previous.problem&&storedHash(previous)===sha256(file.bytes)&&!contractReadingScope(file.name,{byteLength:file.bytes.length,extracted:previous.extracted}).needsWork){extracted=JSON.parse(previous.extracted);reusedFrom=previous.id;}
-    else if(scope.kind==='contract')extracted={...await readProcessingFile(file.bytes,file.name),contractIdentified:!!cached&&JSON.parse(cached.extracted).contractIdentified===true};
+    else if(scope.kind==='contract')extracted={...await readProcessingFile(file.bytes,file.name,undefined,false,readingOptions),contractIdentified:!!cached&&JSON.parse(cached.extracted).contractIdentified===true};
     else {
      const detected=readingFilename(file.bytes,file.name);
      const preview=/\.(pdf|png|jpe?g|webp|tiff?|bmp|gif)$/i.test(detected)
-      ?await readProcessingFile(file.bytes,detected,{page:1,x:0,y:0,width:1,height:1,rotation:0,identification:true})
-      :/\.docx$/i.test(detected)&&file.bytes.length<=20*1024*1024?extractProcessingFile(file.bytes,detected):/\.(doc|odt|txt)$/i.test(detected)?await readProcessingFile(file.bytes,detected,undefined,true):null;
+      ?await readProcessingFile(file.bytes,detected,{page:1,x:0,y:0,width:1,height:1,rotation:0,identification:true},false,readingOptions)
+      :/\.docx$/i.test(detected)&&file.bytes.length<=20*1024*1024?extractProcessingFile(file.bytes,detected):/\.(doc|odt|txt)$/i.test(detected)?await readProcessingFile(file.bytes,detected,undefined,true,readingOptions):null;
      const likelyContractOnCover=preview&&!preview.problem&&/\.pdf$/i.test(detected)&&!isSupportDocument(file.name,preview.text||'')&&/\b(?:contratante|contratad[ao]|cedente|cessionaria|clausula|termo aditivo|aditamento|distrato|rescisao|confissao de divida|prestacao de servicos|clicksign|docusign|zapsign|d4sign|autentique)\b/i.test(preview.text||'');
-     const fullRead=preview&&!preview.problem&&(isFilledContract(preview.text||'',file.name)||likelyContractOnCover)?await readProcessingFile(file.bytes,file.name):null;
+     const fullRead=preview&&!preview.problem&&(isFilledContract(preview.text||'',file.name)||likelyContractOnCover)?await readProcessingFile(file.bytes,file.name,undefined,false,readingOptions):null;
      extracted=fullRead&&isFilledContract(fullRead.text||'',file.name)
       ?{...fullRead,contractIdentified:true}
       :{...(fullRead||preview),version:readerVersion,text:(fullRead||preview)?.text?.slice(0,10000)||'',fields:{},problem:(fullRead||preview)?.problem||'',method:'Identificação inicial',needsReview:false,triageOnly:true};
@@ -538,14 +543,15 @@ export async function processContract(did:string,userId:string|null=null,downloa
   let targetedPages=0;
   for(const entry of await targetedRecovery(did,ticket.hash,pendingPlan?.comparisons)){
    for(const target of entry.targets){
-    if(targetedPages>=2||await recoveryPaused()&&!force&&userId===null)break;
+    if(Date.now()>=deadline||targetedPages>=2||await recoveryPaused()&&!force&&userId===null)break;
     targetedPages++;
     activeFiles.set(did,{documentId:entry.file.document_id,targeted:true,page:target.page});
     const current=await sql.one('SELECT * FROM processing_files WHERE id=?', entry.file.id);
     const before=JSON.parse(current.extracted);
-    const complementary=/\.pdf$/i.test(entry.file.name)&&process.env.DOCUMENT_DOCLING_ENABLED==='true'?await readDoclingPage(await fileBytes(current),target.page):null;
+    const bytes=await fileBytes(current);
+    const complementary=/\.pdf$/i.test(entry.file.name)&&process.env.DOCUMENT_DOCLING_ENABLED==='true'?await readDoclingPage(bytes,target.page,{deadline}):null;
     const useful=complementary?.ok&&target.fields.some(key=>complementary.fields[key]?.some(value=>plausibleFieldValue(key,value)));
-    const reread=useful?{...complementary,problem:'',needsReview:true}:await readProcessingFile(Buffer.from(current.bytes),entry.file.name,{page:target.page,x:0,y:0,width:1,height:1,rotation:0});
+    const reread=useful?{...complementary,problem:'',needsReview:true}:await readProcessingFile(bytes,entry.file.name,{page:target.page,x:0,y:0,width:1,height:1,rotation:0},false,readingOptions);
     if((await sql.one('SELECT hash FROM glpi_tickets WHERE external_id=?', demand.glpi_id))?.hash!==ticket.hash)return;
     // A confirmation or manual update made while OCR was running wins.
     if((await sql.one('SELECT extracted FROM processing_files WHERE id=?', entry.file.id))?.extracted!==current.extracted)continue;
@@ -678,13 +684,13 @@ async function drainReadingQueue(deadline=Infinity) {
     if(!fileRecovery&&!targets.length){await durableQueue!.finish(job,'done');continue;}
     const before=await recoveryProgress(job.demand_id,job.ticket_hash);
     const targetedOnly=!fileRecovery;
-    await processContract(job.demand_id,null,downloadGlpiAttachment,false,targetedOnly);
+    await processContract(job.demand_id,null,downloadGlpiAttachment,false,targetedOnly,deadline);
     const after=await recoveryProgress(job.demand_id,job.ticket_hash);
     const current=await processingSource(job.demand_id);
     if(current.ticket?.hash!==job.ticket_hash)await durableQueue!.finish(job,'superseded');
     else if(await needsDemandRecovery(job.demand_id,job.ticket_hash)){
      const reason=targetedOnly?'targeted-fields':await recoveryReason(job.demand_id,job.ticket_hash);
-     await durableQueue!.finish(job,'retry',reason,after>before?after:undefined,!targetedOnly&&onlyTemporary(reason));
+     await durableQueue!.finish(job,'retry',reason,after>before?after:undefined,Date.now()>=deadline||!targetedOnly&&onlyTemporary(reason));
     }
     else await durableQueue!.finish(job,'done','',after>before?after:undefined);
    }catch(error){await durableQueue!.finish(job,'retry','Tentativa interrompida; resultados anteriores preservados. '+failureDetail(error));}

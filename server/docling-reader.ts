@@ -10,7 +10,7 @@ export function doclingConfig(){
  try{const c=JSON.parse(readFileSync(resolve('data/docling-runtime.json'),'utf8'));return {ready:c.ready===true&&existsSync(c.python)&&existsSync(c.models),python:String(c.python),models:String(c.models),version:String(c.version||'')};}catch{return {ready:false,python:'',models:'',version:''};}
 }
 /** Local, bounded, opt-in fallback. Neither reference values nor credentials enter the child. */
-export async function readDoclingPage(bytes:Buffer,page:number,options:{pilot?:boolean;timeoutMs?:number}={}):Promise<DoclingResult>{
+export async function readDoclingPage(bytes:Buffer,page:number,options:{pilot?:boolean;timeoutMs?:number;deadline?:number}={}):Promise<DoclingResult>{
  const started=Date.now();const failure=(reason:string):DoclingResult=>({ok:false,reason,page,text:'',fields:{},items:[],seconds:Math.round((Date.now()-started)/1000),method:'Docling — estrutura do PDF'});
  if(!Number.isInteger(page)||page<1||page>200||bytes.length>20*1024*1024||bytes.subarray(0,5).toString()!=='%PDF-')return failure('PDF ou página inválidos.');
  if(!options.pilot&&process.env.DOCUMENT_DOCLING_ENABLED!=='true')return failure('Docling ainda está em avaliação; leitura automática desativada.');
@@ -18,7 +18,9 @@ export async function readDoclingPage(bytes:Buffer,page:number,options:{pilot?:b
  if(freemem()<1.5*1024**3)return failure('Memória disponível insuficiente para iniciar o Docling com segurança (mínimo 1,5 GB).');
  let release:(()=>void)|undefined;
  try{
-  release=await acquireReadingLease();
+  release=await acquireReadingLease(options.deadline);
+  const timeout=Math.min(options.timeoutMs||90000,120000,(options.deadline??Infinity)-Date.now());
+  if(timeout<=0)return failure('Ciclo encerrado antes da leitura complementar.');
   if(freemem()<1.5*1024**3)return failure('Memória insuficiente após aguardar a fila.');
   const readingStarted=Date.now();
   const result:any=await new Promise((resolveResult)=>{
@@ -26,7 +28,7 @@ export async function readDoclingPage(bytes:Buffer,page:number,options:{pilot?:b
    const child=spawn(config.python,['-u',resolve('server/ocr/docling_worker.py')],{cwd:process.cwd(),windowsHide:true,env:{...environment,PYTHONUTF8:'1',HF_HOME:resolve('data/docling-models/hf'),HF_HUB_OFFLINE:'1',TRANSFORMERS_OFFLINE:'1',OMP_NUM_THREADS:'2',MKL_NUM_THREADS:'2',CUDA_VISIBLE_DEVICES:'',DOCLING_MODELS:config.models},stdio:['pipe','pipe','ignore']});
    let output='',done=false;
    const finish=(value:any)=>{if(done)return;done=true;clearTimeout(timer);child.kill();resolveResult(value);};
-   const timer=setTimeout(()=>finish({error:'Tempo limite do leitor complementar excedido.'}),Math.min(options.timeoutMs||90000,120000));
+   const timer=setTimeout(()=>finish({error:'Tempo limite do leitor complementar excedido.'}),timeout);
    child.on('error',()=>finish({error:'Não foi possível iniciar o Docling.'}));
    child.stdout.setEncoding('utf8');
    child.stdout.on('data',chunk=>{output+=chunk.toString('utf8');if(output.length>4_000_000)finish({error:'Resposta do leitor excedeu o limite.'});});

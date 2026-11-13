@@ -25,10 +25,11 @@ if os.name == "nt" and "--setup" not in sys.argv:
         threading.Thread(target=parent_watchdog, daemon=True).start()
 
 ROOT = Path(__file__).resolve().parents[2]
-CACHE = ROOT / "data" / "ocr-models"
+CACHE = Path(os.environ.get("KEDU_OCR_MODELS") or ROOT / "data" / "ocr-models")
+RUNTIME = Path(os.environ.get("KEDU_OCR_RUNTIME") or ROOT / "data" / "ocr-runtime.json")
 if "--setup" in sys.argv:
-    (ROOT / "data").mkdir(exist_ok=True)
-    (ROOT / "data" / "ocr-runtime.json").write_text(json.dumps({"ready": False}), encoding="utf-8")
+    RUNTIME.parent.mkdir(parents=True, exist_ok=True)
+    RUNTIME.write_text(json.dumps({"ready": False}), encoding="utf-8")
 os.environ["PADDLE_PDX_CACHE_HOME"] = str(CACHE)
 os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -147,7 +148,7 @@ def main():
         cv2.putText(sample, "CNPJ 11.444.777/0001-61", (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
         if not recognize(pipeline, sample):
             raise RuntimeError("O teste de inferência não reconheceu o texto de exemplo.")
-        (ROOT / "data" / "ocr-runtime.json").write_text(json.dumps({"ready": True, "python": sys.executable, "engine": "PP-OCRv5", "opencv": cv2.__version__}), encoding="utf-8")
+        RUNTIME.write_text(json.dumps({"ready": True, "python": sys.executable, "engine": "PP-OCRv5", "opencv": cv2.__version__}), encoding="utf-8")
         print(json.dumps({"ready": True, "opencv": cv2.__version__}), file=WIRE, flush=True)
         return
     for raw in sys.stdin:

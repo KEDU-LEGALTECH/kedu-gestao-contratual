@@ -3,7 +3,7 @@
 # The same setup as server/ocr/setup.ps1: models are checked with a test inference before
 # data/ocr-runtime.json is marked ready. If it fails, the server still starts and reads with Tesseract.
 set -eu
-runtime=/app/data/ocr-runtime.json
+runtime=${KEDU_OCR_RUNTIME:-/app/data/ocr-runtime.json}
 if [ "${OCR_ENGINE:-}" != "legacy" ] && ! grep -q '"ready": true' "$runtime" 2>/dev/null; then
   echo "Preparando modelos do PaddleOCR (somente na primeira inicialização)..."
   if ! /opt/ocr-venv/bin/python -u /app/server/ocr/worker.py --setup; then

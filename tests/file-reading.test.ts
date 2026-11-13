@@ -2,6 +2,9 @@ import {test} from "node:test";
 import assert from "node:assert/strict";
 import PizZip from "pizzip";
 import sharp from "sharp";
+import { DatabaseSync } from "node:sqlite";
+import { readFileSync } from "node:fs";
+import { sqliteSql } from "../server/sql.js";
 import {readProcessingFile} from "../server/file-reading.js";
 import {fieldsFromLines,normalizeValue} from "../server/processing-extract.js";
 import {readingImage,readingPdf,mixedReadingPdf} from "./reading-fixtures.js";
@@ -42,6 +45,30 @@ test("OCR de PNG, JPEG, WebP e TIFF reconhece dados e exige conferência",async(
 });
 test("PDF digitalizado passa por OCR e mantém leitura sujeita a conferência",async()=>{
  const r=await readProcessingFile(readingPdf(true),"digitalizado.pdf");assert.equal(r.problem,"",JSON.stringify(r));assert.equal(r.method,"PDF com OCR");assert.equal(r.needsReview,true);assert.ok(r.fields.remuneracao?.includes("11,84%"),JSON.stringify(r));
+});
+test("PDF digitalizado reutiliza páginas persistidas preservando os campos", async () => {
+ const db=new DatabaseSync(":memory:");
+ try {
+  db.exec(readFileSync("migrations/020.sql","utf8"));
+  const sql=sqliteSql(db);
+  const bytes=readingPdf(true,2);
+  const fileName="contrato-digitalizado.pdf";
+  const first=await readProcessingFile(bytes,fileName,undefined,false,{pageStore:sql});
+  assert.deepEqual(first.completedPages,[1,2]);
+  const page=await sql.one("SELECT reading FROM reading_pages WHERE page=1");
+  assert.ok(page);
+  await sql.run("DELETE FROM reading_pages WHERE page=2");
+  const saved:number[]=[];
+  const pageStore={...sql,run(query:string,...params:unknown[]){
+   if(query.startsWith("INSERT"))saved.push(Number(params[2]));
+   return sql.run(query,...params);
+  }};
+  const resumed=await readProcessingFile(bytes,fileName,undefined,false,{pageStore});
+  assert.deepEqual(saved,[2]);
+  assert.deepEqual(resumed.completedPages,[1,2]);
+  assert.deepEqual(resumed.fields,first.fields);
+  assert.deepEqual(resumed.fieldOrigins,first.fieldOrigins);
+ } finally { db.close(); }
 });
 test("Arquivo vazio, falso PDF, formato desconhecido e imagem em branco não passam como corretos",async()=>{
  for(const [bytes,name] of [[Buffer.alloc(0),"vazio.pdf"],[Buffer.from("<html>erro</html>"),"falso.pdf"],[Buffer.from("teste"),"programa.exe"],[readingImage(true).toBuffer("image/png"),"branco.png"]] as const){const r=await readProcessingFile(bytes,name);assert.ok(r.problem,name);assert.equal(r.needsReview,false);}

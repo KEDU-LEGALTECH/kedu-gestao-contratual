@@ -17,6 +17,8 @@ As rotas só respondem com o cabeçalho que a Vercel envia (`Authorization: Bear
 
 Nas funções da Vercel não há PaddleOCR nem Docling (Python). Configure `OCR_ENGINE=legacy`: imagens e PDFs digitalizados usam o Tesseract.js (JavaScript) e, com `DOCUMENT_VISION_ENABLED`, a leitura por visão do Gemini. Textos digitais (PDF, DOCX, XLSX) não dependem de OCR.
 
+A imagem do `Dockerfile` prepara o PaddleOCR durante a construção e valida os modelos com uma imagem sintética. Os modelos ficam em `/app/ocr`, fora do volume de dados. Compare a leitura local e a do contêiner com o mesmo snapshot e os mesmos arquivos de referência. Use `--scanned` para selecionar PDFs cujo histórico registra OCR ou páginas pendentes e `--report <arquivo>` para guardar os resultados de cada execução. Confira o motor e as páginas realmente lidas no relatório antes de interpretar a comparação.
+
 ## Variáveis de ambiente
 
 Configure no projeto da Vercel. Nunca em variáveis `VITE_*`.
@@ -45,6 +47,8 @@ Funções da Vercel recebem e respondem até 4,5 MB por requisição.
 - **Demais arquivos** respondidos pela API acima de 4 MB (download direto do GLPI, documento assinado, conferências, matriz) são enviados em partes (streaming), que não têm esse limite. Só na Vercel; localmente nada muda.
 
 Na Vercel só a pasta temporária aceita escrita: o cache e a trava de leitura ficam nela automaticamente.
+
+O OCR de páginas concluídas de PDF é salvo no PostgreSQL para a leitura continuar em outra instância. Para um esquema PostgreSQL já importado, aplique `migrations/020.sql` no esquema privado configurado em `KEDU_PG_SCHEMA` antes de iniciar a nova versão. A migração também entra nos novos snapshots preparados depois que o SQLite local é atualizado.
 
 ## Antes de publicar
 

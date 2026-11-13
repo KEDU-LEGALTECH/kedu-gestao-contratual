@@ -10,7 +10,8 @@ export type PaddleResult={passes:OcrBox[][];operations:string[];engine:string};
 const root=resolve(fileURLToPath(new URL('..',import.meta.url)));
 let child:ChildProcessWithoutNullStreams|undefined,buffer='',pending:{resolve:(result:PaddleResult|null)=>void;timer:ReturnType<typeof setTimeout>}|undefined;
 let unavailable=false;
-export function paddleConfigured(){return process.env.OCR_ENGINE!=='legacy'&&((process.env.NODE_ENV!=='test'&&!process.env.NODE_TEST_CONTEXT)||process.env.OCR_ENGINE==='paddle')&&existsSync(join(root,'data/ocr-runtime.json'));}
+export const paddleRuntimePath=()=>process.env.KEDU_OCR_RUNTIME||join(root,'data/ocr-runtime.json');
+export function paddleConfigured(){return process.env.OCR_ENGINE!=='legacy'&&((process.env.NODE_ENV!=='test'&&!process.env.NODE_TEST_CONTEXT)||process.env.OCR_ENGINE==='paddle')&&existsSync(paddleRuntimePath());}
 function stop(){child?.kill();child=undefined;buffer='';if(pending){clearTimeout(pending.timer);pending.resolve(null);pending=undefined;}}
 export function closePaddle(){stop();}
 /** Each file gets a fresh attempt after an earlier engine failure; a running engine is kept between files. */
@@ -19,7 +20,7 @@ export async function recognizeWithPaddle(png:Buffer,timeoutMs=90000):Promise<Pa
  if(!paddleConfigured()||unavailable)return null;
  if(!child){
   try{
-   const config=JSON.parse(readFileSync(join(root,'data/ocr-runtime.json'),'utf8'));
+   const config=JSON.parse(readFileSync(paddleRuntimePath(),'utf8'));
    if(config.ready!==true||!existsSync(config.python))return null;
    child=spawn(config.python,['-u',join(root,'server/ocr/worker.py')],{cwd:root,windowsHide:true,env:{...process.env,HF_HUB_OFFLINE:'1',PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK:'True'},stdio:['pipe','pipe','pipe']});
    child.stderr.resume();
