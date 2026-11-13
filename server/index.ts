@@ -1,6 +1,7 @@
 import {isOpenDemand,demandDisplayStage} from "../shared/glpi-ticket-meta.js";
 import "dotenv/config";
 import {acquireBackendInstance,backendVersion} from './backend-instance.js';
+import { runsBackground, servesHttp, role } from "./role.js";
 import { withReadCache } from "./sql.js";
 import express from "express";
 import { contractParagraphs } from "./attachment-analysis.js";
@@ -83,16 +84,19 @@ import {
   evidenceLabels,
   subtypes,
 } from "./governance.js";
-if(process.env.NODE_ENV!=='test')acquireBackendInstance();
+// The lease file guards a single long-running process; serverless API instances are many and short-lived.
+if(process.env.NODE_ENV!=='test'&&runsBackground)acquireBackendInstance();
 await seedCatalog();
 const officialCatalog = await registerOfficialCatalog();
 for (const message of officialCatalog.skipped)
   console.warn("Modelo oficial não registrado: " + message);
-await startSchedule();
-if(process.env.NODE_ENV!=='test') {
+if(runsBackground)await startSchedule();
+if(process.env.NODE_ENV!=='test'&&runsBackground) {
   // Retry unavailable originals even when nobody has the portal open.
   const attachmentRecovery=setInterval(()=>{scheduleContractProcessing().catch(error=>console.error('Recuperação de anexos falhou:',error));},60000);
-  attachmentRecovery.unref();
+  // Without HTTP, this timer is what keeps the worker process alive.
+  if(role!=='worker')attachmentRecovery.unref();
+  if(role==='worker'){console.log('Kedu worker: sincronização GLPI e leitura de documentos ativas.');void scheduleContractProcessing();}
 }
 const app = express();
 if(process.env.TRUST_PROXY_HOPS==="1")app.set("trust proxy",1);
@@ -108,7 +112,7 @@ app.use((req, res, next) => {
   withReadCache(next, store);
 });
 // Supabase keeps PostgreSQL backups; the local job copies the SQLite file only.
-if(!postgresMode)startBackups();
+if(!postgresMode&&runsBackground)startBackups();
 app.get("/healthz",async (_req,res)=>{res.set("Cache-Control","no-store");res.set('X-Kedu-Build',backendVersion.build);try{await sql.one("SELECT 1");res.json({status:"ok"});}catch{res.status(503).json({status:"unavailable"});}});
 app.use("/api", (req, res, next) => {
   if (
@@ -204,7 +208,7 @@ function safeData(user: any, data: any) {
   return data;
 }
 app.get("/api/bootstrap", async (req: any, res) => {
-  await scheduleContractProcessing();
+  if (runsBackground) await scheduleContractProcessing();
   const where = req.user.role === "Solicitante" ? " WHERE d.owner=?" : "";
   // A fixed number of queries for the whole list: per-demand lookups are slow on a remote database.
   // Independent reads for the whole list, fetched together (each one is a round trip on a remote database).
@@ -1314,7 +1318,8 @@ app.use((err: any, _req: any, res: any, _next: any) => {
           : err.message || "Não foi possível concluir a operação.",
   });
 });
-if (process.env.NODE_ENV !== "test")
+// On Vercel the platform imports the app; a worker has no HTTP.
+if (process.env.NODE_ENV !== "test" && servesHttp && !process.env.VERCEL)
   app.listen(
     Number(process.env.PORT || 3001),
     process.env.HOST || "127.0.0.1",

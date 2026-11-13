@@ -2,7 +2,7 @@ import "dotenv/config";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { storagePath } from "../server/object-path.js";
+import { contentType, storagePath } from "../server/object-path.js";
 import { supabaseConfig } from "../server/supabase-config.js";
 
 type ManifestObject = { table: string; column: string; key: Record<string, string>; sha256: string; size: number; object: string };
@@ -14,7 +14,9 @@ async function pool<T>(items: T[], size: number, task: (item: T) => Promise<void
 }
 
 async function main() {
-  const [folder] = process.argv.slice(2);
+  const [folder, option] = process.argv.slice(2);
+  // --refresh-large rewrites objects above 4 MB so Storage serves them with their type (they leave through links).
+  const refreshLarge = option === "--refresh-large";
   if (!folder) throw Error("Informe a pasta do manifesto da migração.");
   const root = resolve(folder);
   const c = supabaseConfig();
@@ -31,7 +33,7 @@ async function main() {
     const bytes = await readFile(join(root, object.object));
     if (bytes.length !== object.size || sha256(bytes) !== object.sha256) throw Error("Objeto local diverge do manifesto: " + object.sha256);
     const response = await fetch(url(object.sha256), {
-      method: "POST", headers: { ...headers, "Content-Type": "application/octet-stream", "x-upsert": "false" },
+      method: "POST", headers: { ...headers, "Content-Type": contentType(bytes), "x-upsert": refreshLarge && bytes.length > 4 * 1024 * 1024 ? "true" : "false" },
       body: bytes, signal: AbortSignal.timeout(120000),
     });
     if (response.ok) sent++;

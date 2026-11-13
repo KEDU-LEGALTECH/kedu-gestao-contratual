@@ -1,0 +1,11 @@
+# Never upload local data, credentials or tooling to Vercel.
+data/
+.env
+.env.*
+*.env
+entregas/
+.worktrees/
+node_modules/
+*.sqlite
+*.sqlite-*
+*.log

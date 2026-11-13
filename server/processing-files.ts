@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { sql } from "./db.js";
-import { storagePath } from "./object-path.js";
+import { contentType, storagePath } from "./object-path.js";
 import { supabaseConfig } from "./supabase-config.js";
 
 /** Attachments read from tickets. SQLite keeps them in processing_files.bytes. On PostgreSQL that column
@@ -20,7 +20,12 @@ export const storedSize = (row: StoredRow | null | undefined) => row?.bytes?.len
 /** SHA-256 of the stored bytes without downloading them from storage. */
 export const storedHash = (row: StoredRow | null | undefined) => row?.bytes?.length ? sha256(row.bytes) : row?.bytes_sha256 || sha256(Buffer.alloc(0));
 
-interface ObjectStore { put(hash: string, bytes: Buffer): Promise<void>; get(hash: string): Promise<Buffer>; }
+interface ObjectStore {
+  put(hash: string, bytes: Buffer): Promise<void>;
+  get(hash: string): Promise<Buffer>;
+  /** Short-lived private link; only remote storage provides one. */
+  signedUrl?(hash: string, download?: string): Promise<string>;
+}
 /** KEDU_FILE_STORE_DIR keeps objects in a local folder (tests); otherwise the private Supabase bucket. */
 function objectStore(env = process.env): ObjectStore {
   if (env.KEDU_FILE_STORE_DIR) {
@@ -36,7 +41,7 @@ function objectStore(env = process.env): ObjectStore {
   const url = (hash: string, scope = "") => `${config.project}/storage/v1/object/${scope}${config.bucket}/${storagePath(hash)}`;
   return {
     async put(hash, bytes) {
-      const response = await fetch(url(hash), { method: "POST", headers: { ...headers, "Content-Type": "application/octet-stream", "x-upsert": "false" }, body: new Uint8Array(bytes), signal: AbortSignal.timeout(120000) });
+      const response = await fetch(url(hash), { method: "POST", headers: { ...headers, "Content-Type": contentType(bytes), "x-upsert": "false" }, body: new Uint8Array(bytes), signal: AbortSignal.timeout(120000) });
       // The path is the content hash, so an existing object already holds these bytes.
       if (!response.ok && !(response.status === 409 || /exists|duplicate/i.test(await response.text())))
         throw Error(`Não foi possível guardar o anexo no Storage (HTTP ${response.status}).`);
@@ -46,7 +51,23 @@ function objectStore(env = process.env): ObjectStore {
       if (!response.ok) throw Object.assign(Error(`Anexo indisponível no Storage (HTTP ${response.status}).`), { status: 503 });
       return Buffer.from(await response.arrayBuffer());
     },
+    async signedUrl(hash, download) {
+      const response = await fetch(url(hash, "sign/"), { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ expiresIn: 300 }), signal: AbortSignal.timeout(30000) });
+      if (!response.ok) throw Object.assign(Error(`Anexo indisponível no Storage (HTTP ${response.status}).`), { status: 503 });
+      const { signedURL } = await response.json() as { signedURL: string };
+      return `${config.project}/storage/v1${signedURL}${download === undefined ? "" : "&download=" + encodeURIComponent(download)}`;
+    },
   };
+}
+
+/** Vercel Functions answer at most 4.5 MB; larger files leave through a private Storage link instead. */
+export const directLimit = 4 * 1024 * 1024;
+/** Link for a large file kept in remote storage, or null when the API should send the bytes itself.
+ * download: file name for saving; omitted to open in the browser. */
+export async function largeFileUrl(row: StoredRow | null | undefined, download?: string) {
+  if (row?.bytes?.length || !row?.bytes_sha256 || storedSize(row) <= directLimit) return null;
+  const store = objectStore();
+  return store.signedUrl ? store.signedUrl(row.bytes_sha256, download) : null;
 }
 
 /** Bytes of a processing_files row, verified against the recorded hash when they come from storage. */

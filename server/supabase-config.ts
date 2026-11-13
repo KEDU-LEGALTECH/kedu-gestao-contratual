@@ -11,7 +11,8 @@ export function supabaseConfig(env:NodeJS.ProcessEnv=process.env) {
  if(database.port && !["5432","6543"].includes(database.port))throw Error("Porta PostgreSQL não reconhecida.");
  for(const [key,value] of database.searchParams)if(key!=="sslmode" || value!=="verify-full")throw Error("Use verify-full na conexão e informe o certificado separadamente em SUPABASE_CA_PATH.");
  database.search="";
- const ca=env.SUPABASE_CA_PATH?readFileSync(env.SUPABASE_CA_PATH,"utf8"):undefined;
+ // Hosted functions have no certificate file: SUPABASE_CA_CERT carries the PEM itself (literal or with \n escapes).
+ const ca=env.SUPABASE_CA_CERT?env.SUPABASE_CA_CERT.replace(/\\n/g,"\n"):env.SUPABASE_CA_PATH?readFileSync(env.SUPABASE_CA_PATH,"utf8"):undefined;
  const bucket=env.SUPABASE_STORAGE_BUCKET||"kedu-documentos";
  if(!/^[a-z0-9][a-z0-9-]{2,62}$/.test(bucket))throw Error("Nome do bucket inválido.");
  return {project:project.origin,connection:database.toString(),ssl:{rejectUnauthorized:true,servername:database.hostname,...(ca?{ca}:{})},bucket,key:env.SUPABASE_SECRET_KEY||""};

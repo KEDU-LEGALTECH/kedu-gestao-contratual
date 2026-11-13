@@ -7,7 +7,8 @@ import { ensureProcessing,processContract,processingSource,saveProcessingResult,
 import {plausibleFieldValue} from "./field-plausibility.js";
 import { editableKeys,extractProcessingFile,normalizeValue } from "./processing-extract.js";
 import { sha256,officialValues } from "./official-templates.js";
-import { fileBytes,saveProcessingFile,storedSize } from "./processing-files.js";
+import { fileBytes,largeFileUrl,saveProcessingFile,storedSize } from "./processing-files.js";
+import { contentType } from "./object-path.js";
 import { generate,review } from "./documents.js";
 import { readProcessingFile,supportedReading } from "./file-reading.js";
 import sharp from "sharp";
@@ -227,12 +228,19 @@ export function registerProcessingRoutes(app:Express,process:(did:string,userId?
  app.get("/api/demands/:id/processing/files/:file",async (req:any,res)=>{
   const {demand:d}=await get(req),file=await sql.one("SELECT * FROM processing_files WHERE id=? AND demand_id=?", req.params.file, d.id);
   if(!file || !storedSize(file))throw Error("Arquivo não disponível.");
+  const link=await largeFileUrl(file,file.name);
+  if(link){res.setHeader("Cache-Control","no-store");return res.redirect(302,link);}
   const bytes=await fileBytes(file);
   res.setHeader("Cache-Control","no-store");res.type(file.mime).attachment(file.name).send(bytes);
  });
  app.get("/api/demands/:id/processing/files/:file/view",async(req:any,res)=>{
   const {demand:d}=await get(req),file=await sql.one("SELECT * FROM processing_files WHERE id=? AND demand_id=?", req.params.file, d.id);
   if(!file || !storedSize(file))throw Object.assign(Error("Arquivo não disponível."),{status:404});
+  // A large PDF or image opens straight from Storage, which serves it with its own type.
+  if(file.bytes_head&&contentType(file.bytes_head)!=="application/octet-stream"){
+   const link=await largeFileUrl(file);
+   if(link){res.setHeader("Cache-Control","no-store");return res.redirect(302,link);}
+  }
   const bytes=await fileBytes(file);
   const mime=bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))?"image/png":bytes[0]===255 && bytes[1]===216 && bytes[2]===255?"image/jpeg":bytes.subarray(0,5).toString()==="%PDF-"?"application/pdf":null;
   if(!mime){
