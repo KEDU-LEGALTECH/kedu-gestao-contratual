@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import multer from "multer";
+import { acceptStored } from "./stored-upload.js";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import { one, all, run, id, now, audit, db, sql, auditAsync } from "./db.js";
@@ -7,7 +8,7 @@ import { access, permit, invalidate } from "./workflow.js";
 import { downloadGlpiAttachment } from "./glpi-download.js";
 import { inspectAttachment, attachmentFields } from "./attachment-analysis.js";
 import { validateData } from "../shared/data-validation.js";
-const upload = multer({storage:multer.memoryStorage(),limits:{fileSize:5*1024*1024,files:1}});
+const upload = acceptStored(multer({storage:multer.memoryStorage(),limits:{fileSize:5*1024*1024,files:1}}),5*1024*1024);
 async function get(req:any) {
   permit(req.user,"files"); permit(req.user,"bank");
   const d=await sql.one("SELECT * FROM demands WHERE id=?", req.params.id);

@@ -128,22 +128,31 @@ export function scheduleMinutes() {
   const n = Number(process.env.GLPI_SYNC_INTERVAL_MINUTES || 0);
   return Number.isInteger(n) && n >= 5 && n <= 1440 ? n : 0;
 }
+/** True when a daily slot has passed without a successful sync since and this caller won its lease.
+ * The lease prevents simultaneous dispatch and permits retry after failure or restart. */
+async function claimDueSlot(times: string[]) {
+  const slot = latestDueSlot(new Date(), times);
+  if (!slot || running) return false;
+  const due=new Date(slot+'-03:00').toISOString();
+  const success=await sql.one("SELECT created FROM sync_logs WHERE status='Concluído' ORDER BY created DESC LIMIT 1");
+  if(success?.created>=due)return false;
+  const key='glpiSyncSlot:'+slot,stamp=now();
+  const claim=await sql.run("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE settings.value<?", key, stamp, new Date(Date.now()-10*60000).toISOString());
+  return claim.changes > 0;
+}
+/** Scheduled sync without a long-running process (Vercel Cron): runs and waits only when a slot is due. */
+export async function runDueSync() {
+  const times = dailySyncTimes();
+  if (!times.length || !await claimDueSlot(times)) return { synced: false };
+  return { synced: true, summary: await syncGlpi(null) };
+}
 /** Daily slots in Brasilia time take precedence over the optional interval.
  * Changes to GLPI_SYNC_TIMES are loaded when the backend restarts. */
 export async function startSchedule() {
   const times = dailySyncTimes();
   if (times.length && process.env.NODE_ENV !== 'test') {
     const tick = async () => {
-      const slot = latestDueSlot(new Date(), times);
-      if (!slot || running) return;
-      const due=new Date(slot+'-03:00').toISOString();
-      const success=await sql.one("SELECT created FROM sync_logs WHERE status='Concluído' ORDER BY created DESC LIMIT 1");
-      if(success?.created>=due)return;
-      const key='glpiSyncSlot:'+slot,stamp=now();
-      // A lease prevents simultaneous dispatch and permits retry after failure/restart.
-      const claim=await sql.run("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE settings.value<?", key, stamp, new Date(Date.now()-10*60000).toISOString());
-      if(!claim.changes)return;
-      void syncGlpi(null).catch(() => { /* Failure remains visible; retry after ten minutes. */ });
+      if (await claimDueSlot(times)) void syncGlpi(null).catch(() => { /* Failure remains visible; retry after ten minutes. */ });
     };
     const timer = setInterval(() => { tick().catch(error => console.error("Agendamento GLPI falhou:", error)); }, 15000);
     timer.unref();

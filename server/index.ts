@@ -2,15 +2,18 @@ import {isOpenDemand,demandDisplayStage} from "../shared/glpi-ticket-meta.js";
 import "dotenv/config";
 import {acquireBackendInstance,backendVersion} from './backend-instance.js';
 import { runsBackground, servesHttp, role } from "./role.js";
-import { withReadCache } from "./sql.js";
+import { readCache, withReadCache } from "./sql.js";
 import express from "express";
 import { contractParagraphs } from "./attachment-analysis.js";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import cookieParser from "cookie-parser";
 import multer from "multer";
+import { acceptStored } from "./stored-upload.js";
 import { z } from "zod";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { directLimit, uploadUrl } from "./processing-files.js";
+import { uploadPath } from "./stored-upload.js";
 import { db, all, one, run, id, now, verify, audit, hash, localDate, sql, auditAsync, postgresMode } from "./db.js";
 import "./seed.js";
 import { fields, generate, review, paragraphs } from "./documents.js";
@@ -31,6 +34,7 @@ import {
   glpiStatus,
   listTickets,
   startSchedule,
+  runDueSync,
 } from "./glpi-sync.js";
 import { basisPoints, cents } from "./decimal.js";
 import { validateData } from "../shared/data-validation.js";
@@ -62,7 +66,7 @@ import { organizationAllowed } from "../shared/organization-policy.js";
 import { intakeForDemand, confirmGlpiIntake } from "./glpi-intake.js";
 import { registerMatrixRoutes } from "./matrix-registration.js";
 import { attachmentChecks, registerAttachmentRoutes } from "./attachment-routes.js";
-import { scheduleContractProcessing,processingSummary,processingSummaries,receivedDocumentTypesAll } from "./contract-processing.js";
+import { scheduleContractProcessing,processingSummary,processingSummaries,receivedDocumentTypesAll,runReadingCycle } from "./contract-processing.js";
 import { processingView,registerProcessingRoutes } from "./processing-routes.js";
 import { fieldLabels as officialInputs } from "../shared/official-fields.js";
 import { officialVisible } from "../shared/request-policy.js";
@@ -104,6 +108,18 @@ app.disable("x-powered-by");
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
+// Vercel Functions answer at most 4.5 MB, except streamed responses: larger files are sent in parts.
+if (process.env.VERCEL) app.use((_req, res, next) => {
+  const send = res.send.bind(res);
+  res.send = (body?: any) => {
+    if (!Buffer.isBuffer(body) || body.length <= directLimit) return send(body);
+    if (!res.get("Content-Type")) res.type("application/octet-stream");
+    for (let offset = 0; offset < body.length; offset += 1024 * 1024) res.write(body.subarray(offset, offset + 1024 * 1024));
+    res.end();
+    return res;
+  };
+  next();
+});
 // On PostgreSQL, repeated reads within one GET request share a cache (see server/sql.ts).
 app.use((req, res, next) => {
   if (req.method !== "GET") return next();
@@ -126,14 +142,14 @@ app.use("/api", (req, res, next) => {
     });
   next();
 });
-const upload = multer({
+const upload = acceptStored(multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024, files: 1 },
-});
-const signedUpload = multer({
+}), 5 * 1024 * 1024);
+const signedUpload = acceptStored(multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 8 * 1024 * 1024, files: 1 },
-});
+}), 8 * 1024 * 1024);
 app.post(
   "/api/login",
   rateLimit({ windowMs: 900000, limit: 20 }),
@@ -162,6 +178,21 @@ app.post(
     });
   },
 );
+// Vercel Cron runs the background work without a long-running process. Vercel sends
+// "Authorization: Bearer <CRON_SECRET>"; without CRON_SECRET these routes stay closed.
+const cronAuthorized = (req: any) => {
+  const expected = Buffer.from("Bearer " + (process.env.CRON_SECRET || "")), given = Buffer.from(String(req.headers.authorization || ""));
+  return !!process.env.CRON_SECRET && expected.length === given.length && timingSafeEqual(expected, given);
+};
+// Long passes must see fresh data: no request read cache.
+app.get("/api/cron/glpi-sync", async (req, res) => {
+  if (!cronAuthorized(req)) return res.status(401).json({ error: "Não autorizado." });
+  res.json(await readCache.exit(() => runDueSync()));
+});
+app.get("/api/cron/reading", async (req, res) => {
+  if (!cronAuthorized(req)) return res.status(401).json({ error: "Não autorizado." });
+  res.json(await readCache.exit(() => runReadingCycle(Number(process.env.READING_CYCLE_SECONDS || 240) * 1000)));
+});
 app.use("/api", async (req: any, res, next) => {
   const u = await sql.one("SELECT users.* FROM sessions JOIN users ON users.id=sessions.user_id WHERE token=? AND expires>?", req.cookies.session || "", Date.now());
   if (!u)
@@ -175,6 +206,14 @@ app.post("/api/logout", async (req, res) => {
   await sql.run("DELETE FROM sessions WHERE token=?", req.cookies.session || "");
   res.clearCookie("session");
   res.json({ ok: true });
+});
+// Files above a Vercel request (4.5 MB) go from the browser straight to Storage; the form then carries
+// upload_id and the route takes the file from there (server/stored-upload.ts). {direct:true}: send it normally.
+app.post("/api/uploads", async (req: any, res) => {
+  z.object({ size: z.number().int().min(1).max(20 * 1024 * 1024) }).parse(req.body);
+  const uploadId = randomUUID();
+  const url = await uploadUrl(uploadPath(req.user.id, uploadId));
+  res.json(url ? { id: uploadId, url } : { direct: true });
 });
 app.get("/api/me", (req: any, res) =>
   res.json({

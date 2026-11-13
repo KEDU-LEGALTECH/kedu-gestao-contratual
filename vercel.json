@@ -5,12 +5,16 @@
   "outputDirectory": "dist",
   "functions": {
     "api/index.ts": {
-      "maxDuration": 300,
+      "maxDuration": 800,
       "includeFiles": "{server,shared,templates}/**"
     }
   },
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api" },
     { "source": "/healthz", "destination": "/api" }
+  ],
+  "crons": [
+    { "path": "/api/cron/glpi-sync", "schedule": "*/15 * * * *" },
+    { "path": "/api/cron/reading", "schedule": "*/5 * * * *" }
   ]
 }

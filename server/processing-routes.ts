@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import multer from "multer";
+import { acceptStored } from "./stored-upload.js";
 import { z } from "zod";
 import { all, one, run, db, id, now, audit, sql, auditAsync } from "./db.js";
 import { access,permit,allocateAddendum,invalidate } from "./workflow.js";
@@ -16,7 +17,7 @@ import { prepareImage } from "./image-input.js";
 import {processingSummaryReport} from './processing-summary.js';
 import {readingFilename} from './reading-format.js';
 import {recordReadingGold} from './reading-gold.js';
-const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:20*1024*1024,files:1}});
+const upload=acceptStored(multer({storage:multer.memoryStorage(),limits:{fileSize:20*1024*1024,files:1}}),20*1024*1024);
 const snapshot=(values:Record<string,string>)=>JSON.stringify(Object.fromEntries(Object.entries(values).sort(([a],[b])=>a.localeCompare(b))));
 async function get(req:any,write=false) {
  permit(req.user,"files");permit(req.user,"bank");if(write)permit(req.user,"write");

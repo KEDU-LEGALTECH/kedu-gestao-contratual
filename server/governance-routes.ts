@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import multer from "multer";
+import { acceptStored } from "./stored-upload.js";
 import { z } from "zod";
 import { all, one, run, id, now, audit, localDate, db, sql, auditAsync } from "./db.js";
 import { permit, access, invalidate, latest } from "./workflow.js";
@@ -20,10 +21,10 @@ import {
 import { paragraphs, demoTemplate, fixed } from "./documents.js";
 import { addendumFields } from "../shared/request-policy.js";
 import { validateData } from "../shared/data-validation.js";
-const upload = multer({
+const upload = acceptStored(multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 8 * 1024 * 1024, files: 1 },
-});
+}), 8 * 1024 * 1024);
 async function get(req: any) {
   const d = await sql.one("SELECT * FROM demands WHERE id=?", req.params.id);
   if (!d) throw Error("Demanda não encontrada.");

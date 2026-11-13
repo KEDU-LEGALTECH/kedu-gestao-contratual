@@ -9,7 +9,7 @@ import {interruptedReading} from './reading-policy.js';
 import PizZip from 'pizzip';
 import {readingFilename} from './reading-format.js';
 import {acquireReadingLease} from './reading-runtime-lock.js';
-import {freemem} from 'node:os';
+import {freemem,tmpdir} from 'node:os';
 import {recoverTextFields} from './text-recovery.js';
 export const readerVersion=4;
 export const supportedReading=/\.(docx|doc|pdf|png|jpe?g|webp|tiff?|bmp|gif|txt|csv|odt|xlsx|pptx)$/i;
@@ -125,7 +125,7 @@ function readingCache() {
  const path=process.env.READING_CACHE_PATH;
  if(process.env.READING_CACHE==="off"||(!path&&(process.env.NODE_ENV==="test"||process.env.NODE_TEST_CONTEXT)))return cache=null;
  try{
-  const file=path||"data/reading-cache.sqlite";mkdirSync(dirname(file),{recursive:true});
+  const file=path||(process.env.VERCEL?join(tmpdir(),"kedu-reading-cache.sqlite"):"data/reading-cache.sqlite");mkdirSync(dirname(file),{recursive:true});
   const db=new DatabaseSync(file);fingerprint=readerFingerprint();
   db.exec("PRAGMA journal_mode=WAL;PRAGMA busy_timeout=5000;CREATE TABLE IF NOT EXISTS readings(key TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,reading TEXT NOT NULL,created TEXT NOT NULL)");
   // Extracted text is personal data: keep it only while useful.

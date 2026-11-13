@@ -9,6 +9,7 @@ import { details } from "./governance.js";
 import { listOfficial,sourceOf,homologated,sha256 } from "./official-templates.js";
 import { byteHeadSql,byteSizeSql,fileBytes,saveProcessingFile,storedHash } from "./processing-files.js";
 import { readCache } from "./sql.js";
+import { role } from "./role.js";
 import { officialRequired,officialProblems,deriveOfficial,derivedFrom } from "../shared/official-fields.js";
 import { validateData } from "../shared/data-validation.js";
 import { wholeMonths } from "../shared/extenso.js";
@@ -656,11 +657,12 @@ export async function recoveryReason(did:string,hash:string,ignorePause=false){
  return [outer&&'Erro no processamento: '+outer,...reasons,...targets].filter(Boolean).join(' | ')||'Recuperação pendente sem causa identificada';
 }
 async function recoveryProgress(did:string,hash:string){return (await filesFor(did,hash)).reduce((total,f)=>{const e=JSON.parse(f.extracted);return total+(f.byteLength?1:0)+(e.completedPages?.length||0)+Object.keys(e.fields||{}).length;},0);}
-async function drainReadingQueue() {
+/** deadline: stop claiming new jobs after this moment (a serverless invocation has a time limit). */
+async function drainReadingQueue(deadline=Infinity) {
  if(draining||await recoveryPaused())return;
  draining=true;
  try {
-  while(!await recoveryPaused()){
+  while(Date.now()<deadline&&!await recoveryPaused()){
    await yieldToServer();
    const job=await durableQueue!.claim();if(!job)break;
    const source=await processingSource(job.demand_id);
@@ -690,16 +692,14 @@ async function drainReadingQueue() {
  }finally{draining=false;}
 }
 let scanningRecovery=false;
-export async function scheduleContractProcessing() {
- if(process.env.NODE_ENV==='test'||await recoveryPaused()||scanningRecovery)return;
- scanningRecovery=true;
- // Background work continues after the request that started it: no request read cache.
- void readCache.exit(()=>(async()=>{
-  durableQueue??=new ReadingJobQueue(sql);
-  void drainReadingQueue();
+// Serverless instances overlap: a running job is reclaimed only after outliving any invocation (800 s).
+const readingQueue=()=>durableQueue??=new ReadingJobQueue(sql,Date.now,role==='api'?20*60000:0);
+/** Updates saved results and queues every demand whose files still need reading. */
+async function scanDemands(deadline=Infinity){
+  const queue=readingQueue();
   for(const d of await sql.all("SELECT d.id,t.status FROM demands d JOIN glpi_tickets t ON t.external_id=d.glpi_id WHERE t.mode='real' AND d.stage NOT IN('Concluído','Cancelado','Em assinatura')")){
    await yieldToServer();
-   if(await recoveryPaused())break;
+   if(Date.now()>=deadline||await recoveryPaused())break;
    if(running.has(d.id))continue;
    const job=await ensureProcessing(d.id);
    if(!job)continue;
@@ -708,12 +708,31 @@ export async function scheduleContractProcessing() {
     await saveProcessingResult(d.id);
    if(closedInGlpi(d.status))continue;
    const fileRecovery=await needsFileRecovery(d.id,job.ticket_hash),targeted=(await targetedRecovery(d.id,job.ticket_hash)).length>0;
-   if(fileRecovery||targeted)await durableQueue.enqueue(d.id,job.ticket_hash,targeted&&!fileRecovery,fileRecovery);
-   else await durableQueue.settleIdle(d.id,job.ticket_hash);
+   if(fileRecovery||targeted)await queue.enqueue(d.id,job.ticket_hash,targeted&&!fileRecovery,fileRecovery);
+   else await queue.settleIdle(d.id,job.ticket_hash);
   }
+}
+export async function scheduleContractProcessing() {
+ if(process.env.NODE_ENV==='test'||await recoveryPaused()||scanningRecovery)return;
+ scanningRecovery=true;
+ // Background work continues after the request that started it: no request read cache.
+ void readCache.exit(()=>(async()=>{
+  readingQueue();
+  void drainReadingQueue();
+  await scanDemands();
   void drainReadingQueue();
  })()).catch(error=>console.error("Falha ao verificar a fila de leitura:",failureDetail(error)))
    .finally(()=>{scanningRecovery=false;});
+}
+/** One scheduled pass without a long-running process (Vercel Cron): take back stale jobs, queue what
+ * still needs reading, then read until the budget ends. The job in progress finishes past the budget. */
+export async function runReadingCycle(budgetMs:number){
+ if(await recoveryPaused())return {paused:true};
+ const deadline=Date.now()+budgetMs,queue=readingQueue();
+ await queue.recoverStale();
+ if(!scanningRecovery){scanningRecovery=true;try{await scanDemands(deadline);}finally{scanningRecovery=false;}}
+ await drainReadingQueue(deadline);
+ return {paused:false,pending:(await sql.one("SELECT COUNT(*) n FROM reading_jobs WHERE state IN('queued','retry','running')")).n};
 }
 const sqliteSummary=`SELECT d.id AS demand_id,d.stage,t.hash,p.status,p.ticket_hash,p.revision,
   json_array_length(p.result,'$.issues') AS issues,

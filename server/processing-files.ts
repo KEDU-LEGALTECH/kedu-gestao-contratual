@@ -60,6 +60,31 @@ function objectStore(env = process.env): ObjectStore {
   };
 }
 
+/** Uploads larger than a Vercel request (4.5 MB) go from the browser straight to Storage under
+ * uploads/<user>/<id>; the route then takes them from there. Only remote storage supports it. */
+export async function uploadUrl(path: string) {
+  if (!external() || process.env.KEDU_FILE_STORE_DIR) return null;
+  const config = supabaseConfig();
+  if (!config.key) return null;
+  const response = await fetch(`${config.project}/storage/v1/object/upload/sign/${config.bucket}/${path}`, {
+    method: "POST", headers: { apikey: config.key, Authorization: "Bearer " + config.key }, signal: AbortSignal.timeout(30000),
+  });
+  if (!response.ok) throw Object.assign(Error(`Envio indisponível no Storage (HTTP ${response.status}).`), { status: 503 });
+  const { url } = await response.json() as { url: string };
+  return `${config.project}/storage/v1${url}`;
+}
+/** Reads an uploaded file and deletes it: it only carries the file to one request. */
+export async function takeUpload(path: string) {
+  const config = supabaseConfig();
+  const headers = { apikey: config.key, Authorization: "Bearer " + config.key };
+  const object = `${config.project}/storage/v1/object/${config.bucket}/${path}`;
+  const response = await fetch(`${config.project}/storage/v1/object/authenticated/${config.bucket}/${path}`, { headers, signal: AbortSignal.timeout(120000) });
+  if (!response.ok) throw Object.assign(Error("Arquivo enviado não encontrado. Envie novamente."), { status: 400 });
+  const bytes = Buffer.from(await response.arrayBuffer());
+  await fetch(object, { method: "DELETE", headers, signal: AbortSignal.timeout(30000) }).catch(() => undefined);
+  return bytes;
+}
+
 /** Vercel Functions answer at most 4.5 MB; larger files leave through a private Storage link instead. */
 export const directLimit = 4 * 1024 * 1024;
 /** Link for a large file kept in remote storage, or null when the API should send the bytes itself.

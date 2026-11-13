@@ -10,10 +10,16 @@ export class ReadingJobQueue {
  private owner=randomUUID();
  private sql:Sql;
  private ready:Promise<unknown>;
- constructor(db:DatabaseSync|Sql,private time=()=>Date.now()) {
+ /** staleAfterMs: a running job is taken back only after this long without progress. 0 (one long-lived
+  * process) resumes every running job at once; serverless instances overlap and must wait. */
+ constructor(db:DatabaseSync|Sql,private time=()=>Date.now(),private staleAfterMs=0) {
   this.sql=db instanceof DatabaseSync?sqliteSql(db):db;
-  // An interrupted attempt resumes with its saved page cache instead of consuming a retry.
-  this.ready=this.sql.run("UPDATE reading_jobs SET state='queued',attempts=max(0,attempts-1),owner=NULL,available_at=?,updated=?,last_error=CASE WHEN last_error='targeted-fields' THEN last_error ELSE 'Processamento interrompido; retomada pendente' END WHERE state='running'",time(),time());
+  this.ready=this.recoverStale();
+ }
+ /** An interrupted attempt resumes with its saved page cache instead of consuming a retry. */
+ recoverStale() {
+  const at=this.time();
+  return this.sql.run("UPDATE reading_jobs SET state='queued',attempts=max(0,attempts-1),owner=NULL,available_at=?,updated=?,last_error=CASE WHEN last_error='targeted-fields' THEN last_error ELSE 'Processamento interrompido; retomada pendente' END WHERE state='running' AND updated<=?",at,at,at-this.staleAfterMs);
  }
  private async serialized<T>(work:()=>Promise<T>){
   await this.ready;

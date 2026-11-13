@@ -1,10 +1,12 @@
 import {writeFileSync,readFileSync,unlinkSync,mkdirSync} from 'node:fs';
-import {dirname,resolve} from 'node:path';
+import {dirname,join,resolve} from 'node:path';
+import {tmpdir} from 'node:os';
 import {randomUUID} from 'node:crypto';
 /** Shared by API and local batch tools. No second OCR process starts while held. */
 export async function acquireReadingLease() {
  if((process.env.NODE_ENV==='test'||process.env.NODE_TEST_CONTEXT)&&!process.env.READING_LOCK_PATH)return ()=>{};
- const path=resolve(process.env.READING_LOCK_PATH||'data/reading-runtime.lock');mkdirSync(dirname(path),{recursive:true});
+ // On Vercel only the temporary folder is writable; each instance holds its own reader.
+ const path=resolve(process.env.READING_LOCK_PATH||(process.env.VERCEL?join(tmpdir(),'kedu-reading-runtime.lock'):'data/reading-runtime.lock'));mkdirSync(dirname(path),{recursive:true});
  const token=randomUUID(),started=Date.now();
  for(;;){
   try{

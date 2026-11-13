@@ -134,7 +134,25 @@ const date = (s: string) =>
         year: "numeric",
       }).format(new Date(s.length === 10 ? s + "T12:00:00Z" : s))
     : "—";
+/** Hosted functions accept at most 4.5 MB per request: a larger file goes straight to private Storage and
+ * the form carries its upload_id instead. When the server keeps files itself, it answers {direct:true}. */
+async function sendLargeFiles(form: FormData) {
+  for (const [field, value] of [...form.entries()]) {
+    if (!(value instanceof File) || value.size <= 4 * 1024 * 1024) continue;
+    const ticket = await fetch("/api/uploads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ size: value.size }) });
+    const target = await ticket.json();
+    if (!ticket.ok) throw Error(target.error || "Não foi possível preparar o envio do arquivo.");
+    if (target.direct) continue;
+    const sent = await fetch(target.url, { method: "PUT", body: value, headers: { "Content-Type": value.type || "application/octet-stream" } });
+    if (!sent.ok) throw Error("Não foi possível enviar o arquivo. Tente novamente.");
+    form.delete(field);
+    form.set("upload_id", target.id);
+    form.set("upload_name", value.name);
+    form.set("upload_type", value.type || "application/octet-stream");
+  }
+}
 async function api(path: string, body?: any, method?: string) {
+  if (body instanceof FormData) await sendLargeFiles(body);
   const r = await fetch("/api" + path, {
     signal: ['/glpi/status','/glpi/tickets'].includes(path)||path.startsWith('/processing/progress?')?AbortSignal.timeout(20000):path==='/sync'?AbortSignal.timeout(615000):undefined,
     method: method || (body ? "POST" : "GET"),

@@ -1,10 +1,11 @@
 import type { Express } from "express";
 import multer from "multer";
+import { acceptStored } from "./stored-upload.js";
 import { z } from "zod";
 import { all, one, run, db, id, now, localDate, audit, sql, auditAsync } from "./db.js";
 import { permit, access } from "./workflow.js";
 import { fileInfo } from "./governance-routes.js";
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024, files: 1 } });
+const upload = acceptStored(multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024, files: 1 } }), 8 * 1024 * 1024);
 export function registerMatrixRoutes(app: Express) {
   app.post("/api/demands/:id/matrices", (req: any, _res, next) => {
     permit(req.user, "risk"); permit(req.user, "files"); permit(req.user, "bank"); next();
