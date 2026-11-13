@@ -241,7 +241,7 @@ async function pdf(bytes:Buffer,progress?:(reading:Reading)=>void,nativeOnly=fal
     await page.render({canvas:canvas as any,canvasContext:canvas.getContext("2d") as any,viewport}).promise;
     if(!active)throw Error('Leitura cancelada.');
     const png=canvas.toBuffer('image/png');
-    const paddle=await recognizeWithPaddle(png,Math.min(25000,budget*.65));
+    const paddle=await recognizeWithPaddle(png,Math.min(50000,budget*.8));
     if(!active)throw Error('Leitura cancelada.');
     const combined=paddle?combineOcrFields({},[],paddle):null;
     const confident=paddle&&paddle.passes.every(pass=>pass.filter(b=>b.confidence>=85).map(b=>b.text).join(' ').length>=80);

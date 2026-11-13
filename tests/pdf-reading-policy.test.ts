@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {needsPdfOcr,pdfPageBudget} from '../server/pdf-reading-policy.js';
 test('PDF longo mantém orçamento útil por página em vez de diluir o tempo entre todas',()=>{
- assert.equal(pdfPageBudget(140000),35000);assert.equal(pdfPageBudget(140000,true),70000);
+ assert.equal(pdfPageBudget(140000),60000);assert.equal(pdfPageBudget(140000,true),70000);
  assert.equal(pdfPageBudget(12000),12000);assert.equal(pdfPageBudget(-1),0);
 });
 test('digital PDF with small decorative images stays digital; scanned body requires OCR',()=>{
