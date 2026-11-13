@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 process.env.DATABASE_PATH=join(mkdtempSync(join(tmpdir(),"kedu-attachment-")),"test.sqlite");
 process.env.NODE_ENV="test";process.env.DEMO_SEED="false";process.env.GLPI_MODE="demo";
-const {run,one,all}=await import("../server/db.js");
+const { run, one, all, sql } = await import("../server/db.js");
 const {demoTemplate}=await import("../server/documents.js");
 const {inspectAttachment}=await import("../server/attachment-analysis.js");
 const {registerAttachmentRoutes}=await import("../server/attachment-routes.js");
@@ -42,10 +42,10 @@ const raw={externalId:"9001",title:"Solicitação de aditivo",content:"<p>RAZÃO
 test("Extrai a nova taxa explícita do pedido e preserva a origem sem usar a taxa anterior",()=>{
   const a=analyzeTicket(raw as any,{schools:[],matrices:[]});assert.equal(a.fields.remuneracao.value,"11,84%");assert.match(a.fields.remuneracao.origin,/nova taxa explicitamente/);
 });
-run("INSERT INTO users VALUES('u','Operador','u@test.local','Administrador','unused')");
-run("INSERT INTO schools VALUES('s','Escola teste','Escola teste','11.444.777/0001-61','','')");
-run("INSERT INTO demands(id,glpi_id,school_id,type,stage,priority,owner,due,data,created) VALUES('d','9001','s','Contrato educacional','Recebido','Normal','u','','{}','2026-10-21')");
-run("INSERT INTO glpi_tickets VALUES(?,?,?,?,?,?,?,?,?,?,?,?)","9001","real",raw.title,"2","hash1",JSON.stringify(raw),"{}","vinculado","d","2026-10-21","2026-10-21",null);
+await sql.run("INSERT INTO users VALUES('u','Operador','u@test.local','Administrador','unused')");
+await sql.run("INSERT INTO schools VALUES('s','Escola teste','Escola teste','11.444.777/0001-61','','')");
+await sql.run("INSERT INTO demands(id,glpi_id,school_id,type,stage,priority,owner,due,data,created) VALUES('d','9001','s','Contrato educacional','Recebido','Normal','u','','{}','2026-10-21')");
+await sql.run("INSERT INTO glpi_tickets VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", "9001", "real", raw.title, "2", "hash1", JSON.stringify(raw), "{}", "vinculado", "d", "2026-10-21", "2026-10-21", null);
 let downloads=0;
 const app=express();app.use((req:any,_res,next)=>{req.user={id:"u",role:req.headers["x-role"]||"Administrador"};next();});
 registerAttachmentRoutes(app,async(_ticket,document)=>{downloads++;return document==="8"?{bytes:Buffer.from("imagem"),name:"anexo.png",mime:"application/octet-stream"}:{bytes:doc("CNPJ: 11.444.777/0001-61","Taxa de remuneração: 11%"),name:"contrato.docx",mime:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"};});
@@ -61,16 +61,16 @@ async function analyze(options:{parent?:string;bytes?:Buffer;role?:string;versio
 }
 test("Fluxo de anexo preserva original, encaminha erro à correção e guarda nova versão para visualizar e baixar",async()=>{
   const original=await analyze();assert.equal(original.status,200);assert.equal(original.data.status,"divergente");
-  assert.equal(one("SELECT stage FROM demands WHERE id='d'").stage,"Devolvido");
-  assert.ok((await governanceMissing(one("SELECT * FROM demands WHERE id='d'"))).some(s=>s.includes("correção manual")));
+  assert.equal((await sql.one("SELECT stage FROM demands WHERE id='d'")).stage,"Devolvido");
+  assert.ok((await governanceMissing(await sql.one("SELECT * FROM demands WHERE id='d'"))).some(s=>s.includes("correção manual")));
   const fixed=doc("Taxa de remuneração: 11,84%");
   const corrected=await analyze({parent:original.data.id,bytes:fixed});assert.equal(corrected.status,200);assert.equal(corrected.data.status,"conforme");
-  assert.equal(one("SELECT COUNT(*) n FROM attachment_checks").n,2);
-  assert.equal(one("SELECT status FROM attachment_checks WHERE id=?",original.data.id).status,"divergente");
-  assert.equal(one("SELECT parent_id FROM attachment_checks WHERE id=?",corrected.data.id).parent_id,original.data.id);
+  assert.equal((await sql.one("SELECT COUNT(*) n FROM attachment_checks")).n,2);
+  assert.equal((await sql.one("SELECT status FROM attachment_checks WHERE id=?", original.data.id)).status,"divergente");
+  assert.equal((await sql.one("SELECT parent_id FROM attachment_checks WHERE id=?", corrected.data.id)).parent_id,original.data.id);
   const preview=await fetch(base+`/${corrected.data.id}/preview`);assert.match((await preview.json()).text,/11,84%/);
   const file=await fetch(base+`/${corrected.data.id}/download`);assert.equal(file.status,200);assert.deepEqual(Buffer.from(await file.arrayBuffer()),fixed);
-  assert.equal(one("SELECT stage FROM demands WHERE id='d'").stage,"Devolvido","valores corretos não aprovam nem avançam automaticamente o contrato");
+  assert.equal((await sql.one("SELECT stage FROM demands WHERE id='d'")).stage,"Devolvido","valores corretos não aprovam nem avançam automaticamente o contrato");
 });
 test("Perfil sem acesso, documento alheio e versões obsoletas são bloqueados antes do download",async()=>{
   const before=downloads;
@@ -79,10 +79,10 @@ test("Perfil sem acesso, documento alheio e versões obsoletas são bloqueados a
   assert.equal((await analyze({hash:"obsoleto"})).status,409);
   assert.equal((await analyze({version:"999"})).status,409);
   assert.equal(downloads,before);
-  assert.equal((await fetch(base+"/"+one("SELECT id FROM attachment_checks LIMIT 1").id+"/download",{headers:{"x-role":"Consulta"}})).status,403);
+  assert.equal((await fetch(base+"/"+(await sql.one("SELECT id FROM attachment_checks LIMIT 1")).id+"/download",{headers:{"x-role":"Consulta"}})).status,403);
 });
 test("Imagem devolve resultado inconclusivo e bloqueia avanço em vez de aprovar",async()=>{
   const result=await analyze({document:"8"});assert.equal(result.status,200);assert.equal(result.data.status,"inconclusiva");
-  assert.equal(one("SELECT stage FROM demands WHERE id='d'").stage,"Aguardando informações");
-  assert.ok((await governanceMissing(one("SELECT * FROM demands WHERE id='d'"))).some(s=>s.includes("inconclusiva")));
+  assert.equal((await sql.one("SELECT stage FROM demands WHERE id='d'")).stage,"Aguardando informações");
+  assert.ok((await governanceMissing(await sql.one("SELECT * FROM demands WHERE id='d'"))).some(s=>s.includes("inconclusiva")));
 });

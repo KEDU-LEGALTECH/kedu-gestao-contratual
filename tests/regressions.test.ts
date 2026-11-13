@@ -11,7 +11,7 @@ process.env.DATABASE_PATH = join(
 process.env.NODE_ENV = "test";
 process.env.DEMO_SEED = "true";
 const { default: app } = await import("../server/index.js");
-const { one, all, run, db, hash, id } = await import("../server/db.js");
+const { one, all, run, db, hash, id, sql } = await import("../server/db.js");
 const { demoTemplate } = await import("../server/documents.js");
 const { transition, allocateAddendum } = await import("../server/workflow.js");
 const { requiredFor, visibleFor, operationFields } =
@@ -34,14 +34,7 @@ async function request(
   });
   return { status: res.status, data: await res.json() };
 }
-run(
-  "INSERT INTO users VALUES(?,?,?,?,?)",
-  "reg-admin",
-  "Administrador real de teste",
-  "admin@regression.local",
-  "Administrador",
-  hash("Regression-test-password!"),
-);
+await sql.run("INSERT INTO users VALUES(?,?,?,?,?)", "reg-admin", "Administrador real de teste", "admin@regression.local", "Administrador", hash("Regression-test-password!"));
 const login = await fetch(base + "/login", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
@@ -51,27 +44,27 @@ const login = await fetch(base + "/login", {
   }),
 });
 const cookie = login.headers.get("set-cookie")!.split(";")[0];
-const admin = one("SELECT * FROM users WHERE id='reg-admin'");
+const admin = await sql.one("SELECT * FROM users WHERE id='reg-admin'");
 test("Modelos Canva são baixados como DOCX editável sem homologar nem modificar a versão",async()=>{
-  const template=one("SELECT v.id,v.bytes FROM template_versions v JOIN template_sources s ON s.version_id=v.id LIMIT 1");
+  const template=await sql.one("SELECT v.id,v.bytes FROM template_versions v JOIN template_sources s ON s.version_id=v.id LIMIT 1");
   assert.ok(template);
-  const before=one("SELECT COUNT(*) n FROM template_homologations").n;
+  const before=(await sql.one("SELECT COUNT(*) n FROM template_homologations")).n;
   const response=await fetch(base+`/templates/${template.id}/editable`,{headers:{cookie}});
   assert.equal(response.status,200);
   assert.match(response.headers.get("content-type")!,/wordprocessingml/);
   assert.match(response.headers.get("content-disposition")!,/\.docx/);
   assert.deepEqual(Buffer.from(await response.arrayBuffer()),Buffer.from(template.bytes));
-  assert.equal(one("SELECT COUNT(*) n FROM template_homologations").n,before);
+  assert.equal((await sql.one("SELECT COUNT(*) n FROM template_homologations")).n,before);
 });
 test("Visualização de modelo rascunho exige login e preserva aprovação e original",async()=>{
- const t=one("SELECT v.id,v.bytes,v.status FROM template_versions v JOIN template_sources s ON s.version_id=v.id LIMIT 1");
- const before=one("SELECT COUNT(*) n FROM template_homologations").n;
+ const t=await sql.one("SELECT v.id,v.bytes,v.status FROM template_versions v JOIN template_sources s ON s.version_id=v.id LIMIT 1");
+ const before=(await sql.one("SELECT COUNT(*) n FROM template_homologations")).n;
  const unauth=await fetch(base+`/templates/${t.id}/view`);assert.equal(unauth.status,401);
  const view=await request(`/templates/${t.id}/view`);assert.equal(view.status,200);
  assert.ok(view.data.paragraphs.length>0);assert.equal(typeof view.data.paragraphs[0],"string");
- const current=one("SELECT bytes,status FROM template_versions WHERE id=?",t.id);
+ const current=await sql.one("SELECT bytes,status FROM template_versions WHERE id=?", t.id);
  assert.equal(current.status,t.status);assert.deepEqual(Buffer.from(current.bytes),Buffer.from(t.bytes));
- assert.equal(one("SELECT COUNT(*) n FROM template_homologations").n,before);
+ assert.equal((await sql.one("SELECT COUNT(*) n FROM template_homologations")).n,before);
 });
 
 test("Cadastro de matriz externa preserva arquivo, exige declaração e permite reservar apenas o próximo aditivo", async () => {
@@ -84,42 +77,42 @@ test("Cadastro de matriz externa preserva arquivo, exige declaração e permite 
     const response = await fetch(base + `/demands/${d.id}/matrices`, { method: "POST", headers: { cookie }, body: form });
     return { status: response.status, data: await response.json() };
   };
-  const count = one("SELECT COUNT(*) n FROM contracts").n;
+  const count = (await sql.one("SELECT COUNT(*) n FROM contracts")).n;
   assert.notEqual((await send("false")).status, 200);
   assert.notEqual((await send("true", "2099-01-01")).status, 200);
-  assert.equal(one("SELECT COUNT(*) n FROM contracts").n, count);
+  assert.equal((await sql.one("SELECT COUNT(*) n FROM contracts")).n, count);
   const registered = await send();
   assert.equal(registered.status, 200, JSON.stringify(registered.data));
   const cid = registered.data.id;
-  assert.equal(one("SELECT status FROM contracts WHERE id=?", cid).status, "Assinado");
-  assert.equal(one("SELECT sequence FROM signed_history WHERE matrix_id=?", cid).sequence, 0);
-  assert.equal(one("SELECT COUNT(*) n FROM contracts WHERE parent_id=?", cid).n, 0);
+  assert.equal((await sql.one("SELECT status FROM contracts WHERE id=?", cid)).status, "Assinado");
+  assert.equal((await sql.one("SELECT sequence FROM signed_history WHERE matrix_id=?", cid)).sequence, 0);
+  assert.equal((await sql.one("SELECT COUNT(*) n FROM contracts WHERE parent_id=?", cid)).n, 0);
   assert.notEqual((await send()).status, 200);
   const data = JSON.parse(d.data); data.matriz = cid;
-  run("UPDATE demands SET data=? WHERE id=?", JSON.stringify(data), d.id);
+  await sql.run("UPDATE demands SET data=? WHERE id=?", JSON.stringify(data), d.id);
   const downloaded = await fetch(base + `/demands/${d.id}/matrix/${cid}/download`, { headers: { cookie } });
   assert.equal(downloaded.status, 200);
   assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), bytes);
   assert.equal((await request(`/demands/${d.id}`)).data.documentBundle.externalMatrix.contract_id, cid);
   assert.equal((await allocateAddendum(d.school_id, cid)).sequence, 1);
-  assert.throws(() => run("UPDATE external_contract_files SET name='alterado' WHERE contract_id=?", cid), /imutável/);
+  await assert.rejects(async () => sql.run("UPDATE external_contract_files SET name='alterado' WHERE contract_id=?", cid), /imutável/);
 });
 test("Documentos da demanda mostram apenas a matriz e seus aditivos e respeitam acesso restrito", async () => {
   const matrix = await create();
-  signedFixture(matrix);
+  await signedFixture(matrix);
   const unrelated = await create();
-  signedFixture(unrelated);
+  await signedFixture(unrelated);
   const child = await create();
-  run("UPDATE contracts SET parent_id=?,sequence=1 WHERE id=?", matrix.contract_id, child.contract_id);
-  signedFixture(child);
+  await sql.run("UPDATE contracts SET parent_id=?,sequence=1 WHERE id=?", matrix.contract_id, child.contract_id);
+  await signedFixture(child);
   const result = await request(`/demands/${child.id}`);
   assert.equal(result.status, 200);
   assert.equal(result.data.documentBundle.matrixId, matrix.contract_id);
   assert.deepEqual(new Set(result.data.documentBundle.signed.map((d: any) => d.demand_id)), new Set([matrix.id, child.id]));
   assert.equal(result.data.documentBundle.signed.some((d: any) => d.demand_id === unrelated.id), false);
   const uid = id(), token = id();
-  run("INSERT INTO users VALUES(?,?,?,?,?)", uid, "Consulta teste", uid + "@test.local", "Consulta", hash("Test-password-restricted"));
-  run("INSERT INTO sessions VALUES(?,?,?)", token, uid, Date.now() + 60000);
+  await sql.run("INSERT INTO users VALUES(?,?,?,?,?)", uid, "Consulta teste", uid + "@test.local", "Consulta", hash("Test-password-restricted"));
+  await sql.run("INSERT INTO sessions VALUES(?,?,?)", token, uid, Date.now() + 60000);
   const restricted = await fetch(base + `/demands/${child.id}`, { headers: { cookie: "session=" + token } });
   assert.equal(restricted.status, 200);
   assert.equal((await restricted.json()).documentBundle, null);
@@ -134,25 +127,13 @@ async function create(type = "Contrato de garantia", matrix?: string) {
     matrix,
   });
   assert.equal(result.status, 200, JSON.stringify(result.data));
-  return one("SELECT * FROM demands WHERE id=?", result.data.id);
+  return await sql.one("SELECT * FROM demands WHERE id=?", result.data.id);
 }
-function signedFixture(d: any) {
+async function signedFixture(d: any) {
   const doc = id();
-  run(
-    "INSERT INTO documents VALUES(?,?,?,?,?,?,?,?,?,?)",
-    doc,
-    d.id,
-    1,
-    "tv1",
-    d.data_version,
-    "{}",
-    demoTemplate(),
-    Buffer.from("%PDF-signed-fixture"),
-    admin.id,
-    new Date().toISOString(),
-  );
-  run("UPDATE demands SET stage='Em assinatura' WHERE id=?", d.id);
-  return one("SELECT * FROM demands WHERE id=?", d.id);
+  await sql.run("INSERT INTO documents VALUES(?,?,?,?,?,?,?,?,?,?)", doc, d.id, 1, "tv1", d.data_version, "{}", demoTemplate(), Buffer.from("%PDF-signed-fixture"), admin.id, new Date().toISOString());
+  await sql.run("UPDATE demands SET stage='Em assinatura' WHERE id=?", d.id);
+  return await sql.one("SELECT * FROM demands WHERE id=?", d.id);
 }
 async function upload(
   path: string,
@@ -182,18 +163,15 @@ test("Operações jurídicas concluídas e legadas nunca são matrizes elegívei
     "Alteração societária",
   ]) {
     const matrix = id();
-    run(
-      "INSERT INTO contracts(id,school_id,status) VALUES(?,'s4','Assinado')",
-      matrix,
-    );
+    await sql.run("INSERT INTO contracts(id,school_id,status) VALUES(?,'s4','Assinado')", matrix);
     const d = await create(type, matrix);
-    await transition(admin, signedFixture(d), "Concluído");
-    const c = one("SELECT * FROM contract_registry WHERE id=?", d.contract_id);
+    await transition(admin, await signedFixture(d), "Concluído");
+    const c = await sql.one("SELECT * FROM contract_registry WHERE id=?", d.contract_id);
     assert.equal(c.instrument_kind, "Operação jurídica");
     assert.equal(c.source_matrix, matrix);
     assert.equal(c.status, "Concluído");
     assert.equal(
-      one("SELECT status FROM contracts WHERE id=?", matrix).status,
+      (await sql.one("SELECT status FROM contracts WHERE id=?", matrix)).status,
       type === "Distrato"
         ? "Distratado"
         : type === "Descredenciamento"
@@ -201,13 +179,10 @@ test("Operações jurídicas concluídas e legadas nunca são matrizes elegívei
           : "Assinado",
     );
     // Simulate the old application's already-signed operation, then rerun the migration.
-    run("UPDATE contracts SET status='Assinado' WHERE id=?", d.contract_id);
-    db.exec(readFileSync("migrations/007.sql", "utf8"));
+    await sql.run("UPDATE contracts SET status='Assinado' WHERE id=?", d.contract_id);
+    if (sql.dialect === "sqlite") db.exec(readFileSync("migrations/007.sql", "utf8"));
     assert.equal(
-      one(
-        "SELECT instrument_kind FROM contract_registry WHERE id=?",
-        d.contract_id,
-      ).instrument_kind,
+      (await sql.one("SELECT instrument_kind FROM contract_registry WHERE id=?", d.contract_id)).instrument_kind,
       "Operação jurídica",
     );
     await assert.rejects(
@@ -237,27 +212,20 @@ test("Operações jurídicas concluídas e legadas nunca são matrizes elegívei
     );
   }
   const normal = await create();
-  await transition(admin, signedFixture(normal), "Concluído");
+  await transition(admin, await signedFixture(normal), "Concluído");
   assert.equal(
-    one("SELECT status FROM contracts WHERE id=?", normal.contract_id).status,
+    (await sql.one("SELECT status FROM contracts WHERE id=?", normal.contract_id)).status,
     "Assinado",
   );
   assert.equal(
-    one(
-      "SELECT instrument_kind FROM contract_registry WHERE id=?",
-      normal.contract_id,
-    ).instrument_kind,
+    (await sql.one("SELECT instrument_kind FROM contract_registry WHERE id=?", normal.contract_id)).instrument_kind,
     "Matriz",
   );
 });
 
 test("Upload e avanço de modelo demonstrativo são bloqueados em produção com usuário real", async () => {
   const d = await create();
-  run(
-    "UPDATE demands SET glpi_id=?,stage='Em elaboração' WHERE id=?",
-    d.id,
-    d.id,
-  );
+  await sql.run("UPDATE demands SET glpi_id=?,stage='Em elaboração' WHERE id=?", d.id, d.id);
   process.env.NODE_ENV = "production";
   try {
     const result = await upload(`/demands/${d.id}/upload`, demoTemplate(), {
@@ -266,16 +234,16 @@ test("Upload e avanço de modelo demonstrativo são bloqueados em produção com
     assert.equal(result.status, 400);
     assert.match(result.data.error, /demonstrativos.*produção/);
     assert.equal(
-      one("SELECT COUNT(*) n FROM documents WHERE demand_id=?", d.id).n,
+      (await sql.one("SELECT COUNT(*) n FROM documents WHERE demand_id=?", d.id)).n,
       0,
     );
-    const pending = signedFixture(d);
+    const pending = await signedFixture(d);
     await assert.rejects(
       async () => transition(admin, pending, "Concluído"),
       /demonstrativos.*produção/,
     );
     assert.equal(
-      one("SELECT stage FROM demands WHERE id=?", d.id).stage,
+      (await sql.one("SELECT stage FROM demands WHERE id=?", d.id)).stage,
       "Em assinatura",
     );
   } finally {
@@ -285,26 +253,23 @@ test("Upload e avanço de modelo demonstrativo são bloqueados em produção com
 
 test("Migração preserva a nova matriz, encerra a antiga e reverte a transação se houver pendências", async () => {
   const matrix = id();
-  run(
-    "INSERT INTO contracts(id,school_id,status) VALUES(?,'s4','Assinado')",
-    matrix,
-  );
+  await sql.run("INSERT INTO contracts(id,school_id,status) VALUES(?,'s4','Assinado')", matrix);
   const migration = await create("Migração de modalidade", matrix);
-  const pending = signedFixture(migration);
+  const pending = await signedFixture(migration);
   await assert.rejects(async () => transition(admin, pending, "Concluído"), /requisitos/);
   assert.equal(
-    one("SELECT status FROM contracts WHERE id=?", migration.contract_id)
+    (await sql.one("SELECT status FROM contracts WHERE id=?", migration.contract_id))
       .status,
     "Em preparação",
   );
   assert.equal(
-    one("SELECT stage FROM demands WHERE id=?", migration.id).stage,
+    (await sql.one("SELECT stage FROM demands WHERE id=?", migration.id)).stage,
     "Em assinatura",
   );
   const distrato = await create("Distrato", matrix);
-  await transition(admin, signedFixture(distrato), "Concluído");
+  await transition(admin, await signedFixture(distrato), "Concluído");
   const novo = await create();
-  await transition(admin, signedFixture(novo), "Concluído");
+  await transition(admin, await signedFixture(novo), "Concluído");
   const { saveDetails, requirements } = await import("../server/governance.js");
   const data = {
     ...JSON.parse(migration.data),
@@ -318,12 +283,7 @@ test("Migração preserva a nova matriz, encerra a antiga e reverte a transaçã
     demandaNovoContrato: novo.id,
     checklist: true,
   };
-  run(
-    "UPDATE demands SET data=?,confirmed=1,glpi_id=? WHERE id=?",
-    JSON.stringify(data),
-    migration.id,
-    migration.id,
-  );
+  await sql.run("UPDATE demands SET data=?,confirmed=1,glpi_id=? WHERE id=?", JSON.stringify(data), migration.id, migration.id);
   await saveDetails(migration.id, {
     reportDate: "2030-01-04",
     signingMode: "Administrador nomeado",
@@ -337,39 +297,24 @@ test("Migração preserva a nova matriz, encerra a antiga e reverte a transaçã
     ],
     legalFlags: [],
   });
-  const current = one("SELECT * FROM demands WHERE id=?", migration.id);
+  const current = await sql.one("SELECT * FROM demands WHERE id=?", migration.id);
   for (const kind of (await requirements(current)).evidence)
-    run(
-      "INSERT INTO evidence_files VALUES(?,?,?,?,?,?,?,?,?,?)",
-      id(),
-      current.id,
-      kind,
-      "evidencia.pdf",
-      "application/pdf",
-      Buffer.from("%PDF-fixture"),
-      admin.id,
-      new Date().toISOString(),
-      admin.id,
-      new Date().toISOString(),
-    );
+    await sql.run("INSERT INTO evidence_files VALUES(?,?,?,?,?,?,?,?,?,?)", id(), current.id, kind, "evidencia.pdf", "application/pdf", Buffer.from("%PDF-fixture"), admin.id, new Date().toISOString(), admin.id, new Date().toISOString());
   await transition(admin, current, "Concluído");
   assert.equal(
-    one("SELECT status FROM contracts WHERE id=?", matrix).status,
+    (await sql.one("SELECT status FROM contracts WHERE id=?", matrix)).status,
     "Migrado",
   );
   assert.equal(
-    one("SELECT status FROM contracts WHERE id=?", novo.contract_id).status,
+    (await sql.one("SELECT status FROM contracts WHERE id=?", novo.contract_id)).status,
     "Assinado",
   );
   assert.equal(
-    one(
-      "SELECT instrument_kind FROM contract_registry WHERE id=?",
-      migration.contract_id,
-    ).instrument_kind,
+    (await sql.one("SELECT instrument_kind FROM contract_registry WHERE id=?", migration.contract_id)).instrument_kind,
     "Operação jurídica",
   );
   assert.equal(
-    one("SELECT status FROM contracts WHERE id=?", migration.contract_id)
+    (await sql.one("SELECT status FROM contracts WHERE id=?", migration.contract_id))
       .status,
     "Concluído",
   );
@@ -378,28 +323,22 @@ test("Migração preserva a nova matriz, encerra a antiga e reverte a transaçã
 test("Conferência de demanda cancelada ou concluída não altera etapa, revisões ou auditoria", async () => {
   for (const stage of ["Cancelado", "Concluído"]) {
     const d = await create();
-    signedFixture(d);
-    run("UPDATE demands SET stage=? WHERE id=?", stage, d.id);
-    const before = one(
-      "SELECT COUNT(*) n FROM audit WHERE demand_id=?",
-      d.id,
-    ).n;
+    await signedFixture(d);
+    await sql.run("UPDATE demands SET stage=? WHERE id=?", stage, d.id);
+    const before = (await sql.one("SELECT COUNT(*) n FROM audit WHERE demand_id=?", d.id)).n;
     const result = await request(`/demands/${d.id}/review`, {});
     assert.equal(result.status, 400);
     assert.match(result.data.error, /encerrada/);
     assert.equal(
-      one("SELECT stage FROM demands WHERE id=?", d.id).stage,
+      (await sql.one("SELECT stage FROM demands WHERE id=?", d.id)).stage,
       stage,
     );
     assert.equal(
-      one(
-        "SELECT COUNT(*) n FROM reviews r JOIN documents doc ON doc.id=r.document_id WHERE doc.demand_id=?",
-        d.id,
-      ).n,
+      (await sql.one("SELECT COUNT(*) n FROM reviews r JOIN documents doc ON doc.id=r.document_id WHERE doc.demand_id=?", d.id)).n,
       0,
     );
     assert.equal(
-      one("SELECT COUNT(*) n FROM audit WHERE demand_id=?", d.id).n,
+      (await sql.one("SELECT COUNT(*) n FROM audit WHERE demand_id=?", d.id)).n,
       before,
     );
   }
@@ -407,11 +346,7 @@ test("Conferência de demanda cancelada ou concluída não altera etapa, revisõ
 
 test("Governança rejeita versão obsoleta ou ausente e preserva origem e signatários salvos", async () => {
   const d = await create();
-  run(
-    "UPDATE case_details SET payload=json_set(payload,'$.origins',json(?)) WHERE demand_id=?",
-    JSON.stringify({ motivo: "GLPI" }),
-    d.id,
-  );
+  await sql.run("UPDATE case_details SET payload=json_set(payload,'$.origins',json(?)) WHERE demand_id=?", JSON.stringify({ motivo: "GLPI" }), d.id);
   const g = (await request(`/demands/${d.id}/governance`)).data;
   const body = {
     expected_version: g.data_version,
@@ -432,10 +367,7 @@ test("Governança rejeita versão obsoleta ou ausente e preserva origem e signat
     (await request(`/demands/${d.id}/governance`, body, "PUT")).status,
     200,
   );
-  const saved = one(
-    "SELECT payload FROM case_details WHERE demand_id=?",
-    d.id,
-  ).payload;
+  const saved = (await sql.one("SELECT payload FROM case_details WHERE demand_id=?", d.id)).payload;
   assert.equal(
     (
       await request(
@@ -452,12 +384,12 @@ test("Governança rejeita versão obsoleta ou ausente e preserva origem e signat
     409,
   );
   assert.equal(
-    one("SELECT payload FROM case_details WHERE demand_id=?", d.id).payload,
+    (await sql.one("SELECT payload FROM case_details WHERE demand_id=?", d.id)).payload,
     saved,
   );
   assert.deepEqual(JSON.parse(saved).origins, { motivo: "GLPI" });
   assert.equal(
-    one("SELECT data_version FROM demands WHERE id=?", d.id).data_version,
+    (await sql.one("SELECT data_version FROM demands WHERE id=?", d.id)).data_version,
     expected_version + 1,
   );
 });
@@ -511,16 +443,13 @@ test("Assinado aceita até 8 MB no middleware e recusa acima; minuta continua li
   );
   assert.match(draft.data.error, /File too large/);
   assert.equal(
-    all(
-      "SELECT * FROM signature_records WHERE document_id IN (SELECT id FROM documents WHERE demand_id=?)",
-      d.id,
-    ).length,
+    (await sql.all("SELECT * FROM signature_records WHERE document_id IN (SELECT id FROM documents WHERE demand_id=?)", d.id)).length,
     0,
   );
 });
 
 test("PDF assinado de 8 MB é armazenado integralmente após todos os controles do fluxo", async () => {
-  const d = one("SELECT * FROM demands WHERE id='KD-0006'");
+  const d = await sql.one("SELECT * FROM demands WHERE id='KD-0006'");
   const { required } = await import("../server/workflow.js");
   const { humanAxes, requirements } = await import("../server/governance.js");
   // Complete the demo fixture's official inputs; signature remains a human declaration.
@@ -544,19 +473,16 @@ test("PDF assinado de 8 MB é armazenado integralmente após todos os controles 
     titularConta: "Escola teste",
     documentoTitular: JSON.parse(d.data).cnpj,
   };
-  run("UPDATE demands SET data=? WHERE id=?", JSON.stringify(data), d.id);
-  const current = one("SELECT * FROM demands WHERE id=?", d.id);
+  await sql.run("UPDATE demands SET data=? WHERE id=?", JSON.stringify(data), d.id);
+  const current = await sql.one("SELECT * FROM demands WHERE id=?", d.id);
   assert.deepEqual(await required(current), []);
   assert.equal(
-    all("SELECT * FROM human_checks WHERE document_id='doc5'").length,
+    (await sql.all("SELECT * FROM human_checks WHERE document_id='doc5'")).length,
     humanAxes.length,
   );
   for (const kind of (await requirements(current)).approvals)
     assert.ok(
-      one(
-        "SELECT id FROM approvals WHERE document_id='doc5' AND kind=? AND valid=1",
-        kind,
-      ),
+      await sql.one("SELECT id FROM approvals WHERE document_id='doc5' AND kind=? AND valid=1", kind),
     );
   const bytes = new Uint8Array(8 * 1024 * 1024);
   bytes.set(
@@ -570,7 +496,7 @@ test("PDF assinado de 8 MB é armazenado integralmente após todos os controles 
   );
   assert.equal(result.status, 200, JSON.stringify(result.data));
   assert.equal(
-    one("SELECT length(signed) n FROM documents WHERE id='doc5'").n,
+    (await sql.one("SELECT length(signed) n FROM documents WHERE id='doc5'")).n,
     bytes.length,
   );
   const downloaded = await fetch(base + "/documents/doc5/download?signed=1", {

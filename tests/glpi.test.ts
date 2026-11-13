@@ -8,7 +8,7 @@ process.env.DATABASE_PATH = join(mkdtempSync(join(tmpdir(), "kedu-glpi-")), "tes
 process.env.NODE_ENV = "test";
 process.env.DEMO_SEED = "true";
 const { default: app } = await import("../server/index.js");
-const { one, all, run } = await import("../server/db.js");
+const { one, all, run, sql } = await import("../server/db.js");
 const { GlpiClient, RealGlpiSource, glpiConfig, configProblems, readTicketTimeline } = await import("../server/glpi.js");
 const { analyzeTicket, htmlToText, validCnpj } = await import("../server/glpi-analysis.js");
 const { syncGlpi } = await import("../server/glpi-sync.js");
@@ -271,18 +271,18 @@ test("Sincronização é idempotente, preserva dados locais e registra mudanças
   assert.equal(ticket.analysis.schoolId, "s0");
   assert.equal(ticket.state, "vinculado");
   assert.ok(ticket.demand_id);
-  assert.equal(one("SELECT stage FROM demands WHERE id=?", ticket.demand_id).stage, "Recebido");
+  assert.equal((await sql.one("SELECT stage FROM demands WHERE id=?", ticket.demand_id)).stage, "Recebido");
   // Receipt is automatic; a person confirms school, type, subtype and matrix in the demand.
-  run("UPDATE contracts SET status='Assinado' WHERE id='c0'");
-  run("INSERT OR IGNORE INTO signed_history VALUES('h-glpi','c0',0,'Clicksign','Matriz fictícia conferida','2026-01-01','u0','2026-01-01')");
+  await sql.run("UPDATE contracts SET status='Assinado' WHERE id='c0'");
+  await sql.run("INSERT OR IGNORE INTO signed_history VALUES('h-glpi','c0',0,'Clicksign','Matriz fictícia conferida','2026-01-01','u0','2026-01-01')");
   const created = await request(
     "/demands/" + ticket.demand_id + "/intake",
-    { expected_version: 1, expected_hash: one("SELECT hash FROM glpi_tickets WHERE external_id='777'").hash, note: "Chamado e matriz fictícios conferidos pelo responsável", attested: true, school_id: "s0", type: "Aditivo", subtype: "Vigência", owner: "u2", priority: "Normal", due: "2030-01-01", matrix: "c0" },
+    { expected_version: 1, expected_hash: (await sql.one("SELECT hash FROM glpi_tickets WHERE external_id='777'")).hash, note: "Chamado e matriz fictícios conferidos pelo responsável", attested: true, school_id: "s0", type: "Aditivo", subtype: "Vigência", owner: "u2", priority: "Normal", due: "2030-01-01", matrix: "c0" },
     admin,
     "PUT",
   );
   assert.equal(created.status, 200, JSON.stringify(created.data));
-  const demand = one("SELECT * FROM demands WHERE id=?", ticket.demand_id);
+  const demand = await sql.one("SELECT * FROM demands WHERE id=?", ticket.demand_id);
   assert.equal(demand.glpi_id, "777");
   const data = JSON.parse(demand.data);
   assert.match(data.motivo, /Outubro\/2026 para Novembro\/2026/);
@@ -295,18 +295,18 @@ test("Sincronização é idempotente, preserva dados locais e registra mudanças
   current = content.replace("Novembro/2026", "Dezembro/2026");
   const changed = await syncGlpi("u0", source);
   assert.equal(changed.linkedChanged, 1);
-  assert.equal(one("SELECT state FROM glpi_tickets WHERE external_id='777'").state, "alterado após vínculo");
-  assert.equal(one("SELECT data FROM demands WHERE id=?", demand.id).data, demand.data);
-  assert.equal(all("SELECT * FROM glpi_ticket_versions WHERE external_id='777'").length, 2);
-  assert.ok(one("SELECT * FROM audit WHERE demand_id=? AND action LIKE '%mudou após a importação%'", demand.id));
-  assert.throws(() => run("DELETE FROM glpi_ticket_versions WHERE external_id='777'"));
+  assert.equal((await sql.one("SELECT state FROM glpi_tickets WHERE external_id='777'")).state, "alterado após vínculo");
+  assert.equal((await sql.one("SELECT data FROM demands WHERE id=?", demand.id)).data, demand.data);
+  assert.equal((await sql.all("SELECT * FROM glpi_ticket_versions WHERE external_id='777'")).length, 2);
+  assert.ok(await sql.one("SELECT * FROM audit WHERE demand_id=? AND action LIKE '%mudou após a importação%'", demand.id));
+  await assert.rejects(async () => sql.run("DELETE FROM glpi_ticket_versions WHERE external_id='777'"));
   assert.equal((await request("/glpi/tickets/777/acknowledge", { note: "Revisado com o solicitante" }, admin)).status, 200);
-  assert.equal(one("SELECT state FROM glpi_tickets WHERE external_id='777'").state, "vinculado");
+  assert.equal((await sql.one("SELECT state FROM glpi_tickets WHERE external_id='777'")).state, "vinculado");
 });
 
 test("Falha de leitura fica registrada no histórico de sincronização", async () => {
   await assert.rejects(syncGlpi("u0", { mode: "real", read: async () => { throw Error("GLPI respondeu 401 ERROR_SESSION_TOKEN_INVALID"); } }));
-  const log = one("SELECT * FROM sync_logs ORDER BY created DESC, rowid DESC LIMIT 1");
+  const log = await sql.one("SELECT * FROM sync_logs ORDER BY created DESC, rowid DESC LIMIT 1");
   assert.equal(log.status, "Falha");
   assert.match(log.message, /ERROR_SESSION_TOKEN_INVALID/);
 });
@@ -321,9 +321,8 @@ test("Sincronização recupera anexos e mensagens perdidos de versão imutável"
     documentLinks: { "9": ["501"] }, documentsAvailable: false,
   };
   const empty = { ...known, followups: [], documents: [], documentLinks: {} };
-  run("INSERT INTO glpi_tickets VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-    externalId, "real", known.title, "2", "empty-hash", JSON.stringify(empty), "{}", "novo", null, "2026-10-16", "2026-10-16", null);
-  run("INSERT INTO glpi_ticket_versions VALUES(?,?,?,?,?)", "known-version", externalId, "known-hash", JSON.stringify(known), "2026-10-16");
+  await sql.run("INSERT INTO glpi_tickets VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", externalId, "real", known.title, "2", "empty-hash", JSON.stringify(empty), "{}", "novo", null, "2026-10-16", "2026-10-16", null);
+  await sql.run("INSERT INTO glpi_ticket_versions VALUES(?,?,?,?,?)", "known-version", externalId, "known-hash", JSON.stringify(known), "2026-10-16");
   const settings = {
     GLPI_MODE: "real", GLPI_URL: config().url, GLPI_APP_TOKEN: APP, GLPI_USER_TOKEN: USER,
     GLPI_GROUP_IDS: "", GLPI_GROUPS: "JURIDICO CONTRATOS", GLPI_RETRIES: "0", GLPI_MAX_TICKETS: "20",
@@ -334,7 +333,7 @@ test("Sincronização recupera anexos e mensagens perdidos de versão imutável"
   timelineFailure = true;
   try {
     await syncGlpi("u0", await ticketSource());
-    const stored = one("SELECT payload,hash FROM glpi_tickets WHERE external_id=?", externalId);
+    const stored = await sql.one("SELECT payload,hash FROM glpi_tickets WHERE external_id=?", externalId);
     const restored = JSON.parse(stored.payload);
     assert.equal(restored.timelineCoverage, "partial");
     assert.equal(restored.documents[0].id, "501");

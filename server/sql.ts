@@ -51,7 +51,15 @@ export function toPostgres(query: string) {
   if (cached) return cached;
   if (/\bINSERT\s+OR\s+REPLACE\b/i.test(query)) throw Error("INSERT OR REPLACE precisa de conflito explícito no PostgreSQL.");
   let n = 0, ignore = false;
-  const source = query.replace(/\bjson_extract\(\s*([\w.]+)\s*,\s*'\$\.(\w+)'\s*\)/gi, "(($1)::jsonb ->> '$2')");
+  const source = query
+    // A value selected directly keeps its JSON type (numbers stay numbers, as in SQLite).
+    .replace(/\bjson_extract\(\s*([\w.]+)\s*,\s*'\$\.(\w+)'\s*\)(\s+AS\b)/gi, "(($1)::jsonb -> '$2')$3")
+    .replace(/\bjson_extract\(\s*([\w.]+)\s*,\s*'\$\.(\w+)'\s*\)/gi, "(($1)::jsonb ->> '$2')")
+    .replace(/\bjson_array_length\(\s*([\w.]+)\s*,\s*'\$\.(\w+)'\s*\)/gi, "jsonb_array_length(($1)::jsonb -> '$2')")
+    .replace(/\bjson_remove\(\s*([\w.]+)\s*,\s*'\$\.(\w+)'\s*\)/gi, "((($1)::jsonb) - '$2')::text")
+    // json_set stores a parameter or literal as a JSON string, and json(?) as parsed JSON.
+    .replace(/\bjson_set\(\s*([\w.]+)\s*,\s*'\$\.(\w+)'\s*,\s*(json\(\?\)|\?|'(?:[^']|'')*')\s*\)/gi, (_, target: string, key: string, value: string) =>
+      `jsonb_set((${target})::jsonb,'{${key}}',${/^json/i.test(value) ? "((?)::text)::jsonb" : `to_jsonb((${value})::text)`})::text`);
   let result = source.replace(/'(?:[^']|'')*'|"(?:[^"]|"")*"|[^'"]+/g, part => {
     if (part[0] === "'" || part[0] === '"') return part;
     return part
@@ -59,6 +67,9 @@ export function toPostgres(query: string) {
       // Two-argument max/min are scalar in SQLite; the one-argument aggregates are left alone.
       .replace(/\b(max|min)\(([^(),]+),([^(),]+)\)/gi, (_, fn: string, x: string, y: string) => (fn.toLowerCase() === "max" ? "greatest(" : "least(") + x + "," + y + ")")
       .replace(/\browid\b/gi, "_rowid")
+      // PostgreSQL folds unquoted names to lowercase; camelCase aliases must keep their case.
+      .replace(/\bAS\s+([a-z_]\w*[A-Z]\w*)\b/g, 'AS "$1"')
+      .replace(/\)\s+([a-z]\w*[A-Z]\w*)(?=\s*(?:,|FROM\b))/g, ') "$1"')
       .replace(/\bINSERT\s+OR\s+IGNORE\s+INTO\b/gi, () => { ignore = true; return "INSERT INTO"; })
       .replace(/\bNOT\s+LIKE\b/gi, "NOT ILIKE")
       .replace(/(?<!NOT\s)\bLIKE\b/gi, "ILIKE");

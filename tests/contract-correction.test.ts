@@ -5,7 +5,7 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 process.env.DATABASE_PATH=join(mkdtempSync(join(tmpdir(),"kedu-correction-")),"test.sqlite");
 process.env.NODE_ENV="test";process.env.DEMO_SEED="false";process.env.GLPI_MODE="demo";
-const {run,now}=await import("../server/db.js");
+const { run, now, sql } = await import("../server/db.js");
 const {conversationReferences}=await import("../server/request-expectations.js");
 const {buildProcessingPlan,ensureProcessing}=await import("../server/contract-processing.js");
 const {processingSummaryReport}=await import("../server/processing-summary.js");
@@ -33,14 +33,14 @@ test("Repetir o mesmo valor com palavra de correção não cria correção",()=>
  const {fields,corrections}=conversationReferences(ticket([{id:"9",date:"2026-11-02",content:`<p>O CNPJ correto: ${A}</p>`}]));
  assert.deepEqual(fields.cnpj,[A]);assert.equal(corrections.cnpj,undefined);
 });
-run("INSERT INTO users VALUES('u','Teste','u@test.local','Administrador','unused')");
-run("INSERT INTO schools VALUES('s','Escola Teste Ltda','Escola Teste Ltda','11.444.777/0001-61','','')");
+await sql.run("INSERT INTO users VALUES('u','Teste','u@test.local','Administrador','unused')");
+await sql.run("INSERT INTO schools VALUES('s','Escola Teste Ltda','Escola Teste Ltda','11.444.777/0001-61','','')");
 async function demand(id:string,type:string,title:string,followups:any[]=[]){
  const raw={externalId:id,title,status:'2',content:`<p>RAZÃO SOCIAL: Escola Teste Ltda</p><p>CNPJ: ${A}</p>`,followups,documents:[{id:'1',name:'Contrato.pdf'}],documentsAvailable:true};
- run("INSERT INTO demands(id,glpi_id,school_id,type,stage,priority,owner,due,data,created) VALUES(?,?,?,?,'Recebido','Normal','u','','{}',?)",id,id,'s',type,now());
- run('INSERT INTO glpi_tickets VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',id,'real',title,'2','hash-'+id,JSON.stringify(raw),'{}','vinculado',id,now(),now(),null);
+ await sql.run("INSERT INTO demands(id,glpi_id,school_id,type,stage,priority,owner,due,data,created) VALUES(?,?,?,?,'Recebido','Normal','u','','{}',?)", id, id, 's', type, now());
+ await sql.run('INSERT INTO glpi_tickets VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', id, 'real', title, '2', 'hash-'+id, JSON.stringify(raw), '{}', 'vinculado', id, now(), now(), null);
  await ensureProcessing(id);
- run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)',id+'-1',id,'1','hash-'+id,'Contrato.pdf','application/pdf',Buffer.from('x'),JSON.stringify({version:4,text:`CONTRATADA: Escola Teste Ltda, inscrita no CNPJ ${B}`,fields:{razaoSocial:['Escola Teste Ltda'],cnpj:[B]},digitalFields:{razaoSocial:['Escola Teste Ltda'],cnpj:[B]},fieldOrigins:{cnpj:[{value:B,page:2,excerpt:`inscrita no CNPJ ${B}`}]},problem:'',method:'Texto do PDF',pages:3,needsReview:false}),'',now());
+ await sql.run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)', id+'-1', id, '1', 'hash-'+id, 'Contrato.pdf', 'application/pdf', Buffer.from('x'), JSON.stringify({version:4,text:`CONTRATADA: Escola Teste Ltda, inscrita no CNPJ ${B}`,fields:{razaoSocial:['Escola Teste Ltda'],cnpj:[B]},digitalFields:{razaoSocial:['Escola Teste Ltda'],cnpj:[B]},fieldOrigins:{cnpj:[{value:B,page:2,excerpt:`inscrita no CNPJ ${B}`}]},problem:'',method:'Texto do PDF',pages:3,needsReview:false}), '', now());
 }
 test("Tipo sem modelo oficial só lista os erros, sem pedir modelo nem campos de modelo",async ()=>{
  await demand('sem-modelo','Análise contratual','JURIDICO : ANÁLISE CONTRATUAL');

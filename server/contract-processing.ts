@@ -676,8 +676,7 @@ export async function scheduleContractProcessing() {
  })().catch(error=>console.error("Falha ao verificar a fila de leitura:",failureDetail(error)))
    .finally(()=>{scanningRecovery=false;});
 }
-export async function processingSummary(did:string) {
- const j=await sql.one(`SELECT d.stage,t.hash,p.status,p.ticket_hash,p.revision,
+const sqliteSummary=`SELECT d.stage,t.hash,p.status,p.ticket_hash,p.revision,
   json_array_length(p.result,'$.issues') AS issues,
   CASE WHEN p.status='Aguardando análise' THEN (
    SELECT CASE
@@ -701,7 +700,35 @@ export async function processingSummary(did:string) {
   CASE WHEN p.status='Aguardando correção' THEN json_extract(p.result,'$.issues') END AS saved_issues,
   CASE WHEN p.status='Aguardando correção' THEN json_extract(p.result,'$.comparisons') END AS saved_comparisons
   FROM demands d JOIN glpi_tickets t ON t.external_id=d.glpi_id AND t.mode='real'
-  LEFT JOIN contract_processing p ON p.demand_id=d.id WHERE d.id=?`, did);
+  LEFT JOIN contract_processing p ON p.demand_id=d.id WHERE d.id=?`;
+// Same query for PostgreSQL: JSON is stored as text, so it is cast to jsonb and false is compared as JSON.
+const postgresSummary=`SELECT d.stage,t.hash,p.status,p.ticket_hash,p.revision,
+  jsonb_array_length(p.result::jsonb->'issues') AS issues,
+  CASE WHEN p.status='Aguardando análise' THEN (
+   SELECT CASE
+    WHEN issue->>'field'='contractMissing' AND (
+     t.payload::jsonb->>'timelineCoverage'='partial'
+     OR t.payload::jsonb->>'approvalCoverage'='partial'
+     OR t.payload::jsonb->'documentsAvailable' IN ('false'::jsonb,'0'::jsonb)
+    ) THEN 'Consulta ao GLPI incompleta'
+    ELSE issue->>'label' END
+   FROM jsonb_array_elements(p.result::jsonb->'issues') issue
+   WHERE issue->>'field'='contractMissing'
+    OR issue->>'label' IN ('Contrato não lido','Tipo a confirmar')
+   LIMIT 1
+  ) END AS contract_stage,
+  CASE WHEN p.status='Aguardando análise' THEN (
+   SELECT issue->>'message' FROM jsonb_array_elements(p.result::jsonb->'issues') issue
+   WHERE issue->>'field'='contractMissing'
+    OR issue->>'label' IN ('Contrato não lido','Tipo a confirmar')
+   LIMIT 1
+  ) END AS contract_reason,
+  CASE WHEN p.status='Aguardando correção' THEN (p.result::jsonb->'issues')::text END AS saved_issues,
+  CASE WHEN p.status='Aguardando correção' THEN (p.result::jsonb->'comparisons')::text END AS saved_comparisons
+  FROM demands d JOIN glpi_tickets t ON t.external_id=d.glpi_id AND t.mode='real'
+  LEFT JOIN contract_processing p ON p.demand_id=d.id WHERE d.id=?`;
+export async function processingSummary(did:string) {
+ const j=await sql.one(sql.dialect==='postgres'?postgresSummary:sqliteSummary, did);
  if(!j)return null;
  if(["Concluído","Cancelado","Em assinatura"].includes(j.stage))return {status:j.stage,revision:j.revision||0,issues:0};
  if(j.ticket_hash!==j.hash)return {status:"Analisando",revision:j.revision||0};

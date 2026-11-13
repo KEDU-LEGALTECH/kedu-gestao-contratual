@@ -7,7 +7,7 @@ process.env.DATABASE_PATH = join(mkdtempSync(join(tmpdir(), "kedu-official-")), 
 process.env.NODE_ENV = "test";
 process.env.DEMO_SEED = "true";
 const { default: app } = await import("../server/index.js");
-const { one, all, run } = await import("../server/db.js");
+const { one, all, run, sql } = await import("../server/db.js");
 const { paragraphs, demoTemplate } = await import("../server/documents.js");
 const { requirements, humanAxes } = await import("../server/governance.js");
 const { cardinal, dateWords, moneyWords, percentWords, ordinal, wholeMonths } =
@@ -83,14 +83,14 @@ test("Catálogo oficial é registrado uma única vez, sem homologação automát
   assert.ok(official.every((t: any) => t.status === "rascunho" && !t.homologated_at));
   const { registerOfficialCatalog } = await import("../server/official-templates.js");
   assert.equal((await registerOfficialCatalog()).registered, 0);
-  assert.equal(all("SELECT * FROM template_sources").length, 8);
+  assert.equal((await sql.all("SELECT * FROM template_sources")).length, 8);
   const vigencia = official.find((t: any) => t.subtype === "Vigência");
   const r = await request("/templates/" + vigencia.version_id + "/approve", {}, juridico);
   assert.equal(r.status, 400);
 });
 
 test("Aditivo de vigência ponta a ponta com o modelo oficial: prévia, homologação, geração, aprovação e assinatura", async () => {
-  run("INSERT INTO contracts(id,school_id,status) VALUES('matriz-oficial','s2','Assinado')");
+  await sql.run("INSERT INTO contracts(id,school_id,status) VALUES('matriz-oficial','s2','Assinado')");
   ok(
     await request(
       "/contracts/matriz-oficial/signed-history",
@@ -106,13 +106,13 @@ test("Aditivo de vigência ponta a ponta com o modelo oficial: prévia, homologa
   ok(created);
   const did = created.data.id;
   const path = "/demands/" + did;
-  assert.equal(one("SELECT sequence FROM contracts WHERE id=(SELECT contract_id FROM demands WHERE id=?)", did).sequence, 2);
-  const version = () => one("SELECT data_version FROM demands WHERE id=?", did).data_version;
+  assert.equal((await sql.one("SELECT sequence FROM contracts WHERE id=(SELECT contract_id FROM demands WHERE id=?)", did)).sequence, 2);
+  const version = async () => (await sql.one("SELECT data_version FROM demands WHERE id=?", did)).data_version;
   ok(
     await request(
       path + "/baseline",
       {
-        expected_version: version(),
+        expected_version: await version(),
         reference: "Contrato matriz e primeiro aditivo fictícios conferidos",
         attested: true,
         data: { inicio: "2026-10-01", fim: "2027-09-30", duracaoMeses: "12" },
@@ -125,7 +125,7 @@ test("Aditivo de vigência ponta a ponta com o modelo oficial: prévia, homologa
     await request(
       path + "/governance",
       {
-        expected_version: one("SELECT data_version FROM demands WHERE id=?", did).data_version,
+        expected_version: (await sql.one("SELECT data_version FROM demands WHERE id=?", did)).data_version,
         subtype: "Vigência",
         reportDate: "2030-01-04",
         signingMode: "Administrador nomeado",
@@ -137,27 +137,27 @@ test("Aditivo de vigência ponta a ponta com o modelo oficial: prévia, homologa
       "PUT",
     ),
   );
-  const d0 = one("SELECT * FROM demands WHERE id=?", did);
+  const d0 = await sql.one("SELECT * FROM demands WHERE id=?", did);
   for (const kind of (await requirements(d0)).evidence) {
     ok(await upload(path + "/evidence", { kind }, demoTemplate(), "evidencia.docx"));
-    const e = one("SELECT id FROM evidence_files WHERE demand_id=? AND kind=? ORDER BY rowid DESC LIMIT 1", did, kind);
+    const e = await sql.one("SELECT id FROM evidence_files WHERE demand_id=? AND kind=? ORDER BY rowid DESC LIMIT 1", did, kind);
     ok(await request(path + "/evidence/" + e.id + "/verify", { attested: true }, admin));
   }
   const official = (await request(path, undefined, admin)).data.official;
   const template = official.templates.find((t: any) => t.subtype === "Vigência");
   assert.ok(template, "modelo oficial de vigência disponível para a demanda");
   // Partial data: the preview shows gaps instead of inventing them and is marked as not signable.
-  ok(await request(path + "/data", { expected_version: version(), inicio: "2026-11-01" }, admin, "PUT"));
+  ok(await request(path + "/data", { expected_version: await version(), inicio: "2026-11-01" }, admin, "PUT"));
   let preview = await request(path + "/preview", { template_version: template.version_id }, admin);
   ok(preview);
   assert.ok(preview.data.gaps.includes("Duração em meses"));
-  let stored = one("SELECT * FROM template_previews WHERE id=?", preview.data.id);
+  let stored = await sql.one("SELECT * FROM template_previews WHERE id=?", preview.data.id);
   let text = paragraphs(Buffer.from(stored.bytes)).join("\n");
   assert.match(text, /PENDENTE DE HOMOLOGAÇÃO JURÍDICA — NÃO UTILIZAR PARA ASSINATURA/);
   assert.match(text, /⟨PENDENTE: Duração em meses⟩/);
-  assert.equal(one("SELECT COUNT(*) n FROM documents WHERE demand_id=?", did).n, 0);
+  assert.equal((await sql.one("SELECT COUNT(*) n FROM documents WHERE demand_id=?", did)).n, 0);
   const data = {
-    expected_version: version(),
+    expected_version: await version(),
     nomeFantasia: "Escola Fictícia",
     rua: "Rua das Flores",
     numero: "123",
@@ -181,7 +181,7 @@ test("Aditivo de vigência ponta a ponta com o modelo oficial: prévia, homologa
   let detail = (await request(path, undefined, admin)).data;
   assert.ok(detail.missing.some((m: string) => m.startsWith("Duração informada (11 meses)")));
   assert.equal((await request(path + "/confirm", {}, admin)).status, 400);
-  ok(await request(path + "/data", { expected_version: version(), duracaoMeses: "12" }, admin, "PUT"));
+  ok(await request(path + "/data", { expected_version: await version(), duracaoMeses: "12" }, admin, "PUT"));
   detail = (await request(path, undefined, admin)).data;
   assert.deepEqual(detail.missing, []);
   ok(await request(path + "/confirm", {}, admin));
@@ -192,7 +192,7 @@ test("Aditivo de vigência ponta a ponta com o modelo oficial: prévia, homologa
   preview = await request(path + "/preview", { template_version: template.version_id }, admin);
   ok(preview);
   assert.deepEqual(preview.data.gaps, []);
-  stored = one("SELECT * FROM template_previews WHERE id=?", preview.data.id);
+  stored = await sql.one("SELECT * FROM template_previews WHERE id=?", preview.data.id);
   // A downloaded preview can never be uploaded as the draft for signature.
   r = await upload(path + "/upload", { template_version: template.version_id }, Buffer.from(stored.bytes), "previa.docx");
   assert.equal(r.status, 400);
@@ -200,9 +200,9 @@ test("Aditivo de vigência ponta a ponta com o modelo oficial: prévia, homologa
   assert.equal((await request("/templates/" + template.version_id + "/homologate", { reference: "Ata fictícia de homologação 01/2026", attested: true }, risco)).status, 403);
   ok(await request("/templates/" + template.version_id + "/homologate", { reference: "Ata fictícia de homologação 01/2026", attested: true }, juridico));
   assert.equal((await request("/templates/" + template.version_id + "/homologate", { reference: "Ata fictícia de homologação 01/2026", attested: true }, juridico)).status, 400);
-  assert.throws(() => run("DELETE FROM template_homologations WHERE version_id=?", template.version_id));
+  await assert.rejects(async () => sql.run("DELETE FROM template_homologations WHERE version_id=?", template.version_id));
   ok(await request(path + "/generate", { template_version: template.version_id }, admin));
-  const document = one("SELECT * FROM documents WHERE demand_id=? ORDER BY version DESC LIMIT 1", did);
+  const document = await sql.one("SELECT * FROM documents WHERE demand_id=? ORDER BY version DESC LIMIT 1", did);
   text = paragraphs(Buffer.from(document.bytes)).join("\n");
   assert.match(text, /SEGUNDO ADITIVO AO CONTRATO DE GESTÃO E COBRANÇA DE RECEBÍVEIS/);
   assert.match(text, /celebrado em 15 de janeiro de 2026/);
@@ -228,15 +228,15 @@ test("Aditivo de vigência ponta a ponta com o modelo oficial: prévia, homologa
   for (const axis of humanAxes)
     ok(await request(path + "/human-check", { axis, result: "Aprovado", notes: "Conferência humana fictícia do modelo oficial." }, admin));
   ok(await request(path + "/stage", { stage: "Em aprovação" }, admin));
-  assert.deepEqual((await requirements(one("SELECT * FROM demands WHERE id=?", did))).approvals, ["Risco"]);
+  assert.deepEqual((await requirements(await sql.one("SELECT * FROM demands WHERE id=?", did))).approvals, ["Risco"]);
   ok(await request(path + "/approve", { kind: "Risco" }, risco));
   ok(await request(path + "/stage", { stage: "Em assinatura" }, admin));
   assert.equal((await request(path + "/stage", { stage: "Concluído" }, admin)).status, 400);
   const pdf = Buffer.from("%PDF-1.4\n% Arquivo fictício declarado como assinado\n%%EOF");
   ok(await upload(path + "/signature", { attested: "true" }, pdf, "assinado.pdf"));
   ok(await request(path + "/stage", { stage: "Concluído" }, admin));
-  assert.equal(one("SELECT MAX(sequence) n FROM signed_history WHERE matrix_id='matriz-oficial'").n, 2);
-  const contract = one("SELECT * FROM contracts WHERE id=(SELECT contract_id FROM demands WHERE id=?)", did);
+  assert.equal((await sql.one("SELECT MAX(sequence) n FROM signed_history WHERE matrix_id='matriz-oficial'")).n, 2);
+  const contract = await sql.one("SELECT * FROM contracts WHERE id=(SELECT contract_id FROM demands WHERE id=?)", did);
   assert.deepEqual([contract.status, contract.start, contract.end], ["Assinado", "2026-11-01", "2027-10-31"]);
 });
 

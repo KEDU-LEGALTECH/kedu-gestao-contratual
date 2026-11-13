@@ -24,16 +24,16 @@ test('processing preserves reference typo as review instead of routing the origi
  const {resolve,join}=await import('node:path');
  const folder=mkdtempSync(resolve('data/test-legal-reference-'));
  process.env.DATABASE_PATH=join(folder,'test.sqlite');process.env.NODE_ENV='test';process.env.DEMO_SEED='false';process.env.GLPI_MODE='demo';
- const {run,now,db}=await import('../server/db.js');
+ const { run, now, db, sql } = await import('../server/db.js');
  try{
   const {ensureProcessing,buildProcessingPlan}=await import('../server/contract-processing.js');
   const {processingStatus}=await import('../server/processing-status.js');
   const raw={externalId:'synthetic-reference',title:'Contrato',content:'<p>RAZÃO SOCIAL: ESCOLA EXEMPLO EIRELLI</p>',documents:[{id:'1',name:'Contrato social.pdf'}],documentsAvailable:true,followups:[],groups:[],status:'2',created:'',updated:'',category:''};
-  run("INSERT INTO demands(id,glpi_id,type,stage,priority,due,data,created) VALUES('synthetic-reference','synthetic-reference','A classificar','Recebido','Normal','','{}',?)",now());
-  run('INSERT INTO glpi_tickets VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',raw.externalId,'real',raw.title,'2','synthetic-hash',JSON.stringify(raw),'{}','vinculado',raw.externalId,now(),now(),null);
+  await sql.run("INSERT INTO demands(id,glpi_id,type,stage,priority,due,data,created) VALUES('synthetic-reference','synthetic-reference','A classificar','Recebido','Normal','','{}',?)", now());
+  await sql.run('INSERT INTO glpi_tickets VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', raw.externalId, 'real', raw.title, '2', 'synthetic-hash', JSON.stringify(raw), '{}', 'vinculado', raw.externalId, now(), now(), null);
   await ensureProcessing(raw.externalId);
   const reading={text:'A empresa girará sob o nome empresarial. ESCOLA EXEMPLO EIRELI.',fields:{razaoSocial:['ESCOLA EXEMPLO EIRELI']},method:'Texto do PDF',pages:1,needsReview:false,incomplete:false};
-  run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)','synthetic-file',raw.externalId,'1','synthetic-hash','Contrato social.pdf','application/pdf',Buffer.from('synthetic fixture'),JSON.stringify(reading),'',now());
+  await sql.run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)', 'synthetic-file', raw.externalId, '1', 'synthetic-hash', 'Contrato social.pdf', 'application/pdf', Buffer.from('synthetic fixture'), JSON.stringify(reading), '', now());
   const plan=(await buildProcessingPlan(raw.externalId))!;
   const field=plan.comparisons.find(c=>c.field==='razaoSocial')!;
   assert.equal(field.status,'review');
@@ -41,12 +41,12 @@ test('processing preserves reference typo as review instead of routing the origi
   assert.equal(field.found,'ESCOLA EXEMPLO EIRELI');assert.equal(field.expected,'ESCOLA EXEMPLO EIRELLI');
   assert.equal(processingStatus(plan.issues,plan.comparisons),'Aguardando análise');
   raw.content='<p>RAZÃO SOCIAL: MARCA</p><p>CNPJ: 11.444.777/0001-61</p>';
-  run('UPDATE glpi_tickets SET payload=? WHERE external_id=?',JSON.stringify(raw),raw.externalId);
+  await sql.run('UPDATE glpi_tickets SET payload=? WHERE external_id=?', JSON.stringify(raw), raw.externalId);
   const brandReading={...reading,text:'a empresa EMPRESA EXEMPLO ME, com nome fantasia MARCA EXEMPLO AMBIENTAL, inscrita no CNPJ 11.444.777/0001-61.',fields:{razaoSocial:['EMPRESA EXEMPLO ME'],cnpj:['45.543.580/0001-00'],nomeFantasia:['MARCA EXEMPLO AMBIENTAL']}};
-  run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify(brandReading),'synthetic-file');
+  await sql.run('UPDATE processing_files SET extracted=? WHERE id=?', JSON.stringify(brandReading), 'synthetic-file');
   const brandPlan=(await buildProcessingPlan(raw.externalId))!,brandField=brandPlan.comparisons.find(c=>c.field==='razaoSocial')!;
   assert.equal(brandField.status,'review');assert.equal(brandField.reviewReason?.code,'reference_trade_name');
   assert.equal(processingStatus(brandPlan.issues,brandPlan.comparisons),'Aguardando análise');
   assert.doesNotMatch(brandPlan.issues.find(i=>i.field==='razaoSocial')?.message||'',/Corrija o valor/);
- }finally{db.close();rmSync(folder,{recursive:true,force:true});}
+ }finally{if(sql.dialect==='sqlite')db.close();rmSync(folder,{recursive:true,force:true});}
 });

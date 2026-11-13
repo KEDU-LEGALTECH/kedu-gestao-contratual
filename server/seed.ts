@@ -51,7 +51,7 @@ export async function seed() {
     const cnpj = `${String(10 + i)}.234.567/0001-90`;
     await sql.run("INSERT OR IGNORE INTO schools(id,name,legal_name,cnpj,address,contact) VALUES(?,?,?,?,?,?)", "s" + i, name, name + " Educação Ltda.", cnpj, "Fortaleza, CE • Dados fictícios", "contato@escola.example");
     await sql.run("INSERT OR IGNORE INTO representatives VALUES(?,?,?,?)", "r" + i, "s" + i, "Representante demonstrativo", "representante@example.com");
-    await sql.run("INSERT OR IGNORE INTO contracts(id,school_id,start,end,status) VALUES(?,?,?,?,?)", "c" + i, "s" + i, "2026-01-01", "2028-01-01", i === 4 ? "Assinado" : "Em preparação");
+    await sql.run("INSERT OR IGNORE INTO contracts(id,school_id,start,\"end\",status) VALUES(?,?,?,?,?)", "c" + i, "s" + i, "2026-01-01", "2028-01-01", i === 4 ? "Assinado" : "Em preparação");
     const data = {
       cnpj,
       razaoSocial: name + " Educação Ltda.",

@@ -46,12 +46,12 @@ glpi.listen(0, "127.0.0.1");
 await new Promise<void>(resolve => glpi.on("listening", resolve));
 process.env.GLPI_URL = `http://127.0.0.1:${(glpi.address() as any).port}/apirest.php`;
 const { default: app } = await import("../server/index.js");
-const { run, one } = await import("../server/db.js");
+const { run, one, sql } = await import("../server/db.js");
 const { GlpiClient, glpiConfig } = await import("../server/glpi.js");
-run("INSERT INTO glpi_tickets VALUES('1001','real','Chamado real de teste','2','hash',?,'{}','novo',NULL,'2026-10-20','2026-10-20',NULL)", JSON.stringify({ documents: [{ id: "51", name: "arquivo.docx" }], groups: ["JURIDICO CONTRATOS"] }));
+await sql.run("INSERT INTO glpi_tickets VALUES('1001','real','Chamado real de teste','2','hash',?,'{}','novo',NULL,'2026-10-20','2026-10-20',NULL)", JSON.stringify({ documents: [{ id: "51", name: "arquivo.docx" }], groups: ["JURIDICO CONTRATOS"] }));
 for (const [id, role] of [["admin", "Administrador"], ["requester", "Solicitante"], ["reader", "Consulta"]]) {
-  run("INSERT INTO users VALUES(?,?,?,?,?)", id, "Teste " + role, id + "@example.com", role, "unused");
-  run("INSERT INTO sessions VALUES(?,?,?)", "session-" + id, id, Date.now() + 60000);
+  await sql.run("INSERT INTO users VALUES(?,?,?,?,?)", id, "Teste " + role, id + "@example.com", role, "unused");
+  await sql.run("INSERT INTO sessions VALUES(?,?,?)", "session-" + id, id, Date.now() + 60000);
 }
 const server = app.listen(0, "127.0.0.1");
 await new Promise<void>(resolve => server.on("listening", resolve));
@@ -68,7 +68,7 @@ test("Download autenticado devolve os bytes originais e registra auditoria, usan
   assert.equal(response.headers.get("content-type"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
   assert.ok(calls.every(c => c.method === "GET"));
   assert.equal(calls.at(-1)?.path, "killSession");
-  assert.ok(one("SELECT id FROM audit WHERE action LIKE 'Download de anexo GLPI #1001%'")?.id);
+  assert.ok((await sql.one("SELECT id FROM audit WHERE action LIKE 'Download de anexo GLPI #1001%'"))?.id);
 });
 test("Perfis sem permissão de arquivos não acessam a API remota", async () => {
   const before = calls.length;
@@ -99,9 +99,9 @@ test("Negativa de permissão do GLPI é exibida como erro e a sessão é encerra
   fileDenied = false;
 });
 test("Anexo da conversa verifica somente a origem registrada e recusa uma origem removida", async () => {
-  const previous = one("SELECT payload FROM glpi_tickets WHERE external_id='1001'").payload;
+  const previous = (await sql.one("SELECT payload FROM glpi_tickets WHERE external_id='1001'")).payload;
   const { downloadGlpiAttachment } = await import("../server/glpi-download.js");
-  run("UPDATE glpi_tickets SET payload=? WHERE external_id='1001'", JSON.stringify({
+  await sql.run("UPDATE glpi_tickets SET payload=? WHERE external_id='1001'", JSON.stringify({
     ...JSON.parse(previous), documentLinks: { "9": ["51"] },
   }));
   linked = false;
@@ -120,7 +120,7 @@ test("Anexo da conversa verifica somente a origem registrada e recusa uma origem
   } finally {
     linked = true;
     followupVisible = false;
-    run("UPDATE glpi_tickets SET payload=? WHERE external_id='1001'", previous);
+    await sql.run("UPDATE glpi_tickets SET payload=? WHERE external_id='1001'", previous);
   }
 });
 test("Limite de bytes impede arquivos excessivos mesmo sem Content-Length", async () => {

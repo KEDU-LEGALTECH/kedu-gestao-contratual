@@ -148,7 +148,7 @@ async function applyTransition(user: any, d: any, stage: string, reason?: string
       const contract = await sql.one("SELECT * FROM contract_registry WHERE id=?", d.contract_id);
       if (contract?.instrument_kind === "Aditivo")
         await sql.run("INSERT INTO signed_history VALUES(?,?,?,?,?,?,?,?)", id(), contract.parent_id, contract.sequence, "Registro local", "Documento " + doc.id, terms.dataFormalizacao, user.id, now());
-      await sql.run("UPDATE contracts SET status=?,start=?,end=? WHERE id=?", contract?.instrument_kind === "Operação jurídica"
+      await sql.run("UPDATE contracts SET status=?,start=?,\"end\"=? WHERE id=?", contract?.instrument_kind === "Operação jurídica"
           ? "Concluído"
           : "Assinado", terms.inicio || null, terms.fim || null, d.contract_id);
       const sourceStatus: Record<string, string> = {

@@ -1253,17 +1253,20 @@ app.get("/api/reports.csv", async (req: any, res) => {
     );
 });
 app.use(express.static("dist"));
-app.use((err: any, _req: any, res: any, _next: any) =>
+app.use((err: any, _req: any, res: any, _next: any) => {
+  // PostgreSQL errors never reach the user verbatim; constraint and trigger refusals are expected.
+  const postgres = err?.name === "PostgresError";
+  if (postgres && !/^(23|P0001)/.test(err.code)) console.error("Erro do banco:", err.code, err.message);
   res.status(err.status || 400).json({
     error:
       err instanceof z.ZodError
         ? "Dados inválidos: " +
           err.issues.map((i) => i.path.join(".") + " " + i.message).join("; ")
-        : err.code?.startsWith("SQLITE")
+        : err.code?.startsWith("SQLITE") || postgres
           ? "Operação não permitida pelas restrições do banco."
           : err.message || "Não foi possível concluir a operação.",
-  }),
-);
+  });
+});
 if (process.env.NODE_ENV !== "test")
   app.listen(
     Number(process.env.PORT || 3001),

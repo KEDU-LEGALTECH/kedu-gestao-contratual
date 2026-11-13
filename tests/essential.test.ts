@@ -14,7 +14,7 @@ process.env.DEMO_SEED = "true";
 process.env.GLPI_MODE = "demo";
 process.env.GLPI_SYNC_INTERVAL_MINUTES = "0";
 const { default: app, csvCell } = await import("../server/index.js");
-const { all, one, run, db } = await import("../server/db.js");
+const { all, one, run, db, sql } = await import("../server/db.js");
 const { generate, review, demoTemplate, fixed } =
   await import("../server/documents.js");
 const { allocateAddendum } = await import("../server/workflow.js");
@@ -31,10 +31,7 @@ async function request(path: string, body?: any, cookie = "", method?: string) {
     const demandId = path.split("/")[2];
     body = {
       ...body,
-      expected_version: one(
-        "SELECT data_version FROM demands WHERE id=?",
-        demandId,
-      )?.data_version,
+      expected_version: (await sql.one("SELECT data_version FROM demands WHERE id=?", demandId))?.data_version,
     };
   }
   const res = await fetch(base + path, {
@@ -55,7 +52,7 @@ const admin = (
   })
 ).cookie;
 const snapshot = {
-  ...JSON.parse(one("SELECT data FROM demands WHERE id=?", "KD-0001").data),
+  ...JSON.parse((await sql.one("SELECT data FROM demands WHERE id=?", "KD-0001")).data),
   titularConta: "Instituição fictícia",
   documentoTitular: "10.234.567/0001-90",
   representanteNome: "Administrador de teste",
@@ -93,10 +90,7 @@ async function prepareGovernance(
     const response = await request(
       "/demands/" + did + "/baseline",
       {
-        expected_version: one(
-          "SELECT data_version FROM demands WHERE id=?",
-          did,
-        ).data_version,
+        expected_version: (await sql.one("SELECT data_version FROM demands WHERE id=?", did)).data_version,
         reference: "Contrato e histórico fictícios conferidos no teste",
         attested: true,
         data: Object.fromEntries(
@@ -131,7 +125,7 @@ async function prepareGovernance(
     "PUT",
   );
   assert.equal(r.status, 200, JSON.stringify(r.data));
-  for (const kind of (await requirements(one("SELECT * FROM demands WHERE id=?", did)))
+  for (const kind of (await requirements(await sql.one("SELECT * FROM demands WHERE id=?", did)))
     .evidence) {
     const form = new FormData();
     form.append(
@@ -146,11 +140,7 @@ async function prepareGovernance(
       body: form,
     });
     assert.equal(res.status, 200, await res.text());
-    const evidence = one(
-      "SELECT id FROM evidence_files WHERE demand_id=? AND kind=? ORDER BY created DESC LIMIT 1",
-      did,
-      kind,
-    );
+    const evidence = await sql.one("SELECT id FROM evidence_files WHERE demand_id=? AND kind=? ORDER BY created DESC LIMIT 1", did, kind);
     assert.equal(
       (
         await request(
@@ -177,11 +167,8 @@ async function humanReview(did: string) {
     assert.equal(r.status, 200, JSON.stringify(r.data));
   }
 }
-test("Valores monetários e percentuais persistem em unidades inteiras distintas", () => {
-  const terms = one(
-    "SELECT * FROM commercial_terms WHERE demand_id=?",
-    "KD-0001",
-  );
+test("Valores monetários e percentuais persistem em unidades inteiras distintas", async () => {
+  const terms = await sql.one("SELECT * FROM commercial_terms WHERE demand_id=?", "KD-0001");
   assert.equal(terms.remuneration_bps, 770);
   assert.equal(terms.guarantee_bps, 10000);
   assert.equal(terms.transfer_bps, 9230);
@@ -290,10 +277,7 @@ test("Arquivo inseguro resulta em conferência inconclusiva", () =>
   ));
 test("Mudança após aprovação invalida aprovações e confirmação", async () => {
   assert.ok(
-    one(
-      "SELECT COUNT(*) n FROM approvals WHERE document_id=? AND valid=1",
-      "doc5",
-    ).n > 0,
+    (await sql.one("SELECT COUNT(*) n FROM approvals WHERE document_id=? AND valid=1", "doc5")).n > 0,
   );
   const r = await request(
     "/demands/KD-0006/data",
@@ -302,7 +286,7 @@ test("Mudança após aprovação invalida aprovações e confirmação", async (
     "PUT",
   );
   assert.equal(r.status, 400);
-  run("UPDATE demands SET stage=? WHERE id=?", "Em aprovação", "KD-0006");
+  await sql.run("UPDATE demands SET stage=? WHERE id=?", "Em aprovação", "KD-0006");
   assert.equal(
     (
       await request(
@@ -315,26 +299,23 @@ test("Mudança após aprovação invalida aprovações e confirmação", async (
     200,
   );
   assert.equal(
-    one(
-      "SELECT COUNT(*) n FROM approvals WHERE document_id=? AND valid=1",
-      "doc5",
-    ).n,
+    (await sql.one("SELECT COUNT(*) n FROM approvals WHERE document_id=? AND valid=1", "doc5")).n,
     0,
   );
   assert.equal(
-    one("SELECT confirmed FROM demands WHERE id=?", "KD-0006").confirmed,
+    (await sql.one("SELECT confirmed FROM demands WHERE id=?", "KD-0006")).confirmed,
     0,
   );
 });
 test("Sincronização repetida não duplica chamados nem cria demandas sem conferência humana", async () => {
-  const before = all("SELECT id FROM demands").length;
+  const before = (await sql.all("SELECT id FROM demands")).length;
   const a = await request("/sync", {}, admin);
   assert.equal(a.data.imported, 2);
   const b = await request("/sync", {}, admin);
   assert.equal(b.data.imported, 0);
   assert.equal(b.data.unchanged, 2);
-  assert.equal(all("SELECT * FROM glpi_tickets").length, 2);
-  assert.equal(all("SELECT id FROM demands").length, before);
+  assert.equal((await sql.all("SELECT * FROM glpi_tickets")).length, 2);
+  assert.equal((await sql.all("SELECT id FROM demands")).length, before);
 });
 test("Consulta não aprova, não baixa e não vê dados bancários", async () => {
   const c = (
@@ -416,7 +397,7 @@ test("Reservas concorrentes não recebem o mesmo número de aditivo", async () =
   );
   assert.equal(result.filter((r) => r.status === 200).length, 1);
   assert.equal(result.filter((r) => r.status === 400).length, 11);
-  const seq = all("SELECT sequence FROM contracts WHERE parent_id=?", "c4").map(
+  const seq = (await sql.all("SELECT sequence FROM contracts WHERE parent_id=?", "c4")).map(
     (c) => c.sequence,
   );
   assert.equal(seq.length, 1);
@@ -424,9 +405,9 @@ test("Reservas concorrentes não recebem o mesmo número de aditivo", async () =
   assert.equal(seq[0], 4);
   await assert.rejects(async () => allocateAddendum("s0", "c4"));
 });
-test("Modelo aprovado é imutável no banco", () =>
-  assert.throws(() =>
-    run("UPDATE template_versions SET body=? WHERE id=?", "changed", "tv1"),
+test("Modelo aprovado é imutável no banco", async () =>
+  await assert.rejects(async () =>
+    sql.run("UPDATE template_versions SET body=? WHERE id=?", "changed", "tv1"),
   ));
 test("CSV neutraliza fórmulas, tabulação e escapes", () => {
   assert.equal(csvCell("=1+1"), '"\'=1+1"');
@@ -453,7 +434,7 @@ test("Fluxo completo: criação, confirmação, geração, conferência, aprova�
         "/demands/" + did + "/data",
         {
           ...snapshot,
-          matriz: one("SELECT contract_id FROM demands WHERE id=?", did)
+          matriz: (await sql.one("SELECT contract_id FROM demands WHERE id=?", did))
             .contract_id,
         },
         admin,
@@ -524,7 +505,7 @@ test("Fluxo completo: criação, confirmação, geração, conferência, aprova�
     200,
   );
   assert.equal(
-    one("SELECT stage FROM demands WHERE id=?", did).stage,
+    (await sql.one("SELECT stage FROM demands WHERE id=?", did)).stage,
     "Concluído",
   );
 });
@@ -537,25 +518,10 @@ test("Autonomia dos cinco aditivos e exigência Financeiro na conta bancária", 
     "Taxa de remuneração",
   ]) {
     const did = "policy-" + subtype;
-    run(
-      "INSERT INTO demands(id,school_id,type,stage,priority,owner,due,data,created) VALUES(?,?,?,?,?,?,?,?,?)",
-      did,
-      "s0",
-      "Aditivo",
-      "Recebido",
-      "Normal",
-      "u2",
-      "2030-01-01",
-      "{}",
-      new Date().toISOString(),
-    );
-    run(
-      "INSERT INTO case_details VALUES(?,?)",
-      did,
-      JSON.stringify({ subtype, legalFlags: [] }),
-    );
+    await sql.run("INSERT INTO demands(id,school_id,type,stage,priority,owner,due,data,created) VALUES(?,?,?,?,?,?,?,?,?)", did, "s0", "Aditivo", "Recebido", "Normal", "u2", "2030-01-01", "{}", new Date().toISOString());
+    await sql.run("INSERT INTO case_details VALUES(?,?)", did, JSON.stringify({ subtype, legalFlags: [] }));
     assert.deepEqual(
-      (await requirements(one("SELECT * FROM demands WHERE id=?", did))).approvals,
+      (await requirements(await sql.one("SELECT * FROM demands WHERE id=?", did))).approvals,
       subtype === "Conta bancária" ? ["Risco", "Financeiro"] : ["Risco"],
     );
   }
@@ -608,7 +574,7 @@ test("Conferência divergente devolve automaticamente e invalida aprovações", 
   const r = await request("/demands/KD-0003/review", {}, admin);
   assert.equal(r.data.status, "divergente");
   assert.equal(
-    one("SELECT stage FROM demands WHERE id=?", "KD-0003").stage,
+    (await sql.one("SELECT stage FROM demands WHERE id=?", "KD-0003")).stage,
     "Devolvido",
   );
 });
@@ -650,7 +616,7 @@ test("Reporte deve ser sexta-feira e poderes exigem administrador único ou todo
   );
   assert.equal(r.status, 200);
   assert.ok(
-    (await governanceMissing(one("SELECT * FROM demands WHERE id=?", "KD-0001"))).some(
+    (await governanceMissing(await sql.one("SELECT * FROM demands WHERE id=?", "KD-0001"))).some(
       (x) => x.includes("Todos os sócios"),
     ),
   );
@@ -672,20 +638,16 @@ test("Histórico assinado é imutável e não retrocede", async () => {
     ).status,
     400,
   );
-  assert.throws(() =>
-    run("UPDATE signed_history SET sequence=10 WHERE matrix_id=?", "c4"),
+  await assert.rejects(async () =>
+    sql.run("UPDATE signed_history SET sequence=10 WHERE matrix_id=?", "c4"),
   );
 });
 test("Jurídico obrigatório quando corpo fixo ou poderes societários mudam", async () => {
-  const d = one("SELECT * FROM demands WHERE id=?", "policy-Vigência");
-  run(
-    "UPDATE case_details SET payload=? WHERE demand_id=?",
-    JSON.stringify({
+  const d = await sql.one("SELECT * FROM demands WHERE id=?", "policy-Vigência");
+  await sql.run("UPDATE case_details SET payload=? WHERE demand_id=?", JSON.stringify({
       subtype: "Vigência",
       legalFlags: ["Alteração societária"],
-    }),
-    d.id,
-  );
+    }), d.id);
   assert.deepEqual((await requirements(d)).approvals, ["Risco", "Jurídica"]);
 });
 test("Risco e Financeiro não podem aprovar um pelo outro", async () => {
@@ -719,9 +681,7 @@ test("Relatório jurídico exige revisão humana e mantém os cinco eixos", asyn
   assert.equal(r.data.report.disclaimer.includes("não constitui"), true);
 });
 test("Aditivo bancário exige Risco e Financeiro, sem aprovação jurídica genérica", async () => {
-  const d = one(
-    "SELECT * FROM demands WHERE type='Aditivo' AND contract_id IS NOT NULL LIMIT 1",
-  );
+  const d = await sql.one("SELECT * FROM demands WHERE type='Aditivo' AND contract_id IS NOT NULL LIMIT 1");
   await prepareGovernance(d.id, "Conta bancária");
   let r = await request(
     "/demands/" + d.id + "/data",
@@ -811,7 +771,7 @@ test("Aditivo bancário exige Risco e Financeiro, sem aprovação jurídica gen�
   );
 });
 test("Novo arquivo de evidência exige nova verificação, mesmo havendo versão antiga verificada", async () => {
-  const d = one("SELECT * FROM demands WHERE id='KD-0001'");
+  const d = await sql.one("SELECT * FROM demands WHERE id='KD-0001'");
   const before = await governanceMissing(d);
   const form = new FormData();
   form.append(
@@ -831,7 +791,7 @@ test("Novo arquivo de evidência exige nova verificação, mesmo havendo versão
     200,
   );
   assert.ok(
-    (await governanceMissing(one("SELECT * FROM demands WHERE id=?", d.id))).includes(
+    (await governanceMissing(await sql.one("SELECT * FROM demands WHERE id=?", d.id))).includes(
       "Contrato social e alterações societárias",
     ),
   );
@@ -876,15 +836,12 @@ test("Minuta externa pode ser conferida sem geração anterior, mas exige modelo
   );
   assert.equal((await send()).status, 200);
   assert.equal(
-    one("SELECT COUNT(*) n FROM documents WHERE demand_id=?", did).n,
+    (await sql.one("SELECT COUNT(*) n FROM documents WHERE demand_id=?", did)).n,
     1,
   );
 });
-test("Catálogo separa cinco aditivos demonstrativos dos cinco oficiais pendentes de homologação", () => {
-  const templates = all(
-    "SELECT c.*,v.status,s.profile FROM template_catalog c JOIN template_versions v ON v.id=c.version_id LEFT JOIN template_sources s ON s.version_id=c.version_id WHERE document_type=?",
-    "Aditivo",
-  );
+test("Catálogo separa cinco aditivos demonstrativos dos cinco oficiais pendentes de homologação", async () => {
+  const templates = await sql.all("SELECT c.*,v.status,s.profile FROM template_catalog c JOIN template_versions v ON v.id=c.version_id LEFT JOIN template_sources s ON s.version_id=c.version_id WHERE document_type=?", "Aditivo");
   const demo = templates.filter((t) => t.demonstration === 1);
   const official = templates.filter((t) => t.profile);
   assert.equal(demo.length, 5);
@@ -897,9 +854,7 @@ test("Catálogo separa cinco aditivos demonstrativos dos cinco oficiais pendente
   );
 });
 test("PDF assinado exige declaração, preserva MIME e alimenta histórico do aditivo na conclusão", async () => {
-  const d = one(
-    "SELECT * FROM demands WHERE type='Aditivo' AND stage='Em assinatura' LIMIT 1",
-  );
+  const d = await sql.one("SELECT * FROM demands WHERE type='Aditivo' AND stage='Em assinatura' LIMIT 1");
   const pdf = Buffer.from(
     "%PDF-1.4\n% Documento fictício para teste de armazenamento. Não contém assinatura válida.\n%%EOF",
   );
@@ -920,10 +875,7 @@ test("PDF assinado exige declaração, preserva MIME e alimenta histórico do ad
   assert.equal((await send(false)).status, 400);
   assert.equal((await send(true)).status, 200);
   assert.equal((await send(true)).status, 400);
-  const doc = one(
-    "SELECT id FROM documents WHERE demand_id=? ORDER BY version DESC LIMIT 1",
-    d.id,
-  );
+  const doc = await sql.one("SELECT id FROM documents WHERE demand_id=? ORDER BY version DESC LIMIT 1", d.id);
   const download = await fetch(
     base + "/documents/" + doc.id + "/download?signed=1",
     { headers: { cookie: admin } },
@@ -941,7 +893,7 @@ test("PDF assinado exige declaração, preserva MIME e alimenta histórico do ad
     200,
   );
   assert.equal(
-    one("SELECT MAX(sequence) n FROM signed_history WHERE matrix_id=?", "c4").n,
+    (await sql.one("SELECT MAX(sequence) n FROM signed_history WHERE matrix_id=?", "c4")).n,
     4,
   );
   assert.equal(
@@ -951,15 +903,11 @@ test("PDF assinado exige declaração, preserva MIME e alimenta histórico do ad
   );
 });
 test("Atraso após quinta-feira exige justificativa e é auditado", async () => {
-  const d = one("SELECT * FROM demands WHERE id=?", "KD-0004");
+  const d = await sql.one("SELECT * FROM demands WHERE id=?", "KD-0004");
   const payload = JSON.parse(
-    one("SELECT payload FROM case_details WHERE demand_id=?", d.id).payload,
+    (await sql.one("SELECT payload FROM case_details WHERE demand_id=?", d.id)).payload,
   );
-  run(
-    "UPDATE case_details SET payload=? WHERE demand_id=?",
-    JSON.stringify({ ...payload, reportDate: "2026-01-02" }),
-    d.id,
-  );
+  await sql.run("UPDATE case_details SET payload=? WHERE demand_id=?", JSON.stringify({ ...payload, reportDate: "2026-01-02" }), d.id);
   assert.equal(
     (await request("/demands/" + d.id + "/approve", { kind: "Risco" }, admin))
       .status,
@@ -979,11 +927,7 @@ test("Atraso após quinta-feira exige justificativa e é auditado", async () => 
     200,
   );
   assert.ok(
-    one(
-      "SELECT id FROM audit WHERE demand_id=? AND action LIKE ?",
-      d.id,
-      "Validação fora do prazo%",
-    ),
+    await sql.one("SELECT id FROM audit WHERE demand_id=? AND action LIKE ?", d.id, "Validação fora do prazo%"),
   );
 });
 test("Relatório não aprova versão antiga depois de alteração dos dados", async () => {
@@ -1001,9 +945,7 @@ test("Relatório não aprova versão antiga depois de alteração dos dados", as
   assert.ok(report.missing.some((m: string) => m.includes("desatualizada")));
 });
 test("Ressalvas exigem ocorrências completas e críticas só permitem reprovação", async () => {
-  const d = one(
-    "SELECT d.* FROM demands d JOIN documents doc ON doc.demand_id=d.id WHERE d.stage='Em conferência' AND doc.data_version=d.data_version ORDER BY d.created DESC LIMIT 1",
-  );
+  const d = await sql.one("SELECT d.* FROM demands d JOIN documents doc ON doc.demand_id=d.id WHERE d.stage='Em conferência' AND doc.data_version=d.data_version ORDER BY d.created DESC LIMIT 1");
   const body = {
     axis: "Português e redação",
     result: "Aprovado com ressalvas",
@@ -1046,7 +988,7 @@ test("Ressalvas exigem ocorrências completas e críticas só permitem reprovaç
     200,
   );
   assert.equal(
-    one("SELECT stage FROM demands WHERE id=?", d.id).stage,
+    (await sql.one("SELECT stage FROM demands WHERE id=?", d.id)).stage,
     "Devolvido",
   );
 });
@@ -1079,10 +1021,7 @@ test("Próxima emissão após conclusão exige reconferência externa do último
   );
   const created = await request("/demands", payload, admin);
   assert.equal(created.status, 200);
-  const c = one(
-    "SELECT c.sequence FROM contracts c JOIN demands d ON d.contract_id=c.id WHERE d.id=?",
-    created.data.id,
-  );
+  const c = await sql.one("SELECT c.sequence FROM contracts c JOIN demands d ON d.contract_id=c.id WHERE d.id=?", created.data.id);
   assert.equal(c.sequence, 5);
 });
 test("Operações jurídicas sobre contrato existente exigem matriz da mesma escola", async () => {
@@ -1104,9 +1043,7 @@ test("Operações jurídicas sobre contrato existente exigem matriz da mesma esc
   );
 });
 test("Alteração estrutural encaminha automaticamente ao Jurídico e o formulário não remove o controle", async () => {
-  const d = one(
-    "SELECT d.* FROM demands d JOIN contracts c ON c.id=d.contract_id WHERE d.type='Aditivo' AND c.sequence=5 LIMIT 1",
-  );
+  const d = await sql.one("SELECT d.* FROM demands d JOIN contracts c ON c.id=d.contract_id WHERE d.type='Aditivo' AND c.sequence=5 LIMIT 1");
   assert.equal(
     (
       await request(
@@ -1168,7 +1105,7 @@ test("Alteração estrutural encaminha automaticamente ao Jurídico e o formulá
     "divergente",
   );
   assert.deepEqual(
-    (await requirements(one("SELECT * FROM demands WHERE id=?", d.id))).approvals,
+    (await requirements(await sql.one("SELECT * FROM demands WHERE id=?", d.id))).approvals,
     ["Risco", "Jurídica"],
   );
   assert.equal(
@@ -1177,28 +1114,24 @@ test("Alteração estrutural encaminha automaticamente ao Jurídico e o formulá
     200,
   );
   assert.deepEqual(
-    (await requirements(one("SELECT * FROM demands WHERE id=?", d.id))).approvals,
+    (await requirements(await sql.one("SELECT * FROM demands WHERE id=?", d.id))).approvals,
     ["Risco", "Jurídica"],
   );
 });
 test("Renovação que menciona contratos anteriores exige Jurídico sem inventar pendência financeira", async () => {
-  run(
-    "UPDATE case_details SET payload=? WHERE demand_id=?",
-    JSON.stringify({
+  await sql.run("UPDATE case_details SET payload=? WHERE demand_id=?", JSON.stringify({
       subtype: "Cashback",
       legalFlags: ["Renovação com contratos anteriores"],
-    }),
-    "policy-Cashback",
-  );
+    }), "policy-Cashback");
   const r = await requirements(
-    one("SELECT * FROM demands WHERE id=?", "policy-Cashback"),
+    await sql.one("SELECT * FROM demands WHERE id=?", "policy-Cashback"),
   );
   assert.ok(r.approvals.includes("Jurídica"));
   assert.ok(r.evidence.includes("contratos_anteriores"));
   assert.ok(!r.evidence.includes("pendencias_financeiras"));
 });
 test("Garantia Completa não pode ser confirmada com percentual de garantia inferior a 100%", async () => {
-  const d = one("SELECT * FROM demands WHERE id=?", "KD-0001");
+  const d = await sql.one("SELECT * FROM demands WHERE id=?", "KD-0001");
   assert.ok(
     (await governanceMissing({
       ...d,
@@ -1323,10 +1256,7 @@ test("Salvamento obsoleto ou sem versão não sobrescreve alterações", async (
   );
   assert.equal(created.status, 200);
   const path = "/demands/" + created.data.id + "/data";
-  const version = one(
-    "SELECT data_version FROM demands WHERE id=?",
-    created.data.id,
-  ).data_version;
+  const version = (await sql.one("SELECT data_version FROM demands WHERE id=?", created.data.id)).data_version;
   assert.equal(
     (
       await request(
@@ -1361,15 +1291,13 @@ test("Salvamento obsoleto ou sem versão não sobrescreve alterações", async (
     409,
   );
   assert.equal(
-    JSON.parse(one("SELECT data FROM demands WHERE id=?", created.data.id).data)
+    JSON.parse((await sql.one("SELECT data FROM demands WHERE id=?", created.data.id)).data)
       .banco,
     "Banco atualizado",
   );
 });
 test("Aditivo de vigência exige datas exatas, retrato confirmado e não exige taxas sem relação com a alteração", async () => {
-  run(
-    "INSERT INTO contracts(id,school_id,status) VALUES('matrix-vigencia','s4','Assinado')",
-  );
+  await sql.run("INSERT INTO contracts(id,school_id,status) VALUES('matrix-vigencia','s4','Assinado')");
   assert.equal(
     (
       await request(
@@ -1447,10 +1375,7 @@ test("Aditivo de vigência exige datas exatas, retrato confirmado e não exige t
     ).status,
     200,
   );
-  let document = one(
-    "SELECT * FROM documents WHERE demand_id=? ORDER BY version DESC LIMIT 1",
-    did,
-  );
+  let document = await sql.one("SELECT * FROM documents WHERE demand_id=? ORDER BY version DESC LIMIT 1", did);
   assert.equal(JSON.parse(document.snapshot).anteriorInicio, snapshot.inicio);
   assert.equal(JSON.parse(document.snapshot).inicio, "2026-11-01");
   assert.equal(
@@ -1492,29 +1417,21 @@ test("Aditivo de vigência exige datas exatas, retrato confirmado e não exige t
     409,
   );
   assert.equal(
-    one(
-      "SELECT COUNT(*) n FROM approvals WHERE document_id=? AND valid=1",
-      document.id,
-    ).n,
+    (await sql.one("SELECT COUNT(*) n FROM approvals WHERE document_id=? AND valid=1", document.id)).n,
     0,
   );
   assert.equal(
-    one("SELECT confirmed FROM demands WHERE id=?", did).confirmed,
+    (await sql.one("SELECT confirmed FROM demands WHERE id=?", did)).confirmed,
     0,
   );
-  assert.throws(() =>
-    run(
-      "UPDATE demand_baselines SET reference='alterada' WHERE demand_id=?",
-      did,
-    ),
+  await assert.rejects(async () =>
+    sql.run("UPDATE demand_baselines SET reference='alterada' WHERE demand_id=?", did),
   );
   assert.equal(JSON.parse(document.snapshot).anteriorInicio, snapshot.inicio);
 });
 
 test("Dados bancários anteriores são restritos e cashback em reais é persistido em centavos", async () => {
-  const d = one(
-    "SELECT d.* FROM demands d JOIN contracts c ON c.id=d.contract_id WHERE d.type='Aditivo' AND c.sequence=4 LIMIT 1",
-  );
+  const d = await sql.one("SELECT d.* FROM demands d JOIN contracts c ON c.id=d.contract_id WHERE d.type='Aditivo' AND c.sequence=4 LIMIT 1");
   const consulta = (
     await request("/login", {
       email: "consulta@demo.kedu.local",
@@ -1547,10 +1464,7 @@ test("Dados bancários anteriores são restritos e cashback em reais é persisti
     200,
   );
   assert.equal(
-    one(
-      "SELECT amount_cents FROM cashback_values WHERE demand_id=?",
-      created.data.id,
-    ).amount_cents,
+    (await sql.one("SELECT amount_cents FROM cashback_values WHERE demand_id=?", created.data.id)).amount_cents,
     123456,
   );
   assert.equal(
@@ -1579,5 +1493,5 @@ test("Dados bancários anteriores são restritos e cashback em reais é persisti
 
 after(() => {
   server.close();
-  db.close();
+  if (sql.dialect === "sqlite") db.close();
 });

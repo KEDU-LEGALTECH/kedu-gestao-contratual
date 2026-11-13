@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "start": "tsx server/index.ts",
     "test": "tsx --test tests/*.test.ts",
+    "test:postgres": "tsx scripts/test-postgres.ts",
     "db:prepare": "tsx server/seed.ts",
     "admin:prepare": "tsx server/provision-admin.ts",
     "db:backup": "tsx server/backup.ts",

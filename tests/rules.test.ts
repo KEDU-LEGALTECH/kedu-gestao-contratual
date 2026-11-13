@@ -7,7 +7,7 @@ process.env.DATABASE_PATH = join(mkdtempSync(join(tmpdir(), "kedu-rules-")), "te
 process.env.NODE_ENV = "test";
 process.env.DEMO_SEED = "true";
 const { default: app } = await import("../server/index.js");
-const { one, run } = await import("../server/db.js");
+const { one, run, sql } = await import("../server/db.js");
 const { requirements, governanceMissing, saveDetails } = await import("../server/governance.js");
 const server = app.listen(0, "127.0.0.1");
 await new Promise<void>((resolve) => server.on("listening", resolve));
@@ -24,13 +24,10 @@ async function request(path: string, body?: any, cookie = "") {
 const admin = (await request("/login", { email: "admin@demo.kedu.local", password: "Kedu-demo-2026!" })).cookie;
 async function fake(type: string, data: Record<string, unknown> = {}, subtype = "") {
   const id = "T-" + Math.random().toString(36).slice(2, 10);
-  run("INSERT INTO contracts(id,school_id) VALUES(?,?)", "c-" + id, "s1");
-  run(
-    "INSERT INTO demands(id,school_id,contract_id,type,stage,priority,owner,due,data,created) VALUES(?,?,?,?,?,?,?,?,?,?)",
-    id, "s1", "c-" + id, type, "Recebido", "Normal", "u2", "2030-01-01", JSON.stringify(data), new Date().toISOString(),
-  );
+  await sql.run("INSERT INTO contracts(id,school_id) VALUES(?,?)", "c-" + id, "s1");
+  await sql.run("INSERT INTO demands(id,school_id,contract_id,type,stage,priority,owner,due,data,created) VALUES(?,?,?,?,?,?,?,?,?,?)", id, "s1", "c-" + id, type, "Recebido", "Normal", "u2", "2030-01-01", JSON.stringify(data), new Date().toISOString());
   await saveDetails(id, { subtype, reportDate: "2030-01-04", signers: [], legalFlags: [] });
-  return one("SELECT * FROM demands WHERE id=?", id);
+  return await sql.one("SELECT * FROM demands WHERE id=?", id);
 }
 
 test("Matriz de responsabilidades do manual define as validações obrigatórias", async () => {
@@ -58,15 +55,11 @@ test("Migração de modalidade exige distrato e novo contrato vinculados, não a
   assert.ok(missing.includes("Demanda do novo contrato na modalidade de destino vinculada"));
   const distrato = await fake("Distrato");
   const novo = await fake("Contrato de garantia", { modalidade: "Garantia Prevista" });
-  run(
-    "UPDATE demands SET data=? WHERE id=?",
-    JSON.stringify({ modalidade: "Garantia Prevista", demandaDistrato: distrato.id, demandaNovoContrato: novo.id }),
-    migration.id,
-  );
-  missing = await governanceMissing(one("SELECT * FROM demands WHERE id=?", migration.id));
+  await sql.run("UPDATE demands SET data=? WHERE id=?", JSON.stringify({ modalidade: "Garantia Prevista", demandaDistrato: distrato.id, demandaNovoContrato: novo.id }), migration.id);
+  missing = await governanceMissing(await sql.one("SELECT * FROM demands WHERE id=?", migration.id));
   assert.ok(!missing.some((m) => m.includes("vinculada")));
-  run("UPDATE demands SET stage='Em assinatura' WHERE id=?", migration.id);
-  missing = await governanceMissing(one("SELECT * FROM demands WHERE id=?", migration.id));
+  await sql.run("UPDATE demands SET stage='Em assinatura' WHERE id=?", migration.id);
+  missing = await governanceMissing(await sql.one("SELECT * FROM demands WHERE id=?", migration.id));
   assert.ok(missing.some((m) => m.includes("concluída antes de encerrar a migração")));
 });
 
@@ -95,8 +88,8 @@ test("Representante do documento precisa estar entre os signatários conferidos"
 test("Encerramento no GLPI é registrado à parte e só após a conclusão local", async () => {
   const open = await fake("Contrato de garantia");
   assert.equal((await request("/demands/" + open.id + "/glpi-closure", { attested: true, note: "Chamado encerrado" }, admin)).status, 400);
-  const done = one("SELECT * FROM demands WHERE stage='Concluído' LIMIT 1");
+  const done = await sql.one("SELECT * FROM demands WHERE stage='Concluído' LIMIT 1");
   assert.equal((await request("/demands/" + done.id + "/glpi-closure", { attested: true, note: "Assinado anexado e chamado encerrado no GLPI" }, admin)).status, 200);
   assert.equal((await request("/demands/" + done.id + "/glpi-closure", { attested: true, note: "Repetido" }, admin)).status, 400);
-  assert.ok(one("SELECT * FROM audit WHERE demand_id=? AND action LIKE '%sem escrita via API%'", done.id));
+  assert.ok(await sql.one("SELECT * FROM audit WHERE demand_id=? AND action LIKE '%sem escrita via API%'", done.id));
 });
