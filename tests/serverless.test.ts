@@ -59,3 +59,18 @@ test("rotas do Vercel Cron exigem o segredo e respeitam a pausa da leitura", asy
   assert.equal(sync.status, 200);
   assert.deepEqual(await sync.json(), { synced: false });
 });
+
+test("API hospedada sem PaddleOCR não lê só com Tesseract", async () => {
+  const { readerAvailable } = await import("../server/paddle-ocr.js");
+  const previous = process.env.KEDU_ROLE;
+  try {
+    assert.equal(readerAvailable(), true, "fora da hospedagem o leitor segue como hoje");
+    process.env.KEDU_ROLE = "api";
+    assert.equal(readerAvailable(), false);
+    await sql.run("UPDATE settings SET value='false' WHERE key='documentReadingPaused'");
+    const reading = await fetch(base + "/api/cron/reading", { headers: { Authorization: "Bearer segredo-de-teste-do-cron" } });
+    assert.deepEqual(await reading.json(), { paused: true, reason: "PaddleOCR indisponível nesta hospedagem" });
+  } finally {
+    if (previous === undefined) delete process.env.KEDU_ROLE; else process.env.KEDU_ROLE = previous;
+  }
+});

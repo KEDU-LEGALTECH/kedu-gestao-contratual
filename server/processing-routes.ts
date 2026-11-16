@@ -17,6 +17,9 @@ import { prepareImage } from "./image-input.js";
 import {processingSummaryReport} from './processing-summary.js';
 import {readingFilename} from './reading-format.js';
 import {recordReadingGold} from './reading-gold.js';
+import {readerAvailable} from './paddle-ocr.js';
+// A hosted API without PaddleOCR would read with Tesseract alone, which loses fields: refuse instead.
+const requireReader=()=>{if(!readerAvailable())throw Object.assign(Error('Leitura de documentos indisponível nesta hospedagem até o leitor PaddleOCR ser ativado. Os arquivos e os dados já lidos continuam disponíveis.'),{status:503});};
 const upload=acceptStored(multer({storage:multer.memoryStorage(),limits:{fileSize:20*1024*1024,files:1}}),20*1024*1024);
 const snapshot=(values:Record<string,string>)=>JSON.stringify(Object.fromEntries(Object.entries(values).sort(([a],[b])=>a.localeCompare(b))));
 async function get(req:any,write=false) {
@@ -61,7 +64,7 @@ export function registerProcessingRoutes(app:Express,process:(did:string,userId?
   res.setHeader('Cache-Control','no-store');res.json(processingSummaryReport(stage,rows));
  });
  app.post('/api/demands/:id/processing/files/:file/region',async(req:any,res)=>{
-  const {demand:d}=await get(req,true);
+  const {demand:d}=await get(req,true);requireReader();
   const body=z.object({revision:z.number().int(),region:z.object({page:z.number().int().min(1).max(200),x:z.number().min(0).max(1),y:z.number().min(0).max(1),width:z.number().min(.02).max(1),height:z.number().min(.02).max(1),rotation:z.union([z.literal(0),z.literal(90),z.literal(180),z.literal(270)])})}).parse(req.body);
   const current=await processingView(d.id),file=await sql.one('SELECT * FROM processing_files WHERE id=? AND demand_id=?', req.params.file, d.id);
   if(!storedSize(file)||!current?.files?.some((f:any)=>f.id===file.id))throw Object.assign(Error('Arquivo não disponível nesta versão.'),{status:404});
@@ -72,7 +75,7 @@ export function registerProcessingRoutes(app:Express,process:(did:string,userId?
   res.json(reading);
  });
  app.get("/api/demands/:id/processing",async (req:any,res)=>{await get(req);res.json(await processingView(req.params.id));});
- app.post("/api/demands/:id/processing/recheck",async(req:any,res)=>{await get(req,true);await process(req.params.id,req.user.id,undefined,true);res.json(await processingView(req.params.id));});
+ app.post("/api/demands/:id/processing/recheck",async(req:any,res)=>{await get(req,true);requireReader();await process(req.params.id,req.user.id,undefined,true);res.json(await processingView(req.params.id));});
  app.post('/api/demands/:id/processing/files/:file/fields/:field/confirm',async (req:any,res)=>{
   const {demand:d}=await get(req,true),body=z.object({revision:z.number().int().min(1),value:z.string().min(1).max(500),confirmed:z.literal(true)}).parse(req.body);
   await sql.transaction(async()=>{
@@ -172,6 +175,7 @@ export function registerProcessingRoutes(app:Express,process:(did:string,userId?
   if(Object.keys(values).some(k=>!editableKeys.includes(k)))throw Error("Campo de correção não autorizado.");
   let file:any=null;
   if(req.file){
+   requireReader();
    if(!supportedReading.test(readingFilename(req.file.buffer,req.file.originalname)))throw Error("Envie PDF, imagem, Word, ODT, XLSX, PPTX, TXT ou CSV de até 20 MB.");
    if(!JSON.parse(ticket.payload).documents.some((x:any)=>String(x.id)===b.document_id))throw Error("Selecione qual anexo está sendo corrigido.");
    const extracted=await readProcessingFile(req.file.buffer,req.file.originalname);

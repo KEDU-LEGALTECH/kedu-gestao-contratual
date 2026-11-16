@@ -10,6 +10,7 @@ import { listOfficial,sourceOf,homologated,sha256 } from "./official-templates.j
 import { byteHeadSql,byteSizeSql,fileBytes,saveProcessingFile,storedHash } from "./processing-files.js";
 import { readCache } from "./sql.js";
 import { role } from "./role.js";
+import { readerAvailable } from "./paddle-ocr.js";
 import { officialRequired,officialProblems,deriveOfficial,derivedFrom } from "../shared/official-fields.js";
 import { validateData } from "../shared/data-validation.js";
 import { wholeMonths } from "../shared/extenso.js";
@@ -733,6 +734,7 @@ export async function scheduleContractProcessing() {
 /** One scheduled pass without a long-running process (Vercel Cron): take back stale jobs, queue what
  * still needs reading, then read until the budget ends. The job in progress finishes past the budget. */
 export async function runReadingCycle(budgetMs:number){
+ if(!readerAvailable())return {paused:true,reason:'PaddleOCR indisponível nesta hospedagem'};
  if(await recoveryPaused())return {paused:true};
  const deadline=Date.now()+budgetMs,queue=readingQueue();
  await queue.recoverStale();
