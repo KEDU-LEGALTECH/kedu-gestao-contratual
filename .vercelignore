@@ -3,6 +3,14 @@ data/
 .env
 .env.*
 *.env
+*.env.*
+*.pem
+*.key
+*.crt
+*.db
+*.db-*
+*.code-workspace
+.vercel/
 entregas/
 .worktrees/
 node_modules/

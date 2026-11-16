@@ -19,6 +19,9 @@ data/*
 entregas/
 
 # Local tooling output.
+.worktrees/
+*.code-workspace
+.vercel/
 *.log
 coverage/
 .DS_Store

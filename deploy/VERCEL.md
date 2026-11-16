@@ -13,9 +13,13 @@ As rotas só respondem com o cabeçalho que a Vercel envia (`Authorization: Bear
 
 **Plano necessário: Pro.** No Hobby o Cron roda no máximo uma vez por dia e a função tem até 300 s; o Pro permite agenda por minuto e até 800 s (`maxDuration` em `vercel.json`).
 
-## Leitura de documentos sem Python
+## Leitura de documentos: PaddleOCR obrigatório
 
-Nas funções da Vercel não há PaddleOCR nem Docling (Python). Configure `OCR_ENGINE=legacy`: imagens e PDFs digitalizados usam o Tesseract.js (JavaScript) e, com `DOCUMENT_VISION_ENABLED`, a leitura por visão do Gemini. Textos digitais (PDF, DOCX, XLSX) não dependem de OCR.
+A qualidade de referência é a do leitor atual com **PaddleOCR**. Só com Tesseract, o comparativo perdeu campos em imagens (JPEG 69% iguais e 10 campos perdidos, contra 97% com PaddleOCR). As funções comuns da Vercel não têm Python, então não têm PaddleOCR nem Docling.
+
+**Até o PaddleOCR estar validado num contêiner na nuvem, mantenha a leitura automática pausada** no esquema usado pela Vercel (`settings.documentReadingPaused = 'true'`). Assim `/api/cron/reading` não grava leituras feitas só com Tesseract como concluídas. Telas, anexos, envios e a sincronização do GLPI funcionam normalmente. Não use `OCR_ENGINE=legacy` em produção.
+
+**Gemini desativado.** Não há autorização para chamadas à API do Google: mantenha `DOCUMENT_VISION_ENABLED=false` e `GEMINI_PAID_DATA_APPROVED=false`, e não cadastre `GEMINI_API_KEY` na Vercel.
 
 A imagem do `Dockerfile` prepara o PaddleOCR durante a construção e valida os modelos com uma imagem sintética. Os modelos ficam em `/app/ocr`, fora do volume de dados. Compare a leitura local e a do contêiner com o mesmo snapshot e os mesmos arquivos de referência. Use `--scanned` para selecionar PDFs cujo histórico registra OCR ou páginas pendentes e `--report <arquivo>` para guardar os resultados de cada execução. Confira o motor e as páginas realmente lidas no relatório antes de interpretar a comparação.
 
@@ -27,14 +31,16 @@ Configure no projeto da Vercel. Nunca em variáveis `VITE_*`.
 |---|---|
 | `KEDU_ROLE` | `api` |
 | `KEDU_DATABASE` | `postgres` |
-| `KEDU_PG_SCHEMA` | esquema importado, por exemplo `kedu` |
+| `KEDU_PG_SCHEMA` | `kedu_migration` (cópia de homologação atual) |
 | `SUPABASE_URL`, `SUPABASE_DATABASE_URL` | conexão do Session pooler |
 | `SUPABASE_CA_CERT` | conteúdo PEM do certificado (`\n` escapado é aceito) |
 | `SUPABASE_SECRET_KEY`, `SUPABASE_STORAGE_BUCKET` | Storage privado dos anexos |
 | `CRON_SECRET` | valor aleatório longo; a Vercel o envia nas chamadas do Cron |
-| `OCR_ENGINE` | `legacy` |
 | `GLPI_*`, `GLPI_SYNC_TIMES` | como no `.env` atual (ex.: `07:00,12:00,16:00`) |
-| `DOCUMENT_VISION_*`, `GEMINI_*` | como no `.env` atual |
+| `DOCUMENT_VISION_ENABLED` | `false` |
+| `GEMINI_PAID_DATA_APPROVED` | `false` (não cadastre `GEMINI_API_KEY`) |
+| `TRUST_PROXY_HOPS` | `1` (a Vercel fica na frente da função) |
+| `ALLOWED_ORIGINS` | endereço do portal na Vercel |
 
 Use Node.js 24 no projeto (o portal usa `node:sqlite`).
 
