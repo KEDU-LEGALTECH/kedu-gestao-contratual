@@ -1345,16 +1345,23 @@ app.get("/api/reports.csv", async (req: any, res) => {
 app.use(express.static("dist"));
 app.use((err: any, _req: any, res: any, _next: any) => {
   // PostgreSQL errors never reach the user verbatim; constraint and trigger refusals are expected.
-  const postgres = err?.name === "PostgresError";
-  if (postgres && !/^(23|P0001)/.test(err.code)) console.error("Erro do banco:", err.code, err.message);
-  res.status(err.status || 400).json({
+  const postgres = err?.name === "PostgresError", code = String(err?.code || "");
+  const refused = postgres && /^(23|P0001)/.test(code);
+  // Connection failures (pooler limit, network) are temporary and say nothing about the request.
+  const unavailable = !postgres && /^(CONNECT_TIMEOUT|CONNECTION_\w+|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND)$/.test(code);
+  if ((postgres && !refused) || unavailable) console.error("Erro do banco:", code, err.message);
+  res.status(err.status || (unavailable ? 503 : postgres && !refused ? 500 : 400)).json({
     error:
       err instanceof z.ZodError
         ? "Dados inválidos: " +
           err.issues.map((i) => i.path.join(".") + " " + i.message).join("; ")
-        : err.code?.startsWith("SQLITE") || postgres
-          ? "Operação não permitida pelas restrições do banco."
-          : err.message || "Não foi possível concluir a operação.",
+        : unavailable
+          ? "Banco de dados temporariamente indisponível. Tente novamente em instantes."
+          : postgres && !refused
+            ? "Não foi possível concluir a operação no banco. Tente novamente."
+            : code.startsWith("SQLITE") || postgres
+              ? "Operação não permitida pelas restrições do banco."
+              : err.message || "Não foi possível concluir a operação.",
   });
 });
 // On Vercel the platform imports the app; a worker has no HTTP.

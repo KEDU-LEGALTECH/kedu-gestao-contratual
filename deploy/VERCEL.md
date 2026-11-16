@@ -41,6 +41,7 @@ Configure no projeto da Vercel. Nunca em variáveis `VITE_*`.
 | `GEMINI_PAID_DATA_APPROVED` | `false` (não cadastre `GEMINI_API_KEY`) |
 | `TRUST_PROXY_HOPS` | `1` (a Vercel fica na frente da função) |
 | `ALLOWED_ORIGINS` | endereço do portal na Vercel |
+| `KEDU_PG_POOL` | opcional; padrão `3` conexões por instância na Vercel (o Session pooler tem limite de clientes somado entre as instâncias) |
 
 Use Node.js 24 no projeto (o portal usa `node:sqlite`).
 

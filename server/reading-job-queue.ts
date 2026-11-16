@@ -14,7 +14,8 @@ export class ReadingJobQueue {
   * process) resumes every running job at once; serverless instances overlap and must wait. */
  constructor(db:DatabaseSync|Sql,private time=()=>Date.now(),private staleAfterMs=0) {
   this.sql=db instanceof DatabaseSync?sqliteSql(db):db;
-  this.ready=this.recoverStale();
+  // A failed recovery must not reject every later call: runReadingCycle recovers again on each pass.
+  this.ready=this.recoverStale().catch(error=>console.error('Retomada da fila de leitura falhou:',error?.message||error));
  }
  /** An interrupted attempt resumes with its saved page cache instead of consuming a retry. */
  recoverStale() {

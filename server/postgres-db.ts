@@ -20,7 +20,8 @@ export async function openPostgres(env: NodeJS.ProcessEnv = process.env) {
   if (!/^[a-z_][a-z0-9_]{0,62}$/.test(schema)) throw Error("KEDU_PG_SCHEMA inválido.");
   const { connection, ssl } = target(env);
   const pool = postgres(connection, {
-    ssl, max: Number(env.KEDU_PG_POOL || 5), connect_timeout: 10, idle_timeout: 60,
+    // The Session pooler has a fixed client limit shared by every instance: Vercel runs several, so each keeps fewer.
+    ssl, max: Number(env.KEDU_PG_POOL || (env.VERCEL ? 3 : 5)), connect_timeout: 10, idle_timeout: env.VERCEL ? 20 : 60,
     types: postgresTypes, connection: { search_path: schema }, onnotice: () => {},
   });
   const [ready] = await pool`SELECT to_regclass('demands') IS NOT NULL AS ok`;

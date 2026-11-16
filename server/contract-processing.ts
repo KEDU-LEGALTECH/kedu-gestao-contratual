@@ -720,7 +720,8 @@ async function scanDemands(deadline=Infinity){
   }
 }
 export async function scheduleContractProcessing() {
- if(process.env.NODE_ENV==='test'||await recoveryPaused()||scanningRecovery)return;
+ // A hosted API (KEDU_ROLE=api) is frozen after each response: reading runs only through runReadingCycle.
+ if(process.env.NODE_ENV==='test'||role==='api'||await recoveryPaused()||scanningRecovery)return;
  scanningRecovery=true;
  // Background work continues after the request that started it: no request read cache.
  void readCache.exit(()=>(async()=>{
