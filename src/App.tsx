@@ -653,9 +653,11 @@ export function App() {
             <strong>{detail ? "Detalhe da demanda" : page}</strong>
           </div>
           <ThemeToggle />
-          <span className="environment">
-            <i /> Ambiente de demonstração
-          </span>
+          {showDemoNotice && (
+            <span className="environment">
+              <i /> Ambiente de demonstração
+            </span>
+          )}
         </header>
         <main>
           <div className="demo-banner">
@@ -1612,10 +1614,12 @@ export function App() {
                       {showAllDashboardDemands?"Mostrar só as 5 primeiras":`Mostrar todas as ${dashboardDemands.length} demandas`}
                     </button>}
                   </section>
-                  <div className="dashboard-note">
-                    <ShieldCheck size={15} /> Dados fictícios para demonstração.
-                    Modelos sem aprovação jurídica.
-                  </div>
+                  {showDemoNotice && (
+                    <div className="dashboard-note">
+                      <ShieldCheck size={15} /> Dados fictícios para demonstração.
+                      Modelos sem aprovação jurídica.
+                    </div>
+                  )}
                 </>
               )}
               {page === "Demandas" && (
@@ -2056,8 +2060,9 @@ export function App() {
                       ))
                     ) : (
                       <p className="empty-text">
-                        Nenhuma sincronização executada. Inicie uma importação
-                        demonstrativa.
+                        {showDemoNotice
+                          ? "Nenhuma sincronização executada. Inicie uma importação demonstrativa."
+                          : "Nenhuma sincronização executada ainda."}
                       </p>
                     )}
                   </section>
