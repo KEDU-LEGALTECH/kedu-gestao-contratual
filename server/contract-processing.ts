@@ -1,5 +1,5 @@
 import {qualifiedCompanyName} from './qualification-reading.js';
-import {contractReadingScope,isFilledContract,isSupportDocument} from './contract-reading-scope.js';
+import {contractReadingScope,isBankDocument,isFilledContract,isSupportDocument} from './contract-reading-scope.js';
 import {readingFilename} from './reading-format.js';
 import { all, one, run, db, id, now, audit, sql, auditAsync } from "./db.js";
 import { downloadGlpiAttachment } from "./glpi-download.js";
@@ -389,6 +389,26 @@ export async function buildProcessingPlan(did:string) {
  }
  const cession=files.length?cessionClauseCheck(demandType,profileFiles):null;
  if(cession){comparisons.push(cession);if(cession.status!=='matches')add('clausulaCessao',cession.message,{label:cession.label});}
+ // A bank receipt is not a contract, but bank data printed in it that differs from the GLPI reference needs correction.
+ for(const f of currentFiles){
+  if(contractIds.has(f.id)||f.problem)continue;
+  const reading=JSON.parse(f.extracted);
+  if(reading.triageOnly||reading.awaitingOcr||!isBankDocument(f.name,reading.text||''))continue;
+  for(const key of ['banco','agencia','conta','titularConta','documentoTitular','pix']){
+   const expected=request[key];
+   if(expected?.length!==1||Object.hasOwn(overrides,key))continue;
+   const found=distinctRequestedValues(key,(reading.fields?.[key]||[]).map((v:string)=>normalizeValue(key,v)).filter((v:string)=>v&&plausibleFieldValue(key,v)));
+   if(!found.length||found.some(v=>sameRequestedValue(key,v,expected[0])))continue;
+   const message=`O comprovante bancário "${f.name}" informa ${found.join('; ')}, diferente do GLPI (${expected[0]}). Confira e corrija o dado bancário.`;
+   const detail={found:found.join('; '),expected:expected[0],source:f.name};
+   const comparison=comparisons.find(c=>c.field===key);
+   if(comparison?.status==='different')continue;
+   if(comparison)Object.assign(comparison,detail,{status:'different',readingPending:false,matchesReference:false,missingReason:undefined,message});
+   else comparisons.push({field:key,label:inputLabels[key]||key,status:'different',readingPending:false,matchesReference:false,...detail,message});
+   const issue=issues.find(i=>i.field===key);
+   if(issue)Object.assign(issue,detail,{message});else add(key,message,detail);
+  }
+ }
  const validationFindings=validateReadings(files.filter(f=>!f.problem).map(f=>{const scoped=extractedByFile.get(f.id)||scopePartyReading(JSON.parse(f.extracted),expectedPartyCnpj,expectedPartyName).reading;const fields=scoped.fields as Record<string,string[]>;return {name:f.name,fields:Object.fromEntries(Object.entries(fields).map(([key,vs])=>[key,vs.filter(v=>plausibleFieldValue(key,v))]))};}));
  for(const finding of validationFindings){
   const resolved=resolutions.find(r=>r.kind==='validation'&&r.field===finding.field&&r.signature===resolutionSignature(finding.field,finding.found));
@@ -491,7 +511,7 @@ export async function processContract(did:string,userId:string|null=null,downloa
   for(const {doc,scope} of documents) {
    if(Date.now()>=deadline||await recoveryPaused()&&!force&&userId===null)break;
    const cached=(await filesFor(did,ticket.hash)).find(f=>f.document_id===String(doc.id));
-   if(scope.kind==='support'||cached?.byteLength&&!force&&await extractionReviewed(cached))continue;
+   if(scope.kind==='support'&&!scope.needsWork||cached?.byteLength&&!force&&await extractionReviewed(cached))continue;
    if(!force&&(!scope.needsWork||awaitsOcr(cached)))continue;
    activeFiles.set(did,{documentId:String(doc.id)});
    let file:any,extracted:any,reusedFrom:string|undefined;

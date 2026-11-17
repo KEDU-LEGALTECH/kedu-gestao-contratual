@@ -15,6 +15,7 @@ const {demoTemplate,paragraphs}=await import("../server/documents.js");
 const {processContract,saveProcessingResult,buildProcessingPlan,ensureProcessing,processingSummary,recoveryReason}=await import("../server/contract-processing.js");
 const {registerProcessingRoutes,processingView}=await import("../server/processing-routes.js");
 const {inputLabels}=await import("../server/processing-extract.js");
+const {contractReadingScope}=await import("../server/contract-reading-scope.js");
 await sql.run("INSERT INTO users VALUES('u','Teste','u@test.local','Administrador','unused')");
 await sql.run("INSERT INTO schools VALUES('s','Escola teste','Escola teste','11.444.777/0001-61','','')");
 await registerOfficialCatalog();
@@ -121,8 +122,10 @@ test('sem conferência anterior, a nova versão não cria conferência nem regis
  assert.equal((await sql.one('SELECT count(*) n FROM processing_field_reviews WHERE file_id=?', current.id)).n,0);
  assert.equal((await sql.one("SELECT count(*) n FROM audit WHERE demand_id=? AND action LIKE 'Conferência humana mantida%'", 'no-review')).n,0);
 });
-test('comprovante de apoio não bloqueia a conferência de um contrato digital',async()=>{
- await fixture('corroborated');await processContract('corroborated','u',mock());
+test('comprovante bancário igual ao GLPI não pede revisão; divergente vai para correção',async()=>{
+ const raw=await fixture('corroborated');raw.content+='<p>AGÊNCIA: 0001</p>';
+ await sql.run('UPDATE glpi_tickets SET payload=? WHERE external_id=?', JSON.stringify(raw), 'corroborated');
+ await processContract('corroborated','u',mock());
  const extracted={version:2,text:'Dados bancários',fields:{agencia:['0001']},needsReview:true,method:'OCR de imagem'};
  await sql.run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)', 'bank-support', 'corroborated', '8', 'hash-corroborated', 'Comprovante bancario.png', 'image/png', Buffer.from('original'), JSON.stringify(extracted), '', now());
  assert.equal((await buildProcessingPlan('corroborated'))!.issues.some(i=>i.field==='review:bank-support'),false);
@@ -132,7 +135,14 @@ test('comprovante de apoio não bloqueia a conferência de um contrato digital',
  assert.equal(mixed.issues.some(i=>i.field==='review:bank-support'),false,'campo digital independente evita confirmação duplicada');
  assert.ok(mixed.issues.some(i=>i.field==='review:partial:'+source.id),'outra página parcial continua pendente');
  extracted.fields.agencia=['0002'];await sql.run('UPDATE processing_files SET extracted=? WHERE id=?', JSON.stringify(extracted), 'bank-support');
- assert.equal((await buildProcessingPlan('corroborated'))!.issues.some(i=>i.field==='review:bank-support'||i.field==='agencia'),false);
+ const divergent=(await buildProcessingPlan('corroborated'))!;
+ assert.ok(divergent.issues.some(i=>i.field==='agencia'&&/Comprovante bancario\.png/.test(i.message)),'o comprovante divergente do GLPI gera aviso');
+ assert.equal(divergent.comparisons.find(c=>c.field==='agencia')?.status,'different');
+ assert.equal((await saveProcessingResult('corroborated'))!.status,'Aguardando correção');
+});
+test('comprovante bancário ainda não lido entra na fila de leitura',()=>{
+ assert.deepEqual(contractReadingScope('Comprovante bancario.png'),{kind:'support',needsWork:true});
+ assert.deepEqual(contractReadingScope('Cartao CNPJ.pdf'),{kind:'support',needsWork:false},'outros documentos de apoio continuam sem leitura');
 });
 test('divergência digital comprovada aparece como correção mesmo com outra leitura pendente',async()=>{
  await fixture('known-difference');await processContract('known-difference','u',mock({...data,remuneracao:'9,00%'}));
