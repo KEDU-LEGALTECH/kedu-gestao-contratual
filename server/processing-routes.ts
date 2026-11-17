@@ -19,7 +19,8 @@ import {readingFilename} from './reading-format.js';
 import {recordReadingGold} from './reading-gold.js';
 import {readerAvailable} from './paddle-ocr.js';
 // A hosted API without PaddleOCR would read with Tesseract alone, which loses fields: refuse instead.
-const requireReader=()=>{if(!readerAvailable())throw Object.assign(Error('Leitura de documentos indisponível nesta hospedagem até o leitor PaddleOCR ser ativado. Os arquivos e os dados já lidos continuam disponíveis.'),{status:503});};
+// Digital files (PDF text, Word, spreadsheets) are still read there; region reading is always OCR.
+const requireReader=()=>{if(!readerAvailable())throw Object.assign(Error('Leitura de região indisponível nesta hospedagem até o leitor PaddleOCR ser ativado. Os arquivos e os dados já lidos continuam disponíveis.'),{status:503});};
 const upload=acceptStored(multer({storage:multer.memoryStorage(),limits:{fileSize:20*1024*1024,files:1}}),20*1024*1024);
 const snapshot=(values:Record<string,string>)=>JSON.stringify(Object.fromEntries(Object.entries(values).sort(([a],[b])=>a.localeCompare(b))));
 async function get(req:any,write=false) {
@@ -75,7 +76,7 @@ export function registerProcessingRoutes(app:Express,process:(did:string,userId?
   res.json(reading);
  });
  app.get("/api/demands/:id/processing",async (req:any,res)=>{await get(req);res.json(await processingView(req.params.id));});
- app.post("/api/demands/:id/processing/recheck",async(req:any,res)=>{await get(req,true);requireReader();await process(req.params.id,req.user.id,undefined,true);res.json(await processingView(req.params.id));});
+ app.post("/api/demands/:id/processing/recheck",async(req:any,res)=>{await get(req,true);await process(req.params.id,req.user.id,undefined,true);res.json(await processingView(req.params.id));});
  app.post('/api/demands/:id/processing/files/:file/fields/:field/confirm',async (req:any,res)=>{
   const {demand:d}=await get(req,true),body=z.object({revision:z.number().int().min(1),value:z.string().min(1).max(500),confirmed:z.literal(true)}).parse(req.body);
   await sql.transaction(async()=>{
@@ -175,10 +176,10 @@ export function registerProcessingRoutes(app:Express,process:(did:string,userId?
   if(Object.keys(values).some(k=>!editableKeys.includes(k)))throw Error("Campo de correção não autorizado.");
   let file:any=null;
   if(req.file){
-   requireReader();
    if(!supportedReading.test(readingFilename(req.file.buffer,req.file.originalname)))throw Error("Envie PDF, imagem, Word, ODT, XLSX, PPTX, TXT ou CSV de até 20 MB.");
    if(!JSON.parse(ticket.payload).documents.some((x:any)=>String(x.id)===b.document_id))throw Error("Selecione qual anexo está sendo corrigido.");
    const extracted=await readProcessingFile(req.file.buffer,req.file.originalname);
+   if(extracted.awaitingOcr)throw Object.assign(Error('Este arquivo é imagem ou digitalização e precisa do leitor com OCR, que ainda não está ativo nesta hospedagem. Envie o documento em PDF com texto ou Word.'),{status:503});
    if(extracted.problem)throw Error(extracted.problem);
    file={name:req.file.originalname.replace(/[\r\n\\/]/g,"_").slice(0,180),extracted};
   }

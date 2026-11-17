@@ -178,8 +178,9 @@ app.post(
     });
   },
 );
-// Vercel Cron runs the background work without a long-running process. Vercel sends
-// "Authorization: Bearer <CRON_SECRET>"; without CRON_SECRET these routes stay closed.
+// A scheduler (Supabase pg_cron, see deploy/supabase-cron.sql, or Vercel Cron) runs the background work
+// without a long-running process. It sends "Authorization: Bearer <CRON_SECRET>"; without CRON_SECRET
+// these routes stay closed.
 const cronAuthorized = (req: any) => {
   const expected = Buffer.from("Bearer " + (process.env.CRON_SECRET || "")), given = Buffer.from(String(req.headers.authorization || ""));
   return !!process.env.CRON_SECRET && expected.length === given.length && timingSafeEqual(expected, given);
@@ -191,7 +192,8 @@ app.get("/api/cron/glpi-sync", async (req, res) => {
 });
 app.get("/api/cron/reading", async (req, res) => {
   if (!cronAuthorized(req)) return res.status(401).json({ error: "Não autorizado." });
-  res.json(await readCache.exit(() => runReadingCycle(Number(process.env.READING_CYCLE_SECONDS || 240) * 1000)));
+  // On Vercel the function stops at 300 s; the file in progress may run past the budget.
+  res.json(await readCache.exit(() => runReadingCycle(Number(process.env.READING_CYCLE_SECONDS || (process.env.VERCEL ? 180 : 240)) * 1000)));
 });
 app.use("/api", async (req: any, res, next) => {
   const u = await sql.one("SELECT users.* FROM sessions JOIN users ON users.id=sessions.user_id WHERE token=? AND expires>?", req.cookies.session || "", Date.now());

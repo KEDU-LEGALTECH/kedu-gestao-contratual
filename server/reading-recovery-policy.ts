@@ -13,8 +13,8 @@ export function needsReadingRecovery(file:CachedFile|undefined) {
   return Object.keys(r.fields||{}).length===0&&!String(r.text||'').trim();
  }catch{return true;}
 }
-/** A temporary engine failure must not destroy any usable previous extraction. */
-export function preservePreviousReading(previous:string|undefined,next:{transient?:boolean;problem?:string}) {
- if(!previous||!next.transient)return false;
+/** A temporary engine failure, or a host without OCR, must not destroy any usable previous extraction. */
+export function preservePreviousReading(previous:string|undefined,next:{transient?:boolean;awaitingOcr?:boolean;problem?:string}) {
+ if(!previous||!(next.transient||next.awaitingOcr))return false;
  try{const r=JSON.parse(previous);return !r.problem&&!!(r.text?.trim()||Object.keys(r.fields||{}).length);}catch{return false;}
 }

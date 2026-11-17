@@ -5,16 +5,12 @@
   "outputDirectory": "dist",
   "functions": {
     "api/index.ts": {
-      "maxDuration": 800,
-      "includeFiles": "{server,shared,templates}/**"
+      "maxDuration": 300,
+      "includeFiles": "{server,shared,templates,node_modules/pdfjs-dist/standard_fonts,node_modules/pdfjs-dist/cmaps,node_modules/pdfjs-dist/wasm}/**"
     }
   },
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api" },
     { "source": "/healthz", "destination": "/api" }
-  ],
-  "crons": [
-    { "path": "/api/cron/glpi-sync", "schedule": "*/15 * * * *" },
-    { "path": "/api/cron/reading", "schedule": "*/5 * * * *" }
   ]
 }

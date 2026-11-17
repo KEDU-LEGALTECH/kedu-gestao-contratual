@@ -336,21 +336,29 @@ async function office(bytes:Buffer,name:string,progress?:(reading:Reading)=>void
  const literal=sheet?literalSpreadsheetIdentity(zip):undefined;
  return {...native,digitalFields,...(literal?{literalIdentityFields:literal.fields,literalIdentityOrigins:literal.origins}:{}),...(sheet&&Object.keys(sheet.calculatedFields).length?{calculatedFields:sheet.calculatedFields}:{}),needsReview:native.needsReview||usedOcr,method:native.method+(usedOcr?' com OCR':'')};
 }
+async function loadPdf(bytes:Buffer) {
+ const {getDocument}=await import('pdfjs-dist/legacy/build/pdf.mjs');
+ const root=dirname(require.resolve('pdfjs-dist/package.json'));
+ return getDocument({data:new Uint8Array(bytes),useSystemFonts:false,standardFontDataUrl:join(root,'standard_fonts')+'/',cMapUrl:join(root,'cmaps')+'/',cMapPacked:true,wasmUrl:join(root,'wasm')+'/',verbosity:0});
+}
+/** Type identification from the digital text of one page; null when the page has too little text. */
+async function identificationText(page:any):Promise<Reading|null> {
+ const content=await page.getTextContent();
+ const text=content.items.map((item:any)=>'str' in item?item.str+(item.hasEOL?'\n':' '):'').join('').trim().slice(0,10000);
+ return text.length>=80?{version:readerVersion,text,fields:{},problem:'',method:'Identificação por texto do PDF',needsReview:false}:null;
+}
 export async function readDocumentRegion(bytes:Buffer,name:string,region:ReadingRegion):Promise<Reading> {
  if(!validReadingRegion(region)||bytes.length>20*1024*1024)throw Error('Região inválida ou arquivo maior que 20 MB.');
  let png:Buffer;
  if(/\.pdf$/i.test(name)) {
-  const {getDocument}=await import('pdfjs-dist/legacy/build/pdf.mjs');
-  const root=dirname(require.resolve('pdfjs-dist/package.json'));
-  const loading=getDocument({data:new Uint8Array(bytes),useSystemFonts:false,standardFontDataUrl:join(root,'standard_fonts')+'/',cMapUrl:join(root,'cmaps')+'/',cMapPacked:true,wasmUrl:join(root,'wasm')+'/',verbosity:0});
+  const loading=await loadPdf(bytes);
   try {
    const document=await loading.promise;
    if(document.numPages>maxPdfPages||region.page>document.numPages)throw Error('Página indisponível. Use um PDF com até 200 páginas.');
    const page=await document.getPage(region.page);
    if(region.identification){
-    const content=await page.getTextContent();
-    const text=content.items.map(item=>'str' in item?item.str+(item.hasEOL?'\n':' '):'').join('').trim().slice(0,10000);
-    if(text.length>=80)return {version:readerVersion,text,fields:{},problem:'',method:'Identificação por texto do PDF',needsReview:false};
+    const found=await identificationText(page);
+    if(found)return found;
    }
    const base=page.getViewport({scale:1});
    const viewport=page.getViewport({scale:Math.min(3,3200/Math.max(base.width,base.height))});
@@ -404,4 +412,34 @@ export async function readDocument(bytes:Buffer,name:string,progress?:(reading:R
   return {...result(identification?text.slice(0,10000):text,"Word DOC"),needsReview:!!text.trim()};
  }
  throw Error("Formato sem leitor disponível.");
+}
+/** Same thresholds as the OCR loops: smaller images are logos and icons, never read. */
+async function readableImage(data:Buffer) {
+ const meta=await sharp(await prepareImage(data),{limitInputPixels:24000000}).metadata();
+ return !!meta.width&&!!meta.height&&meta.width*meta.height>=60000&&meta.height>=100&&meta.width>=150;
+}
+/** Reading without OCR, for a host without PaddleOCR: digital PDF text, Word, ODT, spreadsheets and slides.
+ * Returns null when any page or embedded image needs OCR; that file waits for the full reader instead of
+ * being read partially. Results equal those of readDocument for the same file. */
+export async function readDigitalOnly(bytes:Buffer,name:string,region?:ReadingRegion,identification=false):Promise<Reading|null> {
+ const extension=extname(name).toLowerCase();
+ if(region){
+  if(!region.identification||extension!=='.pdf'||!validReadingRegion(region))return null;
+  const loading=await loadPdf(bytes);
+  try{const document=await loading.promise;return region.page<=document.numPages?await identificationText(await document.getPage(region.page)):null;}
+  finally{await loading.destroy();}
+ }
+ if(extension==='.pdf'){
+  if(bytes.subarray(0,5).toString()!=="%PDF-")throw Error("O conteúdo recebido não corresponde a um PDF válido.");
+  try{return await pdf(bytes,undefined,true);}
+  catch(e:any){if(/ainda precisa de OCR/.test(e?.message||''))return null;throw e;}
+ }
+ if(!['.docx','.odt','.xlsx','.pptx','.doc'].includes(extension))return null;
+ // Identification of ODT, XLSX and PPTX stops before embedded images; Word always reads them.
+ if(extension!=='.doc'&&!(identification&&extension!=='.docx')){
+  const media=extension==='.docx'?/^word\/media\/.+\.(png|jpe?g|webp|bmp|tiff?)$/i:/^(?:Pictures|ppt\/media|xl\/media)\/.+\.(png|jpe?g|webp|bmp|tiff?)$/i;
+  for(const entry of Object.values(new PizZip(bytes).files))
+   if(media.test(entry.name)&&await readableImage(entry.asNodeBuffer()))return null;
+ }
+ return readDocument(bytes,name,undefined,identification);
 }

@@ -59,8 +59,10 @@ let running = false;
 let syncStartedAt:string|null=null;
 /** Imports tickets into a staging table. Idempotent by ticket id + content hash.
  * External changes never overwrite local demands, data or approvals: they are recorded as a new
- * immutable version and flagged for human review. */
-export async function syncGlpi(userId: string | null, source?: TicketSource, timeoutMs = 600000) {
+ * immutable version and flagged for human review.
+ * A Vercel Function stops at 300 s: reading stops earlier and the tickets read so far are saved as a partial
+ * sync; the next scheduled call completes it, reusing the timelines of unchanged tickets. */
+export async function syncGlpi(userId: string | null, source?: TicketSource, timeoutMs = process.env.VERCEL ? 230000 : 600000) {
   source ??= await ticketSource();
   if (running) throw Error("Já existe uma sincronização em andamento.");
   running = true;

@@ -60,16 +60,47 @@ test("rotas do Vercel Cron exigem o segredo e respeitam a pausa da leitura", asy
   assert.deepEqual(await sync.json(), { synced: false });
 });
 
-test("API hospedada sem PaddleOCR não lê só com Tesseract", async () => {
+test("API hospedada sem PaddleOCR lê só arquivos digitais e deixa imagens e escaneados aguardando OCR", async () => {
   const { readerAvailable } = await import("../server/paddle-ocr.js");
+  const { readProcessingFile } = await import("../server/file-reading.js");
+  const { preservePreviousReading } = await import("../server/reading-recovery-policy.js");
+  const { readingPdf, mixedReadingPdf, readingImage } = await import("./reading-fixtures.js");
   const previous = process.env.KEDU_ROLE;
   try {
     assert.equal(readerAvailable(), true, "fora da hospedagem o leitor segue como hoje");
     process.env.KEDU_ROLE = "api";
     assert.equal(readerAvailable(), false);
+    const digital = await readProcessingFile(readingPdf(), "contrato.pdf");
+    assert.equal(digital.problem, "");
+    assert.equal(digital.method, "Texto do PDF");
+    assert.equal(digital.awaitingOcr, undefined);
+    assert.deepEqual(digital.fields.cnpj, ["11.444.777/0001-61"]);
+    // Never Tesseract alone: a scanned page anywhere keeps the whole file for the OCR reader.
+    for (const [bytes, name] of [[readingPdf(true), "escaneado.pdf"], [mixedReadingPdf(), "misto.pdf"], [readingImage().toBuffer("image/png"), "foto.png"]] as const) {
+      const waiting = await readProcessingFile(bytes, name);
+      assert.equal(waiting.awaitingOcr, true, name);
+      assert.match(waiting.problem, /Aguardando leitura com OCR/);
+      assert.equal(waiting.text, "", name);
+    }
+    const { default: PizZip } = await import("pizzip");
+    const { demoTemplate } = await import("../server/documents.js");
+    const { createCanvas } = await import("@napi-rs/canvas");
+    const word = (image: Buffer) => {
+      const zip = new PizZip(demoTemplate());
+      zip.file("word/document.xml", '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Razão social: Empresa teste</w:t></w:r></w:p></w:body></w:document>');
+      zip.file("word/media/imagem.png", image);
+      return zip.generate({ type: "nodebuffer" });
+    };
+    const withLogo = await readProcessingFile(word(createCanvas(120, 60).toBuffer("image/png")), "contrato.docx");
+    assert.equal(withLogo.method, "DOCX", "logotipo pequeno não precisa de OCR, como no leitor completo");
+    assert.deepEqual(withLogo.fields.razaoSocial, ["Empresa teste"]);
+    assert.equal((await readProcessingFile(word(readingImage().toBuffer("image/png")), "digitalizado.docx")).awaitingOcr, true);
+    const identification = await readProcessingFile(readingPdf(true), "anexo.pdf", { page: 1, x: 0, y: 0, width: 1, height: 1, rotation: 0, identification: true });
+    assert.equal(identification.awaitingOcr, true, "identificação de PDF sem texto também espera o OCR");
+    assert.equal(preservePreviousReading(JSON.stringify(digital), await readProcessingFile(readingPdf(true), "escaneado.pdf")), true, "leitura anterior que funcionou é preservada");
     await sql.run("UPDATE settings SET value='false' WHERE key='documentReadingPaused'");
     const reading = await fetch(base + "/api/cron/reading", { headers: { Authorization: "Bearer segredo-de-teste-do-cron" } });
-    assert.deepEqual(await reading.json(), { paused: true, reason: "PaddleOCR indisponível nesta hospedagem" });
+    assert.deepEqual(await reading.json(), { paused: false, pending: 0 });
   } finally {
     if (previous === undefined) delete process.env.KEDU_ROLE; else process.env.KEDU_ROLE = previous;
   }

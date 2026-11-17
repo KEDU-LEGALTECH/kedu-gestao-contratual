@@ -11,7 +11,8 @@ const root=resolve(fileURLToPath(new URL('..',import.meta.url)));
 let child:ChildProcessWithoutNullStreams|undefined,buffer='',pending:{resolve:(result:PaddleResult|null)=>void;timer:ReturnType<typeof setTimeout>}|undefined;
 let unavailable=false;
 export const paddleRuntimePath=()=>process.env.KEDU_OCR_RUNTIME||join(root,'data/ocr-runtime.json');
-/** A hosted API (KEDU_ROLE=api) reads only with PaddleOCR; elsewhere the reader may fall back to Tesseract as before. */
+/** A hosted API (KEDU_ROLE=api) uses OCR only with PaddleOCR; without it, only digital text is read there
+ * (readDigitalOnly). Elsewhere the reader may fall back to Tesseract as before. */
 export function readerAvailable(){return process.env.KEDU_ROLE!=='api'||paddleConfigured();}
 export function paddleConfigured(){return process.env.OCR_ENGINE!=='legacy'&&((process.env.NODE_ENV!=='test'&&!process.env.NODE_TEST_CONTEXT)||process.env.OCR_ENGINE==='paddle')&&existsSync(paddleRuntimePath());}
 function stop(){child?.kill();child=undefined;buffer='';if(pending){clearTimeout(pending.timer);pending.resolve(null);pending=undefined;}}

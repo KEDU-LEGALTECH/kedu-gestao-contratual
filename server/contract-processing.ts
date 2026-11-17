@@ -491,7 +491,7 @@ export async function processContract(did:string,userId:string|null=null,downloa
    if(Date.now()>=deadline||await recoveryPaused()&&!force&&userId===null)break;
    const cached=(await filesFor(did,ticket.hash)).find(f=>f.document_id===String(doc.id));
    if(scope.kind==='support'||cached?.byteLength&&!force&&await extractionReviewed(cached))continue;
-   if(!force&&!scope.needsWork)continue;
+   if(!force&&(!scope.needsWork||awaitsOcr(cached)))continue;
    activeFiles.set(did,{documentId:String(doc.id)});
    let file:any,extracted:any,reusedFrom:string|undefined;
    try {
@@ -596,9 +596,15 @@ async function recoveryFiles(raw:any,cached:Awaited<ReturnType<typeof filesFor>>
  for(const doc of currentReadingDocuments(raw)){
   const file=byId.get(String(doc.id));
   const scope=contractReadingScope(doc.name||'',file);
+  if(awaitsOcr(file))continue;
   if(scope.needsWork&&!(file&&await extractionReviewed(file)))pending.push({doc,file,scope});
  }
  return pending;
+}
+/** A scan saved by a host without PaddleOCR is retried only where the OCR reader runs. */
+function awaitsOcr(file:{extracted:string}|undefined){
+ if(!file||readerAvailable())return false;
+ try{return JSON.parse(file.extracted).awaitingOcr===true;}catch{return false;}
 }
 export async function processingFileProgress(did:string){
  const {ticket}=await processingSource(did);if(!ticket)return {demandId:did,files:[],paused:await recoveryPaused()};
@@ -732,10 +738,10 @@ export async function scheduleContractProcessing() {
  })()).catch(error=>console.error("Falha ao verificar a fila de leitura:",failureDetail(error)))
    .finally(()=>{scanningRecovery=false;});
 }
-/** One scheduled pass without a long-running process (Vercel Cron): take back stale jobs, queue what
- * still needs reading, then read until the budget ends. The job in progress finishes past the budget. */
+/** One scheduled pass without a long-running process (a scheduler calling /api/cron/reading): take back stale
+ * jobs, queue what still needs reading, then read until the budget ends. The job in progress finishes past
+ * the budget. Without PaddleOCR only digital files are read; scans wait for the OCR reader. */
 export async function runReadingCycle(budgetMs:number){
- if(!readerAvailable())return {paused:true,reason:'PaddleOCR indisponível nesta hospedagem'};
  if(await recoveryPaused())return {paused:true};
  const deadline=Date.now()+budgetMs,queue=readingQueue();
  await queue.recoverStale();

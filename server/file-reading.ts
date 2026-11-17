@@ -12,11 +12,13 @@ import {acquireReadingLease} from './reading-runtime-lock.js';
 import {freemem,tmpdir} from 'node:os';
 import {recoverTextFields} from './text-recovery.js';
 import type {Sql} from './sql.js';
-import {paddleRuntimePath} from './paddle-ocr.js';
+import {paddleRuntimePath,readerAvailable} from './paddle-ocr.js';
 export const readerVersion=4;
 export const supportedReading=/\.(docx|doc|pdf|png|jpe?g|webp|tiff?|bmp|gif|txt|csv|odt|xlsx|pptx)$/i;
-export type Reading={version:number;text:string;fields:Record<string,string[]>;problem:string;method:string;needsReview:boolean;incomplete?:boolean;completedPages?:number[];pendingPages?:number[];confidence?:number;fieldConfidence?:Record<string,number>;pages?:number;formulaCount?:number;warnings?:string[];verifiedFields?:string[];digitalFields?:Record<string,string[]>;tableFields?:Record<string,string[]>;ocrEngine?:string;preprocessing?:string[];calculatedFields?:Record<string,string[]>;transient?:boolean;fieldOrigins?:Record<string,{value:string;page:number;excerpt:string}[]>;timings?:{queueMs:number;readMs:number;shutdownMs:number;totalMs:number;cacheHit?:boolean}};
+export type Reading={version:number;text:string;fields:Record<string,string[]>;problem:string;method:string;needsReview:boolean;incomplete?:boolean;completedPages?:number[];pendingPages?:number[];confidence?:number;fieldConfidence?:Record<string,number>;pages?:number;formulaCount?:number;warnings?:string[];verifiedFields?:string[];digitalFields?:Record<string,string[]>;tableFields?:Record<string,string[]>;ocrEngine?:string;preprocessing?:string[];calculatedFields?:Record<string,string[]>;transient?:boolean;awaitingOcr?:boolean;fieldOrigins?:Record<string,{value:string;page:number;excerpt:string}[]>;timings?:{queueMs:number;readMs:number;shutdownMs:number;totalMs:number;cacheHit?:boolean}};
 export function readingFailure(problem:string):Reading{return {version:readerVersion,text:"",fields:{},problem,method:"inconclusiva",needsReview:false};}
+/** A scan or image on a host without PaddleOCR: not a failure of the file, it waits for the OCR reader. */
+export const awaitingOcrReading=():Reading=>({...readingFailure("Aguardando leitura com OCR: este arquivo é imagem ou digitalização e será lido quando o leitor PaddleOCR estiver ativo. O original está disponível para consulta."),awaitingOcr:true});
 let queue:Promise<unknown>=Promise.resolve();
 /** Parsers and OCR run in a bounded child process; no remote OCR service. */
 export type ReadingRegion={page:number;x:number;y:number;width:number;height:number;rotation:number;identification?:boolean};
@@ -59,6 +61,11 @@ async function readSingleFile(bytes:Buffer,name:string,region:ReadingRegion|unde
   const text=(bytes[0]===255 && bytes[1]===254?bytes.subarray(2).toString("utf16le"):bytes.toString("utf8")).replace(/^\uFEFF/,"");
   if(text.length>500000 || /\x00|\uFFFD/.test(text))return readingFailure("Texto muito grande ou codificação não reconhecida. Salve como UTF-8.");
   return {version:readerVersion,text,fields:fieldsFromLines(text.split(/\r?\n/).map(x=>x.replace(/[;\t]/g,": "))),problem:text.trim()?"":"Nenhum texto legível foi encontrado.",method:"Texto",needsReview:false};
+ }
+ // Hosted API without PaddleOCR: digital text is read here, in the same process; scans and images wait.
+ if(!readerAvailable()){
+  try{return await (await import("./file-reading-engine.js")).readDigitalOnly(bytes,name,region,identification)??awaitingOcrReading();}
+  catch(e:any){return readingFailure(e?.message||"Não foi possível ler o arquivo. Confira se está íntegro e sem senha.");}
  }
  const key=region||identification?undefined:createHash("sha256").update(bytes).digest("hex")+"\0"+name;
  const cached=key?cachedReading(key):undefined;

@@ -2,22 +2,26 @@
 
 Tudo roda na Vercel, sem máquina ligada. O portal usa a função `api/index.ts` na região **`yul1` (Montréal)**, a mesma do Supabase (`ca-central-1`): cada consulta ao banco leva cerca de 1 ms (deste computador, cerca de 125 ms). As telas (`dist/`) são publicadas como site estático.
 
-O trabalho em segundo plano não fica rodando: o **Vercel Cron** chama duas rotas, que fazem a parte vencida e terminam.
+**Plano: gratuito (Hobby).** O `vercel.json` respeita os limites dele: funções de até 300 s e nenhum Vercel Cron (no gratuito ele roda só uma vez por dia). Os termos do plano gratuito são para uso não comercial e a Vercel pode suspender o projeto; os dados ficam no Supabase, então o mesmo portal pode voltar a rodar em outro lugar só com configuração (`npm start` com as mesmas variáveis).
+
+O trabalho em segundo plano não fica rodando: o **agendador do próprio Supabase** (`pg_cron`, incluído no plano) chama duas rotas, que fazem a parte vencida e terminam. Crie o agendamento com `deploy/supabase-cron.sql` depois do primeiro deploy, com o domínio de produção.
 
 | Rota | Agenda | O que faz |
 |---|---|---|
-| `/api/cron/glpi-sync` | a cada 15 min | sincroniza o GLPI quando um horário de `GLPI_SYNC_TIMES` passou sem sincronização concluída; a trava no banco impede execuções simultâneas |
-| `/api/cron/reading` | a cada 5 min | retoma leituras paradas há mais de 20 min, enfileira o que falta ler e lê documentos por até `READING_CYCLE_SECONDS` (padrão 240 s) |
+| `/api/cron/glpi-sync` | a cada 15 min | sincroniza o GLPI quando um horário de `GLPI_SYNC_TIMES` passou sem sincronização concluída; a trava no banco impede execuções simultâneas. A leitura do GLPI para em 230 s: o que foi lido é salvo como sincronização parcial e a chamada seguinte completa o resto, reaproveitando os chamados sem mudança (medido: mediana de 173 s, máximo de 583 s) |
+| `/api/cron/reading` | a cada 15 min | retoma leituras paradas há mais de 20 min, enfileira o que falta ler e lê documentos por até `READING_CYCLE_SECONDS` (padrão 180 s na Vercel) |
 
-As rotas só respondem com o cabeçalho que a Vercel envia (`Authorization: Bearer <CRON_SECRET>`). A fila fica no banco com trava: execuções sobrepostas não leem o mesmo documento.
+As rotas só respondem com `Authorization: Bearer <CRON_SECRET>`. A fila fica no banco com trava: execuções sobrepostas não leem o mesmo documento.
 
-**Plano necessário: Pro.** No Hobby o Cron roda no máximo uma vez por dia e a função tem até 300 s; o Pro permite agenda por minuto e até 800 s (`maxDuration` em `vercel.json`).
+## Leitura de documentos: digitais na Vercel, OCR só com PaddleOCR
 
-## Leitura de documentos: PaddleOCR obrigatório
+As funções da Vercel não têm Python, então não têm PaddleOCR nem Docling. Só com Tesseract o comparativo perdeu campos em imagens (JPEG 69% iguais e 10 campos perdidos, contra 97% com PaddleOCR), por isso a Vercel **não faz OCR**:
 
-A qualidade de referência é a do leitor atual com **PaddleOCR**. Só com Tesseract, o comparativo perdeu campos em imagens (JPEG 69% iguais e 10 campos perdidos, contra 97% com PaddleOCR). As funções comuns da Vercel não têm Python, então não têm PaddleOCR nem Docling.
+- **Lidos na Vercel, com o mesmo resultado do leitor completo:** PDF com texto em todas as páginas, Word, ODT, XLSX e PPTX sem imagens a ler (logotipos e ícones pequenos são ignorados, como no leitor completo). No histórico, cerca de 47% dos anexos.
+- **Aguardando OCR:** imagens, PDFs com alguma página escaneada e documentos com imagem incorporada. Ficam com "Aguardando leitura com OCR", não são tentados de novo na Vercel e nunca substituem uma leitura anterior que funcionou. Onde o PaddleOCR estiver configurado (leitor completo), eles voltam à fila normalmente.
+- **Leitura de região** responde que precisa do PaddleOCR; uma correção enviada como imagem ou digitalização é recusada com orientação para enviar PDF com texto ou Word.
 
-**Até o PaddleOCR estar validado num contêiner na nuvem, mantenha a leitura automática pausada** no esquema usado pela Vercel (`settings.documentReadingPaused = 'true'`). Assim `/api/cron/reading` não grava leituras feitas só com Tesseract como concluídas. Telas, anexos, envios e a sincronização do GLPI funcionam normalmente. Não use `OCR_ENGINE=legacy` em produção.
+Para ativar a leitura dos digitais no esquema usado pela Vercel: `UPDATE settings SET value='false' WHERE key='documentReadingPaused'`. Não use `OCR_ENGINE=legacy` em produção.
 
 **Gemini desativado.** Não há autorização para chamadas à API do Google: mantenha `DOCUMENT_VISION_ENABLED=false` e `GEMINI_PAID_DATA_APPROVED=false`, e não cadastre `GEMINI_API_KEY` na Vercel.
 
@@ -35,7 +39,7 @@ Configure no projeto da Vercel. Nunca em variáveis `VITE_*`.
 | `SUPABASE_URL`, `SUPABASE_DATABASE_URL` | conexão do Session pooler |
 | `SUPABASE_CA_CERT` | conteúdo PEM do certificado (`\n` escapado é aceito) |
 | `SUPABASE_SECRET_KEY`, `SUPABASE_STORAGE_BUCKET` | Storage privado dos anexos |
-| `CRON_SECRET` | valor aleatório longo; a Vercel o envia nas chamadas do Cron |
+| `CRON_SECRET` | valor aleatório longo; o mesmo vai no cofre do Supabase (`deploy/supabase-cron.sql`) |
 | `GLPI_*`, `GLPI_SYNC_TIMES` | como no `.env` atual (ex.: `07:00,12:00,16:00`) |
 | `DOCUMENT_VISION_ENABLED` | `false` |
 | `GEMINI_PAID_DATA_APPROVED` | `false` (não cadastre `GEMINI_API_KEY`) |
@@ -61,11 +65,12 @@ O OCR de páginas concluídas de PDF é salvo no PostgreSQL para a leitura conti
 
 1. Gerar snapshot (`npm run migration:prepare`), enviar anexos (`scripts/storage-upload.ts`) e importar (`scripts/postgres-rehearsal.ts <pasta> --stage-supabase`); renomear o esquema `kedu_migration` para o valor de `KEDU_PG_SCHEMA`.
 2. Todos precisam entrar de novo: as sessões não são migradas.
+3. Depois do primeiro deploy de produção: criar o agendamento com `deploy/supabase-cron.sql` e conferir em `cron.job_run_details` e `net._http_response`.
 
 ## Outras formas de rodar
 
 - `npm start` sem `KEDU_ROLE`: um processo faz tudo (como no computador atual).
-- `npm run worker` (`KEDU_ROLE=worker`): só o trabalho em segundo plano, para uma máquina com PaddleOCR, se um dia for preciso.
+- `npm run worker` (`KEDU_ROLE=worker`): só o trabalho em segundo plano, com PaddleOCR. É ele que lê os arquivos "Aguardando leitura com OCR" (planejado: GitHub Actions após cada sincronização, se a empresa autorizar).
 
 ## Ainda pendente
 
