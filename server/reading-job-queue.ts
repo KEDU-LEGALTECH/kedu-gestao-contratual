@@ -43,11 +43,17 @@ export class ReadingJobQueue {
   await this.ready;
   await this.sql.run("UPDATE reading_jobs SET state='done',owner=NULL,updated=?,last_error='' WHERE demand_id=? AND ticket_hash=? AND state IN('queued','retry')",this.time(),demand,hash);
  }
- claim():Promise<Job|undefined> {
+ claim(deferredOcrOnly=false):Promise<Job|undefined> {
   const at=this.time();
+  const awaitingOcr=this.sql.dialect==='postgres'
+   ? "f.extracted::jsonb->'awaitingOcr'='true'::jsonb"
+   : "json_extract(f.extracted,'$.awaitingOcr')=1";
+  const scope=deferredOcrOnly
+   ? `AND EXISTS(SELECT 1 FROM processing_files f WHERE f.demand_id=j.demand_id AND f.ticket_hash=j.ticket_hash AND ${awaitingOcr})`
+   : '';
   return this.serialized(()=>this.sql.one(`UPDATE reading_jobs SET state='running',owner=?,attempts=attempts+1,updated=?
-   WHERE (demand_id,ticket_hash)=(SELECT demand_id,ticket_hash FROM reading_jobs
-   WHERE state IN('queued','retry') AND available_at<=? ORDER BY available_at,demand_id LIMIT 1)
+   WHERE (demand_id,ticket_hash)=(SELECT j.demand_id,j.ticket_hash FROM reading_jobs j
+   WHERE j.state IN('queued','retry') AND j.available_at<=? ${scope} ORDER BY j.available_at,j.demand_id LIMIT 1)
    AND state IN('queued','retry') AND NOT EXISTS(SELECT 1 FROM reading_jobs WHERE state='running') RETURNING *`,this.owner,at,at));
  }
  /** temporary: the machine, not the file, prevented the reading (low memory, reader unavailable).

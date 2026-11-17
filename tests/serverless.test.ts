@@ -43,6 +43,22 @@ test("instâncias sobrepostas só retomam leitura parada há mais tempo que qual
   } finally { db.close(); }
 });
 
+test("leitor de OCR no GitHub Actions só pega demandas com arquivo aguardando OCR", async () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE processing_files(id TEXT,demand_id TEXT,ticket_hash TEXT,extracted TEXT)");
+  db.exec(readFileSync("migrations/017.sql", "utf8"));
+  db.exec(readFileSync("migrations/018.sql", "utf8"));
+  try {
+    db.prepare("INSERT INTO processing_files VALUES('f1','digital','h',?)").run(JSON.stringify({ text: "Contrato" }));
+    db.prepare("INSERT INTO processing_files VALUES('f2','escaneado','h',?)").run(JSON.stringify({ awaitingOcr: true }));
+    const queue = new ReadingJobQueue(db, () => 1000, 60000);
+    await queue.enqueue("digital", "h");
+    await queue.enqueue("escaneado", "h");
+    assert.equal((await queue.claim(true))?.demand_id, "escaneado");
+    assert.equal(await queue.claim(true), undefined, "uma leitura por vez, e nunca a demanda só com digitais");
+  } finally { db.close(); }
+});
+
 test("rotas do Vercel Cron exigem o segredo e respeitam a pausa da leitura", async () => {
   const call = (path: string, authorization?: string) =>
     fetch(base + path, { headers: authorization ? { Authorization: authorization } : {} });

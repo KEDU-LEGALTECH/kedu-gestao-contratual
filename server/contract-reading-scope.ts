@@ -16,6 +16,13 @@ export function isSupportDocument(name:string,text:string){
  return supportContent.test(opening)||supportHeading.test(first)||supportName.test(first)||supportHeading.test(filename)||supportName.test(filename)||/\.(?:xlsx?|csv|pptx?|zip|rar|7z)$/i.test(name);
 }
 
+const bankDocumentPattern=/\b(?:comprovante bancario|dados bancarios|comprovante de (?:dados bancarios|conta bancaria|conta corrente)|conta bancaria)\b/;
+/** A bank receipt supports the contract, but its bank data is compared with the GLPI reference. */
+export function isBankDocument(name:string,text:string){
+ const first=fold(text.split(/\r?\n/).find(line=>line.trim())||'');
+ return bankDocumentPattern.test(fold(name).replace(/^\[[^\]]+\]\s*/,''))||bankDocumentPattern.test(first)||bankDocumentPattern.test(fold(text.slice(0,600)));
+}
+
 export function isFilledContract(text:string,name=''){
  if(!text.trim()||isSupportDocument(name,text))return false;
  const opening=text.slice(0,2000);
@@ -34,7 +41,7 @@ export function contractReadingScope(name:string,file?:Cached){
  const text=String(reading.text||'');
  if(isFilledContract(text,name))return {kind:'contract' as const,needsWork:reading.triageOnly===true||needsReadingRecovery(file)};
  if(isSupportDocument(name,text)||isContractInstrument(text))
-  return {kind:'support' as const,needsWork:false};
+  return {kind:'support' as const,needsWork:isBankDocument(name,text)&&needsReadingRecovery(file)};
  if(reading.contractIdentified===true)return {kind:'contract' as const,needsWork:needsReadingRecovery(file)};
  if(isContractInstrument(name)&&(!text.trim()||reading.incomplete||reading.triageOnly))
   return {kind:'contract' as const,needsWork:reading.triageOnly===true||needsReadingRecovery(file)};
