@@ -7,6 +7,7 @@ export type RunResult = { changes: number };
 /** Async data access shared by the SQLite runtime and the PostgreSQL migration target. */
 export interface Sql {
   readonly dialect: "sqlite" | "postgres";
+  close?(): Promise<void>;
   all(query: string, ...params: unknown[]): Promise<any[]>;
   one(query: string, ...params: unknown[]): Promise<any>;
   run(query: string, ...params: unknown[]): Promise<RunResult>;
@@ -129,6 +130,7 @@ export function postgresSql(pool: postgres.Sql): Sql {
   const written = () => readCache.getStore()?.entries.clear();
   return {
     dialect: "postgres",
+    close: () => pool.end({ timeout: 5 }),
     async all(query, ...params) { return rows(query, params); },
     async one(query, ...params) { return (await rows(query, params))[0]; },
     async run(query, ...params) { written(); try { return { changes: (await exec(query, params)).count }; } finally { written(); } },

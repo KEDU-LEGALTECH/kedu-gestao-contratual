@@ -150,6 +150,11 @@ const signedUpload = acceptStored(multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 8 * 1024 * 1024, files: 1 },
 }), 8 * 1024 * 1024);
+app.get("/api/login-info", (_req, res) => {
+  res.set("Cache-Control", "no-store").json({
+    showDemoNotice: process.env.NODE_ENV !== "production",
+  });
+});
 app.post(
   "/api/login",
   rateLimit({ windowMs: 900000, limit: 20 }),

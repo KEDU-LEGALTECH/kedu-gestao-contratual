@@ -207,6 +207,7 @@ export function App() {
     [success, setSuccess] = useState(""),
     [busy, setBusy] = useState(false),
     [ready, setReady] = useState(false),
+    [showDemoNotice, setShowDemoNotice] = useState(false),
     [query, setQuery] = useState(""),
     [stage, setStage] = useState(""),
     [owner, setOwner] = useState(""),
@@ -227,6 +228,9 @@ export function App() {
     return()=>clearInterval(timer);
   },[user?.id,!!data?.demands?.some((d:any)=>d.processing?.status==="Analisando")]);
   useEffect(() => {
+    api("/login-info")
+      .then((info) => setShowDemoNotice(info.showDemoNotice === true))
+      .catch(() => {});
     api("/me")
       .then((u) => {
         setUser(u);
@@ -382,11 +386,13 @@ export function App() {
             {busy ? "Entrando…" : "Entrar na central"}
             <ArrowUpRight size={17} />
           </button>
-          <small>
-            Ambiente demonstrativo • Dados fictícios
-            <br />
-            Contas e perfis disponíveis no README.
-          </small>
+          {showDemoNotice && (
+            <small>
+              Ambiente demonstrativo • Dados fictícios
+              <br />
+              Contas e perfis disponíveis no README.
+            </small>
+          )}
         </form>
       </div>
     );

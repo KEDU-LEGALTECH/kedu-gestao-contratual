@@ -113,6 +113,14 @@ export function fieldsFromLines(lines:string[]) {
  for(const [key,found] of Object.entries(qualified))if(!values[key]?.length)values[key]=found;
  return mergeExtractedFields(values,structuredIdentityFields(text));
 }
+const docxReadingProblems = new Map([
+ ["DOCX descompactado excede 20 MB", "O DOCX excede o limite de 20 MB após descompactação. Envie uma cópia menor."],
+ ["Revisões ou conteúdo oculto exigem conferência manual.", "O DOCX contém revisões ou elementos ocultos, inclusive possíveis imagens. Confira o original ou envie uma cópia sem esses elementos."],
+ ["Conteúdo ativo não suportado.", "O DOCX contém componentes ativos ou incorporados não suportados. Confira o original ou envie uma cópia sem esses componentes."],
+ ["ZIP inválido", "O arquivo não tem uma estrutura ZIP válida para DOCX. Exporte uma nova cópia em Word."],
+ ["Diretório ZIP inválido", "O pacote DOCX tem uma estrutura ZIP inválida. Exporte uma nova cópia em Word."],
+ ["Documento Word ausente.", "O pacote DOCX não contém o documento principal do Word. Exporte uma nova cópia em Word."],
+]);
 export function extractProcessingFile(bytes:Buffer,name:string) {
  if(!/\.docx$/i.test(name))return {text:"",fields:{},problem:"O anexo não contém texto DOCX disponível para análise. Envie uma cópia DOCX legível."};
  try {
@@ -143,5 +151,8 @@ export function extractProcessingFile(bytes:Buffer,name:string) {
   if(manifest){const profile=JSON.parse(manifest).profile;const modes:Record<string,string>={"canva-contrato_garantia_completa":"Garantia Completa","canva-contrato_garantia_conjunta":"Garantia Conjunta","canva-contrato_garantia_prevista":"Garantia Prevista"};if(modes[profile])fields.modalidade=[modes[profile]];}
   return {text:lines.join("\n"),fields,problem:lines.length?"":"O documento está vazio ou contém apenas imagens."};
  }
- catch{return {text:"",fields:{},problem:"Não foi possível ler o DOCX com segurança. Confira o arquivo e envie uma cópia legível sem revisões ocultas."};}
+ catch(error){
+  const problem = error instanceof Error ? docxReadingProblems.get(error.message) : undefined;
+  return {text:"",fields:{},problem:problem ?? "Não foi possível ler o DOCX com segurança. Confira o arquivo e envie uma cópia legível."};
+ }
 }

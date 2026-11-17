@@ -76,3 +76,11 @@ O OCR de páginas concluídas de PDF é salvo no PostgreSQL para a leitura conti
 
 - Documentos gerados e assinados continuam guardados no banco (`documents`, hoje sem nenhum); se crescerem, podem ir para o Storage como os anexos.
 - Nada disso foi publicado ainda: o primeiro deploy deve ser conferido numa URL de pré-visualização da Vercel antes da troca.
+
+### Leitor PaddleOCR manual no GitHub Actions
+
+O workflow `.github/workflows/paddleocr-check.yml` usa apenas `workflow_dispatch`. A execução padrão verifica PNG, JPEG e PDF escaneado com os arquivos sintéticos de `tests/reading-fixtures.ts`, sem acessar o Supabase. O job roda no Ubuntu com Node 24 e Python 3.11.
+
+O processamento de anexos reais em runners do GitHub depende de autorização LGPD da empresa. Após essa autorização, configure o ambiente protegido `kedu-ocr`, com revisão obrigatória, e restrinja suas branches. Defina `KEDU_PG_SCHEMA`, `SUPABASE_URL` e `SUPABASE_STORAGE_BUCKET` como variáveis desse ambiente e `SUPABASE_DATABASE_URL`, `SUPABASE_CA_CERT` e `SUPABASE_SECRET_KEY` como segredos. Só então defina a variável do repositório `KEDU_OCR_WORKER_ENABLED=true` e selecione `run_worker` na execução manual.
+
+O worker usa `npm run worker` e `KEDU_ROLE=worker` para arquivos da versão atual já armazenados e marcados como aguardando OCR. Faz um ciclo com orçamento de 10 minutos, com Gemini desativado e sem agendar o GLPI. A fila compartilhada preserva os resultados anteriores e recupera jobs interrompidos pelo limite de tempo após 20 minutos. O workflow precisa estar na branch padrão do GitHub para aceitar o disparo manual.

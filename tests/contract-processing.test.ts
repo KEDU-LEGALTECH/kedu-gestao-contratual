@@ -49,9 +49,8 @@ test('revisão de uma planilha não torna campos de um DOCX independente inconcl
  await sql.run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)', 'scope-sheet', 'scope', '8', 'hash-scope', 'simulacao.xlsx', 'application/octet-stream', Buffer.from('original'), JSON.stringify({version:2,text:'Remuneração: 11,00%',fields:{remuneracao:['11,00%']},needsReview:true,method:'XLSX'}), '', now());
  const plan=(await buildProcessingPlan('scope'))!;
  assert.equal(plan.comparisons.find(r=>r.field==='razaoSocial')?.status,'matches');
- assert.equal(plan.comparisons.find(r=>r.field==='remuneracao')?.status,'review');
- assert.equal(plan.comparisons.find(r=>r.field==='remuneracao')?.readingPending,true);
- assert.ok(plan.issues.some(i=>i.field==='review:scope-sheet'));
+ assert.equal(plan.comparisons.find(r=>r.field==='remuneracao')?.status,'matches');
+ assert.equal(plan.issues.some(i=>i.field==='review:scope-sheet'),false);
 });
 test('atualizar leitura reprocessa anexo saudável em cache sem baixar ou alterar o original',async()=>{
  await fixture('force-reading');await processContract('force-reading','u',mock());
@@ -122,7 +121,7 @@ test('sem conferência anterior, a nova versão não cria conferência nem regis
  assert.equal((await sql.one('SELECT count(*) n FROM processing_field_reviews WHERE file_id=?', current.id)).n,0);
  assert.equal((await sql.one("SELECT count(*) n FROM audit WHERE demand_id=? AND action LIKE 'Conferência humana mantida%'", 'no-review')).n,0);
 });
-test('comprovante com dado confirmado em contrato digital dispensa revisão duplicada; divergência não',async()=>{
+test('comprovante de apoio não bloqueia a conferência de um contrato digital',async()=>{
  await fixture('corroborated');await processContract('corroborated','u',mock());
  const extracted={version:2,text:'Dados bancários',fields:{agencia:['0001']},needsReview:true,method:'OCR de imagem'};
  await sql.run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)', 'bank-support', 'corroborated', '8', 'hash-corroborated', 'Comprovante bancario.png', 'image/png', Buffer.from('original'), JSON.stringify(extracted), '', now());
@@ -133,15 +132,15 @@ test('comprovante com dado confirmado em contrato digital dispensa revisão dupl
  assert.equal(mixed.issues.some(i=>i.field==='review:bank-support'),false,'campo digital independente evita confirmação duplicada');
  assert.ok(mixed.issues.some(i=>i.field==='review:partial:'+source.id),'outra página parcial continua pendente');
  extracted.fields.agencia=['0002'];await sql.run('UPDATE processing_files SET extracted=? WHERE id=?', JSON.stringify(extracted), 'bank-support');
- assert.ok((await buildProcessingPlan('corroborated'))!.issues.some(i=>i.field==='review:bank-support'));
- assert.ok((await buildProcessingPlan('corroborated'))!.issues.some(i=>i.field==='agencia'));
+ assert.equal((await buildProcessingPlan('corroborated'))!.issues.some(i=>i.field==='review:bank-support'||i.field==='agencia'),false);
 });
 test('divergência digital comprovada aparece como correção mesmo com outra leitura pendente',async()=>{
  await fixture('known-difference');await processContract('known-difference','u',mock({...data,remuneracao:'9,00%'}));
  await sql.run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)', 'unrelated', 'known-difference', '8', 'hash-known-difference', 'apoio.xlsx', 'application/octet-stream', Buffer.from('original'), JSON.stringify({version:2,text:'Garantia: 95,00%',fields:{garantia:['95,00%']},needsReview:true,method:'XLSX'}), '', now());
  const result=(await saveProcessingResult('known-difference'))!;
- assert.equal(result.status,'Aguardando correção');assert.ok(result.issues.some(i=>i.field==='review:unrelated'));
- assert.ok(result.issues.length,'o download permanece bloqueado');
+ assert.equal(result.status,'Aguardando correção');
+ assert.equal(result.issues.some(i=>i.field==='review:unrelated'),false);
+ assert.ok(result.issues.some(i=>i.field==='remuneracao'),'a divergência do contrato permanece');
 });
 test('relatório de apoio não fornece condições comerciais nem substitui contrato ausente',async()=>{
  await fixture('report-only');await processContract('report-only','u',mock());
@@ -151,7 +150,7 @@ test('relatório de apoio não fornece condições comerciais nem substitui cont
  assert.ok(plan.issues.some(i=>i.field==='contractMissing'));
  assert.equal(plan.issues.some(i=>i.field==='review:'+file.id),false);
  assert.equal(plan.origins.rua,undefined);
- assert.equal(plan.status,'Conferência parcial');
+ assert.equal(plan.status,'Aguardando análise');
 });
 test('comparação usa a parte do chamado em vez de misturar CNPJ da Kedu e da contratada',async()=>{
  await fixture('party-comparison');

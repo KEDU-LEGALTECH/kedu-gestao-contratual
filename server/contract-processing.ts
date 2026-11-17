@@ -486,7 +486,8 @@ export async function processContract(did:string,userId:string|null=null,downloa
   const documents=targetedOnly?[]:currentReadingDocuments(raw).map(doc=>{
    const file=initialFiles.get(String(doc.id));
    return {doc,scope:contractReadingScope(doc.name||'',file)};
-  }).sort((a,b)=>Number(b.scope.kind==='contract')-Number(a.scope.kind==='contract'));
+  }).filter(({doc})=>!deferredOcrWorker||cachedForOcr(initialFiles.get(String(doc.id))))
+   .sort((a,b)=>Number(b.scope.kind==='contract')-Number(a.scope.kind==='contract'));
   for(const {doc,scope} of documents) {
    if(Date.now()>=deadline||await recoveryPaused()&&!force&&userId===null)break;
    const cached=(await filesFor(did,ticket.hash)).find(f=>f.document_id===String(doc.id));
@@ -529,6 +530,8 @@ export async function processContract(did:string,userId:string|null=null,downloa
    if((await sql.one("SELECT hash FROM glpi_tickets WHERE external_id=?", demand.glpi_id))?.hash!==ticket.hash)return;
    // A crashed or unavailable reader never replaces a reading that already worked; it is retried later.
    if(preservePreviousReading(cached?.extracted,extracted)){activeFiles.delete(did);continue;}
+   if(deferredOcrWorker&&(extracted.transient||extracted.incomplete))
+    extracted.awaitingOcr=true;
    if(cached?.byteLength)await sql.run("UPDATE processing_files SET extracted=?,problem=? WHERE id=?", JSON.stringify(extracted), extracted.problem, cached.id);
    else {
     await sql.transaction(async () => {
@@ -542,7 +545,7 @@ export async function processContract(did:string,userId:string|null=null,downloa
   // Reuse healthy originals and read at most two known pages, one at a time.
   const pendingPlan=await buildProcessingPlan(did);
   let targetedPages=0;
-  for(const entry of await targetedRecovery(did,ticket.hash,pendingPlan?.comparisons)){
+  for(const entry of deferredOcrWorker?[]:await targetedRecovery(did,ticket.hash,pendingPlan?.comparisons)){
    for(const target of entry.targets){
     if(Date.now()>=deadline||targetedPages>=2||await recoveryPaused()&&!force&&userId===null)break;
     targetedPages++;
@@ -595,6 +598,7 @@ async function recoveryFiles(raw:any,cached:Awaited<ReturnType<typeof filesFor>>
  const pending=[];
  for(const doc of currentReadingDocuments(raw)){
   const file=byId.get(String(doc.id));
+  if(deferredOcrWorker&&!cachedForOcr(file))continue;
   const scope=contractReadingScope(doc.name||'',file);
   if(awaitsOcr(file))continue;
   if(scope.needsWork&&!(file&&await extractionReviewed(file)))pending.push({doc,file,scope});
@@ -603,9 +607,15 @@ async function recoveryFiles(raw:any,cached:Awaited<ReturnType<typeof filesFor>>
 }
 /** A scan saved by a host without PaddleOCR is retried only where the OCR reader runs. */
 function awaitsOcr(file:{extracted:string}|undefined){
- if(!file||readerAvailable())return false;
- try{return JSON.parse(file.extracted).awaitingOcr===true;}catch{return false;}
+ return !readerAvailable()&&markedForOcr(file);
 }
+function markedForOcr(file:{extracted:string}|undefined){
+ try{return !!file&&JSON.parse(file.extracted).awaitingOcr===true;}catch{return false;}
+}
+function cachedForOcr(file:{extracted:string;byteLength?:number}|undefined){
+ return !!file?.byteLength&&markedForOcr(file);
+}
+const deferredOcrWorker=role==='worker'&&process.env.KEDU_WORKER_DEFERRED_OCR_ONLY==='true';
 export async function processingFileProgress(did:string){
  const {ticket}=await processingSource(did);if(!ticket)return {demandId:did,files:[],paused:await recoveryPaused()};
  const raw=JSON.parse(ticket.payload),cached=await filesFor(did,ticket.hash);
@@ -677,7 +687,7 @@ async function drainReadingQueue(deadline=Infinity) {
  try {
   while(Date.now()<deadline&&!await recoveryPaused()){
    await yieldToServer();
-   const job=await durableQueue!.claim();if(!job)break;
+   const job=await durableQueue!.claim(deferredOcrWorker);if(!job)break;
    const source=await processingSource(job.demand_id);
    if(!source.ticket||source.ticket.hash!==job.ticket_hash||['Concluído','Cancelado','Em assinatura'].includes(source.demand?.stage)){
     await durableQueue!.finish(job,'superseded');continue;
@@ -687,7 +697,7 @@ async function drainReadingQueue(deadline=Infinity) {
    try {
     if(running.has(job.demand_id)){await durableQueue!.finish(job,'retry','Leitura manual em andamento');continue;}
     const fileRecovery=await needsFileRecovery(job.demand_id,job.ticket_hash);
-    const targets=await targetedRecovery(job.demand_id,job.ticket_hash);
+    const targets=deferredOcrWorker?[]:await targetedRecovery(job.demand_id,job.ticket_hash);
     if(!fileRecovery&&!targets.length){await durableQueue!.finish(job,'done');continue;}
     const before=await recoveryProgress(job.demand_id,job.ticket_hash);
     const targetedOnly=!fileRecovery;
@@ -695,7 +705,7 @@ async function drainReadingQueue(deadline=Infinity) {
     const after=await recoveryProgress(job.demand_id,job.ticket_hash);
     const current=await processingSource(job.demand_id);
     if(current.ticket?.hash!==job.ticket_hash)await durableQueue!.finish(job,'superseded');
-    else if(await needsDemandRecovery(job.demand_id,job.ticket_hash)){
+    else if(await (deferredOcrWorker?needsFileRecovery:needsDemandRecovery)(job.demand_id,job.ticket_hash)){
      const reason=targetedOnly?'targeted-fields':await recoveryReason(job.demand_id,job.ticket_hash);
      await durableQueue!.finish(job,'retry',reason,after>before?after:undefined,Date.now()>=deadline||!targetedOnly&&onlyTemporary(reason));
     }
@@ -706,7 +716,7 @@ async function drainReadingQueue(deadline=Infinity) {
 }
 let scanningRecovery=false;
 // Serverless instances overlap: a running job is reclaimed only after outliving any invocation (800 s).
-const readingQueue=()=>durableQueue??=new ReadingJobQueue(sql,Date.now,role==='api'?20*60000:0);
+const readingQueue=()=>durableQueue??=new ReadingJobQueue(sql,Date.now,role==='api'||deferredOcrWorker?20*60000:0);
 /** Updates saved results and queues every demand whose files still need reading. */
 async function scanDemands(deadline=Infinity){
   const queue=readingQueue();
@@ -714,6 +724,13 @@ async function scanDemands(deadline=Infinity){
    await yieldToServer();
    if(Date.now()>=deadline||await recoveryPaused())break;
    if(running.has(d.id))continue;
+   if(deferredOcrWorker){
+    if(closedInGlpi(d.status))continue;
+    const {ticket}=await processingSource(d.id);
+    if(ticket&&await needsFileRecovery(d.id,ticket.hash))
+     await queue.enqueue(d.id,ticket.hash,false,true);
+    continue;
+   }
    const job=await ensureProcessing(d.id);
    if(!job)continue;
    const result=JSON.parse(job.result);
