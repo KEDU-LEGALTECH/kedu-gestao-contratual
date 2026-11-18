@@ -38,7 +38,9 @@ export const fields = [
 ];
 const esc = (s: string) =>
   s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-export function preflight(bytes: Buffer) {
+/** binaryLimit: received attachments may embed fonts and images beyond the 20 MB text limit;
+ * those parts get their own limit and must not expand like a ZIP bomb. Templates keep the strict default. */
+export function preflight(bytes: Buffer, binaryLimit = 0) {
   let end = -1;
   for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65557); i--) {
     if (bytes.readUInt32LE(i) === 0x06054b50) {
@@ -49,18 +51,26 @@ export function preflight(bytes: Buffer) {
   if (end < 0) throw Error("ZIP inválido");
   const count = bytes.readUInt16LE(end + 10);
   let offset = bytes.readUInt32LE(end + 16),
-    total = 0;
+    total = 0,
+    binary = 0;
   if (count > 512) throw Error("Muitos componentes DOCX");
   for (let n = 0; n < count; n++) {
     if (offset + 46 > bytes.length || bytes.readUInt32LE(offset) !== 0x02014b50)
       throw Error("Diretório ZIP inválido");
-    const size = bytes.readUInt32LE(offset + 24);
-    total += size;
-    if (total > 20_000_000) throw Error("DOCX descompactado excede 20 MB");
+    const compressed = bytes.readUInt32LE(offset + 20),
+      size = bytes.readUInt32LE(offset + 24);
     const length = bytes.readUInt16LE(offset + 28),
       extra = bytes.readUInt16LE(offset + 30),
       comment = bytes.readUInt16LE(offset + 32);
     const name = bytes.subarray(offset + 46, offset + 46 + length).toString();
+    if (binaryLimit && /^word\/(?:fonts|media)\//.test(name)) {
+      binary += size;
+      if (binary > binaryLimit || size > 100 * compressed + 1_000_000)
+        throw Error("DOCX descompactado excede 20 MB");
+    } else {
+      total += size;
+      if (total > 20_000_000) throw Error("DOCX descompactado excede 20 MB");
+    }
     if (name.includes("..") || name.startsWith("/") || name.includes("\\"))
       throw Error("Caminho de arquivo inválido");
     offset += 46 + length + extra + comment;
