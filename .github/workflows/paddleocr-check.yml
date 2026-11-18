@@ -7,42 +7,71 @@ on:
         description: Executar o leitor somente no ambiente OCR autorizado
         type: boolean
         default: false
+  # Uns 40 minutos depois de cada sincronização do GLPI (07h, 12h e 16h de Brasília; o cron é em UTC).
+  schedule:
+    - cron: '40 10,15,19 * * *'
 
 permissions:
   contents: read
 
 jobs:
   verificar:
-    if: ${{ !inputs.run_worker || vars.KEDU_OCR_WORKER_ENABLED == 'true' }}
+    # Scheduled runs always read the queue; they are skipped while the reader is not enabled.
+    if: ${{ !(github.event_name == 'schedule' || inputs.run_worker) || vars.KEDU_OCR_WORKER_ENABLED == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
-    environment: ${{ inputs.run_worker && 'kedu-ocr' || 'kedu-ocr-fixtures' }}
+    environment: ${{ (github.event_name == 'schedule' || inputs.run_worker) && 'kedu-ocr' || 'kedu-ocr-fixtures' }}
     concurrency:
-      group: ${{ inputs.run_worker && 'kedu-ocr-worker' || format('kedu-ocr-fixtures-{0}', github.run_id) }}
+      group: ${{ (github.event_name == 'schedule' || inputs.run_worker) && 'kedu-ocr-worker' || format('kedu-ocr-fixtures-{0}', github.run_id) }}
       cancel-in-progress: false
     env:
       OCR_ENGINE: paddle
       READING_CACHE: 'off'
       DOCUMENT_VISION_ENABLED: 'false'
       GEMINI_PAID_DATA_APPROVED: 'false'
+      RUN_WORKER: ${{ github.event_name == 'schedule' || inputs.run_worker }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: '24'
           cache: npm
-      - uses: actions/setup-python@v5
+      - run: npm ci
+      - name: Conferir a fila de OCR
+        id: fila
+        # Database settings only where the database is used, never during package installation.
+        env:
+          KEDU_DATABASE: postgres
+          KEDU_PG_SCHEMA: ${{ vars.KEDU_PG_SCHEMA }}
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_STORAGE_BUCKET: ${{ vars.SUPABASE_STORAGE_BUCKET }}
+          SUPABASE_DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+          SUPABASE_CA_CERT: ${{ secrets.SUPABASE_CA_CERT }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          if [[ "$RUN_WORKER" != "true" ]]; then echo "pendentes=fixtures" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [[ -z "$KEDU_PG_SCHEMA" || -z "$SUPABASE_URL" || -z "$SUPABASE_STORAGE_BUCKET" || -z "$SUPABASE_DATABASE_URL" || -z "$SUPABASE_CA_CERT" || -z "$SUPABASE_SECRET_KEY" ]]; then
+            echo "::error::Configuração incompleta no ambiente protegido de OCR."
+            exit 1
+          fi
+          node --import tsx scripts/ocr-pending.ts
+      # Without files awaiting OCR, the run ends here instead of installing PaddleOCR.
+      - uses: actions/setup-python@v6
+        if: ${{ steps.fila.outputs.pendentes != '0' }}
         with:
           python-version: '3.11'
-      - run: npm ci
-      - run: |
+          cache: pip
+          cache-dependency-path: server/ocr/requirements.txt
+      - if: ${{ steps.fila.outputs.pendentes != '0' }}
+        run: |
           sudo apt-get update
           sudo apt-get install -y libgl1 libglib2.0-0t64 libgomp1 fonts-liberation
           python -m pip install -r server/ocr/requirements.txt
           python -u server/ocr/worker.py --setup
-      - run: node --import tsx scripts/check-paddleocr.ts
+      - if: ${{ steps.fila.outputs.pendentes != '0' }}
+        run: node --import tsx scripts/check-paddleocr.ts
       - name: Processar a fila de OCR
-        if: ${{ inputs.run_worker }}
+        if: ${{ env.RUN_WORKER == 'true' && steps.fila.outputs.pendentes != '0' }}
         env:
           NODE_ENV: production
           KEDU_ROLE: worker
@@ -58,9 +87,4 @@ jobs:
           GLPI_SYNC_TIMES: ''
           DEMO_SEED: 'false'
           READING_CACHE: ''
-        run: |
-          if [[ -z "$KEDU_PG_SCHEMA" || -z "$SUPABASE_URL" || -z "$SUPABASE_STORAGE_BUCKET" || -z "$SUPABASE_DATABASE_URL" || -z "$SUPABASE_CA_CERT" || -z "$SUPABASE_SECRET_KEY" ]]; then
-            echo "::error::Configuração incompleta no ambiente protegido de OCR."
-            exit 1
-          fi
-          npm run worker
+        run: npm run worker
