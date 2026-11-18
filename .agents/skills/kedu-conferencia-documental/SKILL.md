@@ -1,7 +1,7 @@
 ---
 name: kedu-conferencia-documental
 description: Use na conferência Kedu. Compare sem aprovar lacunas.
-version: 1.8.0
+version: 1.9.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -55,6 +55,7 @@ Após extrair campos de anexos Kedu, para comparar com a solicitação GLPI e di
 - Rotas de confirmação e correção de transcrição em `server/processing-routes.ts` criam revisão e gabarito atribuído à sessão humana. Não chamá-las para disfarçar revisão assistida como humana; se não existir caminho compatível, entregar proposta e registrar o bloqueio.
 - Até GET de processamento pode recalcular/persistir resultados no servidor (`processingView`). Para diagnóstico estritamente somente leitura usar MCP/SQLite read-only, não presumir que todo GET é sem efeito.
 - Decisões humanas registradas (`POST /api/demands/:id/processing/resolutions`, tabela `processing_resolutions`): escolha da referência ambígua e aceite justificado de achado de validação. Exigem justificativa, ficam na auditoria e perdem efeito se o chamado ou o valor mudar. Mesma regra das confirmações: não chamar em nome do usuário.
+- Comprovante bancário é documento de apoio, mas banco, agência, conta, titular, documento do titular e PIX impressos nele são comparados com o GLPI: divergência gera aviso que cita o arquivo e leva a demanda para **Aguardando correção** (regra de negócio de 18/11/2026). Sem valor de referência no GLPI não há comparação. Os demais documentos de apoio continuam fora da comparação.
 - Arquivo lido por completo sem nenhum campo aproveitado não bloqueia quando todos os campos pedidos estão resolvidos por outra fonte; aparece como "Não utilizado". Isso não é aprovação do arquivo: se ele puder contradizer os demais, conferir o original.
 - Confirmações humanas valem para os mesmos bytes e a mesma extração e acompanham novas versões do chamado; leitura nova do arquivo exige nova confirmação.
 

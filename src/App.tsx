@@ -19,6 +19,7 @@ import {
   Download,
   PanelLeftClose,
   LogOut,
+  KeyRound,
   ShieldCheck,
   Inbox,
   FileText,
@@ -625,6 +626,13 @@ export function App() {
               {user.name}
               <small>{user.role}</small>
             </div>
+            <button
+              aria-label="Alterar senha"
+              title="Alterar senha"
+              onClick={() => setModal("senha")}
+            >
+              <KeyRound size={17} />
+            </button>
             <button
               aria-label="Sair"
               onClick={() =>
@@ -1999,6 +2007,7 @@ export function App() {
                             <th>Usuário</th>
                             <th>E-mail</th>
                             <th>Perfil</th>
+                            <th>Acesso</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -2034,6 +2043,31 @@ export function App() {
                                   </select>
                                 ) : (
                                   <span className="badge">{u.role}</span>
+                                )}
+                              </td>
+                              <td>
+                                <span className={u.active === 0 ? "badge warn" : "badge"}>
+                                  {u.active === 0 ? "Desativado" : "Ativo"}
+                                </span>
+                                {can("settings") && u.id !== user.id && (
+                                  <>
+                                    {" "}
+                                    <button className="text-button" type="button" onClick={() => setModal("senha:" + u.id)}>
+                                      Redefinir senha
+                                    </button>{" "}
+                                    <button
+                                      className="text-button"
+                                      type="button"
+                                      onClick={() =>
+                                        action(
+                                          () => api("/users/" + u.id + "/access", { active: u.active === 0 }, "PUT"),
+                                          u.active === 0 ? "Acesso reativado." : "Acesso desativado. As sessões abertas foram encerradas.",
+                                        )
+                                      }
+                                    >
+                                      {u.active === 0 ? "Reativar" : "Desativar"}
+                                    </button>
+                                  </>
                                 )}
                               </td>
                             </tr>
@@ -2095,7 +2129,11 @@ export function App() {
                       ? "Editar organização"
                       : modal === "modelo"
                         ? "Cadastrar modelo DOCX"
-                        : "Cadastrar usuário"}
+                        : modal === "senha"
+                          ? "Alterar minha senha"
+                          : modal.startsWith("senha:")
+                            ? "Redefinir senha de " + (data.users.find((u: any) => "senha:" + u.id === modal)?.name || "usuário")
+                            : "Cadastrar usuário"}
               </h2>
               <button
                 className="close"
@@ -2412,6 +2450,50 @@ export function App() {
                 </label>
                 <button className="primary" disabled={busy}>
                   Cadastrar rascunho
+                </button>
+              </form>
+            ) : modal === "senha" ? (
+              <form
+                onSubmit={(e) =>
+                  submit(e, async (b) => {
+                    if (b.password !== b.confirm) throw Error("A confirmação não confere com a nova senha.");
+                    await api("/me/password", { current: b.current, password: b.password });
+                    setModal("");
+                  }, "Senha alterada. Outras sessões abertas foram encerradas.")
+                }
+              >
+                <label>
+                  Senha atual
+                  <input name="current" type="password" autoComplete="current-password" required />
+                </label>
+                <label>
+                  Nova senha (mínimo 12 caracteres)
+                  <input name="password" type="password" autoComplete="new-password" minLength={12} required />
+                </label>
+                <label>
+                  Confirme a nova senha
+                  <input name="confirm" type="password" autoComplete="new-password" minLength={12} required />
+                </label>
+                <button className="primary" disabled={busy}>
+                  Alterar senha
+                </button>
+              </form>
+            ) : modal.startsWith("senha:") ? (
+              <form
+                onSubmit={(e) =>
+                  submit(e, async (b) => {
+                    await api("/users/" + modal.slice(6) + "/password", { password: b.password }, "PUT");
+                    setModal("");
+                  }, "Senha redefinida. Informe a nova senha à pessoa por um canal seguro; as sessões dela foram encerradas.")
+                }
+              >
+                <label>
+                  Nova senha (mínimo 12 caracteres)
+                  <input name="password" type="password" autoComplete="new-password" minLength={12} required />
+                </label>
+                <p className="muted">Peça para a pessoa trocar a senha em "Alterar senha" no primeiro acesso.</p>
+                <button className="primary" disabled={busy}>
+                  Redefinir senha
                 </button>
               </form>
             ) : (

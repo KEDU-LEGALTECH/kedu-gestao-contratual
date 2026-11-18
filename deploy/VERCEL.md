@@ -59,7 +59,7 @@ Funções da Vercel recebem e respondem até 4,5 MB por requisição.
 
 Na Vercel só a pasta temporária aceita escrita: o cache e a trava de leitura ficam nela automaticamente.
 
-O OCR de páginas concluídas de PDF é salvo no PostgreSQL para a leitura continuar em outra instância. Para um esquema PostgreSQL já importado, aplique `migrations/020.sql` no esquema privado configurado em `KEDU_PG_SCHEMA` antes de iniciar a nova versão. A migração também entra nos novos snapshots preparados depois que o SQLite local é atualizado.
+O OCR de páginas concluídas de PDF é salvo no PostgreSQL para a leitura continuar em outra instância. Para um esquema PostgreSQL já importado, aplique `migrations/020.sql` e `migrations/021.sql` (acesso de usuários; sem ela o login falha) no esquema privado configurado em `KEDU_PG_SCHEMA` antes de iniciar a nova versão. A migração também entra nos novos snapshots preparados depois que o SQLite local é atualizado.
 
 ## Antes de publicar
 
@@ -71,6 +71,14 @@ O OCR de páginas concluídas de PDF é salvo no PostgreSQL para a leitura conti
 
 - `npm start` sem `KEDU_ROLE`: um processo faz tudo (como no computador atual).
 - `npm run worker` (`KEDU_ROLE=worker`): só o trabalho em segundo plano, com PaddleOCR. É ele que lê os arquivos "Aguardando leitura com OCR" (no GitHub Actions, uns 40 minutos depois de cada sincronização; autorizado pela empresa).
+
+## Backup
+
+O banco é copiado todo dia pelo GitHub Actions, criptografado, e guardado por 14 dias. Ativação e restauração em [`deploy/BACKUP.md`](BACKUP.md).
+
+## Espaço do Storage
+
+O plano gratuito do Supabase tem 1 GB de Storage. Em 18/11/2026 os anexos ocupavam 367 MB (687 arquivos únicos): 216 MB de chamados abertos na versão atual, 163 MB de anexos que só pertencem a versões antigas dos chamados e 4 MB de chamados fechados. Os 163 MB de versões antigas são os candidatos a limpeza quando o espaço apertar; antes de apagar, confira se nenhuma conferência humana ou leitura reaproveitada (`previouslyVerifiedAttachment`) depende do arquivo, porque o original continua no GLPI mas a conferência registrada aponta para aquela cópia.
 
 ## Ainda pendente
 

@@ -1,5 +1,6 @@
 import type { RawTicket } from "./glpi.js";
 import {headingType} from '../shared/document-heading.js';
+import {referenceDocuments,formatDocument} from './reference-document.js';
 
 /** GLPI stores ticket content as HTML (often entity-encoded). Converts it to plain lines. */
 export function htmlToText(html: string) {
@@ -88,6 +89,8 @@ export type TicketAnalysis = {
   organizationId: string | null;
   matrixId: string | null;
   pendencies: string[];
+  /** Several valid identifiers in the CNPJ field: the documents or a person choose among them. */
+  organizationCandidates: string[];
 };
 /** Organises a ticket without inventing data: every value keeps its origin and gaps become pendencies. */
 export function analyzeTicket(
@@ -103,14 +106,23 @@ export function analyzeTicket(
   if (!raw.razaoSocial) pendencies.push("Razão social não identificada no formulário do chamado");
   let schoolId: string | null = null;
   let organizationId: string | null = null;
+  let organizationCandidates: string[] = [];
   if (!raw.cnpj) pendencies.push("CNPJ não identificado no formulário do chamado");
   else {
-    const digits = cnpjDigits(raw.cnpj);
-    if (digits.length === 14) fields.cnpj = { value: formatCnpj(digits), origin: origin + " (normalizado de “" + raw.cnpj + "”)" };
-    if (digits.length !== 14) pendencies.push("CNPJ informado com quantidade de dígitos inválida: " + raw.cnpj);
-    else if (!validCnpj(digits)) pendencies.push("CNPJ com dígito verificador inválido; confira no cartão CNPJ");
-    const school = context.schools.find((s) => cnpjDigits(s.cnpj) === digits);
-    if (!school) pendencies.push("Escola com este CNPJ não está cadastrada na central");
+    const references = referenceDocuments(raw.cnpj);
+    const reference = references.length === 1 ? references[0] : undefined;
+    const digits = reference?.digits ?? cnpjDigits(raw.cnpj);
+    if (reference) fields.cnpj = { value: formatDocument(digits), origin: origin + " (normalizado de “" + raw.cnpj + "”" + (reference.repaired ? "; formato do campo numérico corrigido e conferido pelo dígito verificador" : "") + ")" };
+    else if (digits.length === 14) fields.cnpj = { value: formatCnpj(digits), origin: origin + " (normalizado de “" + raw.cnpj + "”)" };
+    if (references.length > 1) {
+      organizationCandidates = references.map((r) => r.digits);
+      pendencies.push("O chamado informa mais de um CNPJ/CPF (" + references.map((r) => formatDocument(r.digits)).join("; ") + "); a organização é definida pelos documentos ou no recebimento");
+    } else if (!reference && digits.length !== 14) pendencies.push("CNPJ informado com quantidade de dígitos inválida: " + raw.cnpj);
+    else if (!reference && !validCnpj(digits)) pendencies.push("CNPJ com dígito verificador inválido; confira no cartão CNPJ");
+    const school = references.length > 1 ? undefined : context.schools.find((s) => cnpjDigits(s.cnpj) === digits);
+    if (!school) {
+      if (references.length <= 1) pendencies.push("Escola com este CNPJ não está cadastrada na central");
+    }
     else {
       organizationId = school.id;
       if (!school.organization_kind || school.organization_kind === "Escola") schoolId = school.id;
@@ -176,7 +188,7 @@ export function analyzeTicket(
     );
   if (suggestion.type === "Aditivo")
     pendencies.push("Número sequencial do aditivo depende da confirmação manual do último assinado no Clicksign/Clint");
-  return { fields, suggestion, schoolId, organizationId, matrixId, pendencies };
+  return { fields, suggestion, schoolId, organizationId, matrixId, pendencies, organizationCandidates };
 }
 /** Compares the confirmed demand data with what the linked ticket states (validation approach). */
 export function crossCheck(analysis: TicketAnalysis, ticketId: string, data: Record<string, any>) {

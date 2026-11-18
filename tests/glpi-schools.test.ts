@@ -10,6 +10,7 @@ process.env.DEMO_SEED = "false";
 process.env.GLPI_MODE = "demo";
 const { one, run, db, sql } = await import("../server/db.js");
 const { importGlpiSchools } = await import("../server/glpi-schools.js");
+const { referenceDocuments, formatDocument } = await import("../server/reference-document.js");
 const { syncGlpi, listTickets } = await import("../server/glpi-sync.js");
 function raw(externalId: string, name: string, cnpj: string) {
   return { externalId, title: "Aditivo de vigência", content: `<p>RAZÃO SOCIAL: ${name}</p><p>CNPJ: ${cnpj}</p>`, status: "2", created: "", updated: "", category: "", groups: ["JURIDICO CONTRATOS"], followups: [], documents: [], documentsAvailable: true };
@@ -58,6 +59,18 @@ test("Dados inválidos, razão social ausente e chamados demo não geram escolas
   await store(raw("6", "Escola fictícia", "11.444.777/0001-61"), "demo");
   assert.equal((await importGlpiSchools(null)).skipped, 2);
   assert.equal((await sql.one("SELECT COUNT(*) n FROM schools")).n, 0);
+});
+
+test("CNPJ do formulário só é corrigido quando o dígito verificador comprova; vários CNPJs nunca são escolhidos às cegas", () => {
+  const read = (value: string) => referenceDocuments(value).map(r => formatDocument(r.digits) + (r.repaired ? " corrigido" : ""));
+  assert.deepEqual(read("11.444.777.000.161,00"), ["11.444.777/0001-61 corrigido"], "campo numérico do GLPI");
+  assert.deepEqual(read("11.444.777.000.16100"), ["11.444.777/0001-61 corrigido"], "campo numérico sem a vírgula");
+  assert.deepEqual(read("1234567000195"), ["01.234.567/0001-95 corrigido"], "zero inicial perdido");
+  assert.deepEqual(read("529.982.247-25 (CPF)"), ["529.982.247-25"]);
+  assert.deepEqual(read("11.444.777/0001-61 e 11.222.333/0001-81"), ["11.444.777/0001-61", "11.222.333/0001-81"]);
+  assert.deepEqual(read("45.543.580/0001-00 e 11.444.777/0001-61"), ["11.444.777/0001-61"], "o CNPJ da Kedu nunca é a organização da demanda");
+  assert.deepEqual(read("11.444.777/0001-62"), [], "dígito verificador errado não é corrigido");
+  assert.deepEqual(read("11.444.777.000.162,00"), []);
 });
 
 test("Sincronização real cadastra a escola e a triagem passa a encontrar o CNPJ", async () => {

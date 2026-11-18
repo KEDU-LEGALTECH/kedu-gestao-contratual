@@ -28,12 +28,12 @@ test('processing preserves reference typo as review instead of routing the origi
  try{
   const {ensureProcessing,buildProcessingPlan}=await import('../server/contract-processing.js');
   const {processingStatus}=await import('../server/processing-status.js');
-  const raw={externalId:'synthetic-reference',title:'Contrato',content:'<p>RAZÃO SOCIAL: ESCOLA EXEMPLO EIRELLI</p>',documents:[{id:'1',name:'Contrato social.pdf'}],documentsAvailable:true,followups:[],groups:[],status:'2',created:'',updated:'',category:''};
+  const raw={externalId:'synthetic-reference',title:'Contrato',content:'<p>RAZÃO SOCIAL: ESCOLA EXEMPLO EIRELLI</p>',documents:[{id:'1',name:'Contrato de prestação de serviços.pdf'}],documentsAvailable:true,followups:[],groups:[],status:'2',created:'',updated:'',category:''};
   await sql.run("INSERT INTO demands(id,glpi_id,type,stage,priority,due,data,created) VALUES('synthetic-reference','synthetic-reference','A classificar','Recebido','Normal','','{}',?)", now());
   await sql.run('INSERT INTO glpi_tickets VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', raw.externalId, 'real', raw.title, '2', 'synthetic-hash', JSON.stringify(raw), '{}', 'vinculado', raw.externalId, now(), now(), null);
   await ensureProcessing(raw.externalId);
-  const reading={text:'A empresa girará sob o nome empresarial. ESCOLA EXEMPLO EIRELI.',fields:{razaoSocial:['ESCOLA EXEMPLO EIRELI']},method:'Texto do PDF',pages:1,needsReview:false,incomplete:false};
-  await sql.run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)', 'synthetic-file', raw.externalId, '1', 'synthetic-hash', 'Contrato social.pdf', 'application/pdf', Buffer.from('synthetic fixture'), JSON.stringify(reading), '', now());
+  const reading={text:'CONTRATO DE PRESTAÇÃO DE SERVIÇOS\nCONTRATANTE: ESCOLA EXEMPLO EIRELI.',fields:{razaoSocial:['ESCOLA EXEMPLO EIRELI']},method:'Texto do PDF',pages:1,needsReview:false,incomplete:false};
+  await sql.run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)', 'synthetic-file', raw.externalId, '1', 'synthetic-hash', 'Contrato de prestação de serviços.pdf', 'application/pdf', Buffer.from('synthetic fixture'), JSON.stringify(reading), '', now());
   const plan=(await buildProcessingPlan(raw.externalId))!;
   const field=plan.comparisons.find(c=>c.field==='razaoSocial')!;
   assert.equal(field.status,'review');

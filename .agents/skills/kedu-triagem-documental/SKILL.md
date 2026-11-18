@@ -1,7 +1,7 @@
 ---
 name: kedu-triagem-documental
 description: Use na fila Kedu. Priorize pendências com evidência.
-version: 1.6.0
+version: 1.7.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -42,10 +42,24 @@ Se o anexo estiver disponível e o dado aparecer no texto armazenado, verifique 
 
 Compare, na mesma coorte, as pendências em que o valor coincide, as de associação incerta, as de referência contraditória e as de validação de identificador. Uma ou duas pendências ajudam a priorizar a auditoria. A etapa depende da causa e da evidência. Registre separadamente resultados simulados e resultados confirmados no painel após o recálculo oficial.
 
+## Demanda sem organização
+
+A organização da demanda vem do campo CNPJ do formulário GLPI (`server/reference-document.ts`). Antes de pedir vínculo manual, classifique a causa:
+
+- **Campo numérico do GLPI**: `34.347.853.000.116,00` ou `19.568.999.000.10600` (formulário de descredenciamento). O portal remove `,00` e os separadores e aceita só se o dígito verificador comprovar o CNPJ.
+- **Zero inicial perdido**: `3869258000117`. Completado com zeros só quando o dígito verificador comprova.
+- **CPF** (pessoa física, como palestrante ou DJ): aceito quando o CPF é válido.
+- **Vários CNPJs no campo** (mantenedora e escola, ou duas unidades): o portal nunca escolhe sozinho. Desempata só quando exatamente um deles aparece nos documentos lidos da demanda (`server/organization-evidence.ts`), com o nome da parte qualificada no contrato.
+- **Dígito verificador errado ou dígitos faltando sem documento que comprove**: fica para o recebimento. Não corrigir por semelhança.
+
+O vínculo automático (`linkPendingOrganizations`, a cada sincronização e no botão "Atualizar organizações dos chamados") só vale enquanto o recebimento não foi confirmado e fica na auditoria. A pessoa ainda confirma a organização no recebimento.
+
 ## Interpretar a fila
 
 - Após aplicar uma correção autorizada, verifique que `/healthz` responde e que `X-Kedu-Build` corresponde à versão aplicada. Depois confira o recálculo no fluxo oficial. Compare os mesmos chamados com o mesmo hash e examine separadamente a versão atual dos que mudaram no GLPI. Uma atualização pode deixar o contrato pendente de obtenção ou leitura, mesmo que a versão anterior tenha passado na simulação.
 
+- **Consulta ao GLPI incompleta** com linha do tempo completa e `approvalCoverage: partial` é falta do direito de aprovações (`ticketvalidation`) no perfil do token: o GLPI responde `403 ERROR_RIGHT_MISSING`. Não é falha de leitura; resolve com permissão no GLPI, não com nova tentativa.
+- **Aguardando leitura com OCR** (publicação na Vercel): imagem ou digitalização que espera o leitor PaddleOCR do GitHub Actions (07h40, 12h40 e 16h40 de Brasília). Não é falha e não consome tentativas.
 - **Aguardando a vez na fila** indica que a tentativa de um arquivo ainda vai começar. **Nova tentativa programada** tem horário próprio. **Em leitura** indica obtenção ou leitura em andamento. **Ainda não há tentativa automática agendada** é um estado separado.
 - **Leitura concluída** descreve o arquivo. Para classificar a demanda, conferir os campos e demais bloqueios com `kedu-conferencia-documental`. Um arquivo na fila pode coexistir com outro já lido.
 
