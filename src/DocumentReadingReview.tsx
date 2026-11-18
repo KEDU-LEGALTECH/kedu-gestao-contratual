@@ -28,6 +28,8 @@ export function RegionReading({did,file,revision,api}:any) {
  const [result,setResult]=useState<any>(null),[error,setError]=useState(''),[working,setWorking]=useState(false);
  useEffect(()=>{setResult(null);setError('');setRegion({page:1,x:0,y:0,width:1,height:1,rotation:0});},[file.id,revision]);
  if(!api||!file.available||!/\.(pdf|png|jpe?g|webp|tiff?|bmp|gif)$/i.test(file.name))return null;
+ // Hosted without PaddleOCR: say so instead of offering a tool that can only fail.
+ if(file.regionReading===false)return <p className="muted">A releitura de uma região com OCR não está disponível no portal publicado. Confira o trecho no arquivo original; a leitura completa com OCR roda às 07h40, 12h40 e 16h40.</p>;
  const read=async()=>{setWorking(true);setError('');setResult(null);try {setResult(await api(`/demands/${did}/processing/files/${file.id}/region`,{revision,region}));}catch(e:any){setError(e.message||'Não foi possível reler o trecho.');}finally{setWorking(false);}};
  return <details className="pending-groups"><summary>Reler uma região com OCR</summary>
   <p className="muted">Use a prévia original acima como referência. Indique a posição do trecho em porcentagem, a partir do canto superior esquerdo. A leitura amplia o recorte e tenta melhorar o contraste.</p>
