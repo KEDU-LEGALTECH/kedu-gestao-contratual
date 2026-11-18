@@ -146,7 +146,10 @@ async function claimDueSlot(times: string[]) {
 /** Scheduled sync without a long-running process (Vercel Cron): runs and waits only when a slot is due. */
 export async function runDueSync() {
   const times = dailySyncTimes();
-  if (!times.length || !await claimDueSlot(times)) return { synced: false };
+  // The reason tells the scheduler log why nothing ran, without exposing configuration values.
+  if (!times.length) return { synced: false, reason: "no_times" };
+  if (running) return { synced: false, reason: "running" };
+  if (!await claimDueSlot(times)) return { synced: false, reason: "not_due" };
   return { synced: true, summary: await syncGlpi(null) };
 }
 /** Daily slots in Brasilia time take precedence over the optional interval.
