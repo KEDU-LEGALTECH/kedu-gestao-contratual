@@ -32,6 +32,13 @@ Relatório por demanda e documento: campos encontrados e esperados separados, en
 
 Ausências reais exigem pedir documentos ou esclarecimentos; OCR repetido não resolve falta de fonte. A redução da fila depende de execução e validação no fluxo oficial. Criar skills não executa automaticamente essa fila, não altera o motor de OCR e não comprova acurácia.
 
+## Atualização 1.7.0 / 1.8.0 / 1.9.0 (18/11/2026)
+
+- **Organização da demanda (`kedu-triagem-documental` v1.7.0, `kedu-leitura-precisa` v1.8.0)**: CNPJ do formulário GLPI corrigido só quando o dígito verificador comprova (campo numérico `…,00`, zero inicial perdido) e CPF de pessoa física aceito. Vários CNPJs no campo são desempatados apenas por um único identificador presente nos documentos lidos. Demandas ainda não confirmadas são vinculadas a cada sincronização, com auditoria. No piloto, 18 das 24 demandas sem organização passaram a ser identificadas; as 6 restantes têm CNPJ com erro de digitação ou ambiguidade real.
+- **Leitura de Word recebido (`kedu-leitura-precisa` v1.8.0)**: fontes e imagens incorporadas não contam no limite de texto; imagens ocultas sem texto não bloqueiam.
+- **Comprovante bancário (`kedu-conferencia-documental` v1.9.0)**: dados bancários divergentes do GLPI levam a **Aguardando correção**.
+- **Consulta ao GLPI incompleta**: causada pelo perfil do token sem direito a aprovações (`403 ERROR_RIGHT_MISSING`); resolve no GLPI.
+
 ## Atualização 1.7.0 / 1.8.0 (11/11/2026)
 
 - **Triagem estrita entre `Contrato não encontrado`, `Tipo a confirmar`, `Contrato não lido` e `Contrato com pendências` (`kedu-triagem-documental` v1.6.0 & `kedu-leitura-precisa` v1.7.0)**:

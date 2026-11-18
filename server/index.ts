@@ -59,7 +59,7 @@ import {
 } from "./official-templates.js";
 import { structuredProfile, inspectStructured } from "./structured-docx.js";
 import { assertProductionTemplate } from "./template-policy.js";
-import { importGlpiSchools } from "./glpi-schools.js";
+import { importGlpiSchools, linkPendingOrganizations } from "./glpi-schools.js";
 import { downloadGlpiAttachment } from "./glpi-download.js";
 import { organizations, classifyOrganization } from "./organizations.js";
 import { organizationAllowed } from "../shared/organization-policy.js";
@@ -1175,7 +1175,8 @@ app.get("/api/glpi/status", (req: any, res) => {
 });
 app.post("/api/glpi/schools/import", async (req: any, res) => {
   permit(req.user, "schools");
-  res.json(await importGlpiSchools(req.user.id));
+  const summary = await importGlpiSchools(req.user.id);
+  res.json({ ...summary, linked: await linkPendingOrganizations(req.user.id) });
 });
 app.put("/api/organizations/:id/classification", async (req: any, res) => {
   permit(req.user, "schools");

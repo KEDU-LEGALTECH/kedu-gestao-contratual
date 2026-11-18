@@ -2,7 +2,7 @@ import { db, one, all, run, id, now, audit, sql, auditAsync } from "./db.js";
 import { DemoTicketSource, RealGlpiSource, glpiConfig, configProblems, ticketHash, type TicketSource, type RawTicket } from "./glpi.js";
 import { analyzeTicket } from "./glpi-analysis.js";
 import {conversationExpectations,conversationText,conversationEntries} from './request-expectations.js';
-import { importGlpiSchools } from "./glpi-schools.js";
+import { importGlpiSchools, linkPendingOrganizations } from "./glpi-schools.js";
 import { organizations } from "./organizations.js";
 import { receiveGlpiDemands } from "./glpi-intake.js";
 import { scheduleContractProcessing } from "./contract-processing.js";
@@ -113,7 +113,8 @@ export async function syncGlpi(userId: string | null, source?: TicketSource, tim
       }
       if (source.mode === "real") summary.schools = await importGlpiSchools(userId, false);
       if (source.mode === "real") summary.demandsCreated = (await receiveGlpiDemands(userId, false)).created;
-      await sql.run("INSERT INTO sync_logs VALUES(?,?,?,?,?)", id(), failures.length ? "Parcial" : "Concluído", summary.created, `${source.mode === "real" ? "GLPI (somente leitura)" : "Demonstração"}: ${summary.read} lidos, ${summary.created} novos, ${summary.changed} alterados (${summary.linkedChanged} já vinculados), ${summary.unchanged} sem alteração. Escolas: ${summary.schools.created} novas, ${summary.schools.conflicts} divergências de nome, ${summary.schools.skipped} chamados sem cadastro automático. Cadastros existentes preservados.` +
+      const organizationsLinked = source.mode === "real" ? await linkPendingOrganizations(userId) : 0;
+      await sql.run("INSERT INTO sync_logs VALUES(?,?,?,?,?)", id(), failures.length ? "Parcial" : "Concluído", summary.created, `${source.mode === "real" ? "GLPI (somente leitura)" : "Demonstração"}: ${summary.read} lidos, ${summary.created} novos, ${summary.changed} alterados (${summary.linkedChanged} já vinculados), ${summary.unchanged} sem alteração. Escolas: ${summary.schools.created} novas, ${summary.schools.conflicts} divergências de nome, ${summary.schools.skipped} chamados sem cadastro automático, ${organizationsLinked} demandas vinculadas à organização. Cadastros existentes preservados.` +
           (source.mode === "real" ? ` Linhas do tempo reaproveitadas: ${reused}. Aprovações com cobertura parcial: ${tickets.filter(t => t.approvalCoverage === "partial").length}.` : "") +
           (failures.length ? ` Chamados não atualizados: ${failures.length} (${failures.slice(0, 12).join(", ")}${failures.length > 12 ? ", …" : ""}).` : ""), now());
     });
