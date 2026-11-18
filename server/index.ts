@@ -167,6 +167,8 @@ app.post(
       return res.status(401).json({ error: "E-mail ou senha inválidos." });
     if (!u || !verify(String(req.body.password), u.password))
       return res.status(401).json({ error: "E-mail ou senha inválidos." });
+    if (await sql.one("SELECT user_id FROM user_access WHERE user_id=?", u.id))
+      return res.status(403).json({ error: "Acesso desativado. Fale com um administrador do portal." });
     const token = randomBytes(32).toString("hex");
     await sql.run("INSERT INTO sessions VALUES(?,?,?)", token, u.id, Date.now() + 8 * 3600000);
     res.cookie("session", token, {
@@ -201,7 +203,7 @@ app.get("/api/cron/reading", async (req, res) => {
   res.json(await readCache.exit(() => runReadingCycle(Number(process.env.READING_CYCLE_SECONDS || (process.env.VERCEL ? 180 : 240)) * 1000)));
 });
 app.use("/api", async (req: any, res, next) => {
-  const u = await sql.one("SELECT users.* FROM sessions JOIN users ON users.id=sessions.user_id WHERE token=? AND expires>?", req.cookies.session || "", Date.now());
+  const u = await sql.one("SELECT users.* FROM sessions JOIN users ON users.id=sessions.user_id WHERE token=? AND expires>? AND NOT EXISTS(SELECT 1 FROM user_access a WHERE a.user_id=users.id)", req.cookies.session || "", Date.now());
   if (!u)
     return res
       .status(401)
@@ -271,7 +273,7 @@ app.get("/api/bootstrap", async (req: any, res) => {
           : ""), ...(req.user.role === "Solicitante" ? [req.user.id] : [])),
     req.user.role === "Solicitante"
         ? sql.all("SELECT id,name,role,email FROM users WHERE id=?", req.user.id)
-        : sql.all("SELECT id,name,role,email FROM users"),
+        : sql.all("SELECT u.id,u.name,u.role,u.email,CASE WHEN a.user_id IS NULL THEN 1 ELSE 0 END AS active FROM users u LEFT JOIN user_access a ON a.user_id=u.id"),
     sql.all("SELECT t.*,c.document_type,c.subtype,c.demonstration,EXISTS(SELECT 1 FROM template_sources ts WHERE ts.version_id=v.id) AS official,v.id AS version_id,v.version,CASE WHEN EXISTS(SELECT 1 FROM inactive_template_versions iv WHERE iv.version_id=v.id) THEN 'inativo' ELSE v.status END AS status FROM templates t JOIN template_versions v ON v.template_id=t.id LEFT JOIN template_catalog c ON c.version_id=v.id"),
     sql.all("SELECT * FROM sync_logs ORDER BY created DESC LIMIT 20"),
     sql.all("SELECT * FROM settings WHERE key IN ('legalPolicies','glpiMapping')"),
@@ -1161,12 +1163,51 @@ app.put("/api/users/:id/role", async (req: any, res) => {
   if (
     u.role === "Administrador" &&
     role !== "Administrador" &&
-    (await sql.one("SELECT COUNT(*) n FROM users WHERE role=?", "Administrador")).n <= 1
+    (await activeAdministrators(u.id)) < 1
   )
-    throw Error("É necessário manter um administrador.");
+    throw Error("É necessário manter um administrador ativo.");
   await sql.run("UPDATE users SET role=? WHERE id=?", role, u.id);
   await sql.run("DELETE FROM sessions WHERE user_id=?", u.id);
   await auditAsync(null, req.user.id, "Perfil de usuário atualizado; sessões revogadas");
+  res.json({ ok: true });
+});
+const activeAdministrators = async (except: string) =>
+  (await sql.one("SELECT COUNT(*) n FROM users u WHERE u.role=? AND u.id<>? AND NOT EXISTS(SELECT 1 FROM user_access a WHERE a.user_id=u.id)", "Administrador", except)).n;
+app.post("/api/me/password", rateLimit({ windowMs: 900000, limit: 10 }), async (req: any, res) => {
+  const b = z.object({ current: z.string().min(1), password: z.string().min(12).max(200) }).parse(req.body);
+  if (!verify(b.current, req.user.password)) return res.status(400).json({ error: "A senha atual não confere." });
+  if (b.current === b.password) return res.status(400).json({ error: "A nova senha precisa ser diferente da atual." });
+  await sql.run("UPDATE users SET password=? WHERE id=?", hash(b.password), req.user.id);
+  // Other browsers signed in with the old password are signed out; this one stays.
+  await sql.run("DELETE FROM sessions WHERE user_id=? AND token<>?", req.user.id, req.cookies.session || "");
+  await auditAsync(null, req.user.id, "Senha alterada pelo próprio usuário; outras sessões encerradas");
+  res.json({ ok: true });
+});
+app.put("/api/users/:id/password", async (req: any, res) => {
+  permit(req.user, "settings");
+  const password = z.string().min(12).max(200).parse(req.body.password);
+  const u = await sql.one("SELECT id FROM users WHERE id=?", req.params.id);
+  if (!u) throw Error("Usuário não encontrado.");
+  if (u.id === req.user.id) throw Error("Para a sua própria conta, use Alterar senha, que confere a senha atual.");
+  await sql.run("UPDATE users SET password=? WHERE id=?", hash(password), u.id);
+  await sql.run("DELETE FROM sessions WHERE user_id=?", u.id);
+  await auditAsync(null, req.user.id, "Senha de usuário redefinida por administrador; sessões revogadas: " + u.id);
+  res.json({ ok: true });
+});
+app.put("/api/users/:id/access", async (req: any, res) => {
+  permit(req.user, "settings");
+  const active = z.boolean().parse(req.body.active);
+  const u = await sql.one("SELECT id,role FROM users WHERE id=?", req.params.id);
+  if (!u) throw Error("Usuário não encontrado.");
+  if (u.id === req.user.id) throw Error("Peça a outro administrador para desativar sua conta.");
+  if (!active && u.role === "Administrador" && (await activeAdministrators(u.id)) < 1)
+    throw Error("É necessário manter um administrador ativo.");
+  if (active) await sql.run("DELETE FROM user_access WHERE user_id=?", u.id);
+  else {
+    await sql.run("INSERT INTO user_access(user_id,disabled_at,disabled_by) VALUES(?,?,?) ON CONFLICT(user_id) DO NOTHING", u.id, now(), req.user.id);
+    await sql.run("DELETE FROM sessions WHERE user_id=?", u.id);
+  }
+  await auditAsync(null, req.user.id, (active ? "Acesso de usuário reativado: " : "Acesso de usuário desativado; sessões revogadas: ") + u.id);
   res.json({ ok: true });
 });
 app.get("/api/glpi/status", (req: any, res) => {

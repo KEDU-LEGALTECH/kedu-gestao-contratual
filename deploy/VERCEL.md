@@ -59,7 +59,7 @@ Funções da Vercel recebem e respondem até 4,5 MB por requisição.
 
 Na Vercel só a pasta temporária aceita escrita: o cache e a trava de leitura ficam nela automaticamente.
 
-O OCR de páginas concluídas de PDF é salvo no PostgreSQL para a leitura continuar em outra instância. Para um esquema PostgreSQL já importado, aplique `migrations/020.sql` no esquema privado configurado em `KEDU_PG_SCHEMA` antes de iniciar a nova versão. A migração também entra nos novos snapshots preparados depois que o SQLite local é atualizado.
+O OCR de páginas concluídas de PDF é salvo no PostgreSQL para a leitura continuar em outra instância. Para um esquema PostgreSQL já importado, aplique `migrations/020.sql` e `migrations/021.sql` (acesso de usuários; sem ela o login falha) no esquema privado configurado em `KEDU_PG_SCHEMA` antes de iniciar a nova versão. A migração também entra nos novos snapshots preparados depois que o SQLite local é atualizado.
 
 ## Antes de publicar
 
