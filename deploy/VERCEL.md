@@ -76,6 +76,10 @@ O OCR de páginas concluídas de PDF é salvo no PostgreSQL para a leitura conti
 
 O banco é copiado todo dia pelo GitHub Actions, criptografado, e guardado por 14 dias. Ativação e restauração em [`deploy/BACKUP.md`](BACKUP.md).
 
+## Espaço do Storage
+
+O plano gratuito do Supabase tem 1 GB de Storage. Em 18/11/2026 os anexos ocupavam 367 MB (687 arquivos únicos): 216 MB de chamados abertos na versão atual, 163 MB de anexos que só pertencem a versões antigas dos chamados e 4 MB de chamados fechados. Os 163 MB de versões antigas são os candidatos a limpeza quando o espaço apertar; antes de apagar, confira se nenhuma conferência humana ou leitura reaproveitada (`previouslyVerifiedAttachment`) depende do arquivo, porque o original continua no GLPI mas a conferência registrada aponta para aquela cópia.
+
 ## Ainda pendente
 
 - Documentos gerados e assinados continuam guardados no banco (`documents`, hoje sem nenhum); se crescerem, podem ir para o Storage como os anexos.
