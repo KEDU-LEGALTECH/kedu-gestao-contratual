@@ -2,8 +2,14 @@ import { preflight } from "./documents.js";
 import PizZip from "pizzip";
 import { DOMParser } from "@xmldom/xmldom";
 const W="http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+/** Hidden formatting on runs without text (hidden pictures, hidden paragraph marks) changes no wording. */
+const hidesText=(mark:any)=>{
+  let run=mark;
+  while(run&&!(run.namespaceURI===W&&run.localName==="r"))run=run.parentNode;
+  return !!run&&Array.from(run.getElementsByTagNameNS(W,"t") as ArrayLike<any>).some(t=>(t.textContent||"").trim());
+};
 export function contractParagraphs(bytes:Buffer) {
-  preflight(bytes);
+  preflight(bytes,100_000_000);
   const zip=new PizZip(bytes),lines:string[]=[];
   if(!zip.file("word/document.xml"))throw Error("Documento Word ausente.");
   for(const f of Object.values(zip.files)) {
@@ -12,8 +18,10 @@ export function contractParagraphs(bytes:Buffer) {
     const xml=f.asText();
     if(/<!DOCTYPE|<!ENTITY/i.test(xml))throw Error("XML inseguro.");
     const parsed=new DOMParser({onError:()=>{throw Error("XML inválido.");}}).parseFromString(xml,"application/xml");
-    for(const tag of ["ins","del","vanish","webHidden","altChunk"])
+    for(const tag of ["ins","del","altChunk"])
       if(parsed.getElementsByTagNameNS(W,tag).length)throw Error("Revisões ou conteúdo oculto exigem conferência manual.");
+    for(const tag of ["vanish","webHidden"])
+      if(Array.from(parsed.getElementsByTagNameNS(W,tag)).some(hidesText))throw Error("Revisões ou conteúdo oculto exigem conferência manual.");
     for(const p of Array.from(parsed.getElementsByTagNameNS(W,"p"))) {
       const text=Array.from(p.getElementsByTagNameNS(W,"t")).map(t=>t.textContent||"").join("").normalize("NFC").trim();
       if(text)lines.push(text);

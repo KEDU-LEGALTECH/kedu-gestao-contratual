@@ -8,7 +8,8 @@ import { join } from "node:path";
 process.env.DATABASE_PATH=join(mkdtempSync(join(tmpdir(),"kedu-attachment-")),"test.sqlite");
 process.env.NODE_ENV="test";process.env.DEMO_SEED="false";process.env.GLPI_MODE="demo";
 const { run, one, all, sql } = await import("../server/db.js");
-const {demoTemplate}=await import("../server/documents.js");
+const {demoTemplate,preflight}=await import("../server/documents.js");
+const {randomBytes}=await import("node:crypto");
 const {inspectAttachment}=await import("../server/attachment-analysis.js");
 const {registerAttachmentRoutes}=await import("../server/attachment-routes.js");
 const {governanceMissing}=await import("../server/governance.js");
@@ -34,6 +35,19 @@ test("Texto com logotipo e cabeçalho é lido, mas revisões ocultas impedem res
   assert.equal(inspectAttachment(zip.generate({type:"nodebuffer"}),"contrato.docx",{remuneracao:"11,84%"}).status,"conforme");
   zip.file("word/document.xml",zip.file("word/document.xml")!.asText().replace("<w:t>","<w:rPr><w:vanish/></w:rPr><w:t>"));
   assert.equal(inspectAttachment(zip.generate({type:"nodebuffer"}),"contrato.docx",{remuneracao:"11,84%"}).status,"inconclusiva");
+});
+test("Imagem oculta e fontes incorporadas grandes não impedem a leitura do texto recebido",()=>{
+  const zip=new PizZip(doc("Taxa de remuneração: 11,84%"));
+  zip.file("word/document.xml",zip.file("word/document.xml")!.asText().replace("</w:body>","<w:p><w:r><w:rPr><w:vanish/></w:rPr><w:drawing/></w:r></w:p></w:body>"));
+  assert.equal(inspectAttachment(zip.generate({type:"nodebuffer"}),"contrato.docx",{remuneracao:"11,84%"}).status,"conforme","imagem oculta não altera o texto");
+  // Embedded fonts are binary; only a sane compression ratio is required, not the 20 MB text limit.
+  zip.file("word/fonts/font1.odttf",randomBytes(21_000_000),{compression:"STORE"});
+  const withFont=zip.generate({type:"nodebuffer"});
+  assert.equal(inspectAttachment(withFont,"contrato.docx",{remuneracao:"11,84%"}).status,"conforme");
+  assert.throws(()=>preflight(withFont),/excede 20 MB/,"modelos gerados pelo portal mantêm o limite estrito");
+  const bomb=new PizZip(doc("Taxa de remuneração: 11,84%"));
+  bomb.file("word/fonts/font1.odttf",Buffer.alloc(21_000_000),{compression:"DEFLATE"});
+  assert.equal(inspectAttachment(bomb.generate({type:"nodebuffer",compression:"DEFLATE"}),"contrato.docx",{remuneracao:"11,84%"}).status,"inconclusiva","arquivo que se expande demais continua recusado");
 });
 test("Múltiplos valores, campo ausente, DOCX inválido e imagem nunca são considerados conformes",()=>{
   for(const [bytes,name] of [[doc("Taxa de 11% para 11,84%"),"contrato.docx"],[doc("Documento sem taxa identificada"),"contrato.docx"],[Buffer.from("invalido"),"contrato.docx"],[Buffer.from("imagem"),"anexo.png"]] as [Buffer,string][])assert.equal(inspectAttachment(bytes,name,{remuneracao:"11,84%"}).status,"inconclusiva");
