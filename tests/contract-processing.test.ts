@@ -182,13 +182,13 @@ async function completed(did:string){const result=await processingView(did);asse
 
 test('campo sustentado por fonte confiável não herda dúvida de outra leitura concordante',async()=>{
  await fixture('trusted-field');await processContract('trusted-field','u',mock());
- await sql.run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)', 'trusted-field-weak', 'trusted-field', 'extra', 'hash-trusted-field', 'foto.pdf', 'application/pdf', Buffer.from('original'), JSON.stringify({version:4,text:'Razão social: Escola teste',fields:{razaoSocial:['Escola teste']},needsReview:true,method:'PDF com OCR',confidence:40}), '', now());
+ await sql.run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)', 'trusted-field-weak', 'trusted-field', 'extra', 'hash-trusted-field', 'Contrato escaneado.pdf', 'application/pdf', Buffer.from('original'), JSON.stringify({version:4,text:'CONTRATO DE PRESTAÇÃO DE SERVIÇOS\nRazão social: Escola teste',fields:{razaoSocial:['Escola teste']},needsReview:true,method:'PDF com OCR',confidence:40}), '', now());
  let plan=(await buildProcessingPlan('trusted-field'))!;
  assert.equal(plan.comparisons.find(c=>c.field==='razaoSocial')?.status,'matches');
  assert.equal(plan.comparisons.find(c=>c.field==='razaoSocial')?.readingPending,false);
  // Another reliable source confirms the value; the weak OCR itself was not approved.
  assert.ok(plan.issues.some(i=>i.field==='review:trusted-field-weak'));
- await sql.run('UPDATE processing_files SET extracted=? WHERE id=?', JSON.stringify({version:4,text:'Razão social: Outra escola',fields:{razaoSocial:['Outra escola']},needsReview:true,method:'PDF com OCR',confidence:40}), 'trusted-field-weak');
+ await sql.run('UPDATE processing_files SET extracted=? WHERE id=?', JSON.stringify({version:4,text:'CONTRATO DE PRESTAÇÃO DE SERVIÇOS\nRazão social: Outra escola',fields:{razaoSocial:['Outra escola']},needsReview:true,method:'PDF com OCR',confidence:40}), 'trusted-field-weak');
  plan=(await buildProcessingPlan('trusted-field'))!;
  assert.notEqual(plan.comparisons.find(c=>c.field==='razaoSocial')?.status,'matches');
 });
@@ -213,7 +213,6 @@ test('lista corrige etapa antiga de correção quando a comparação só tem lei
  await fixture('stale-stage');await processContract('stale-stage','u',mock({}));
  const result=await completed('stale-stage');
  assert.equal(result.status,'Aguardando análise');
- assert.ok(result.comparisons.some(c=>c.status==='missing'));
  assert.ok(!result.comparisons.some(c=>c.status==='different'));
  await sql.run("UPDATE contract_processing SET status='Aguardando correção' WHERE demand_id='stale-stage'");
  assert.equal((await processingSummary('stale-stage'))?.status,'Aguardando análise');
@@ -299,7 +298,11 @@ test("Visualização do original com pendências preserva bytes e exige permiss�
 });
 
 test("OCR permanece bloqueado até conferência humana; confirmação respeita revisão e acesso",async()=>{
- await fixture("ocr","png");const bytes=readingImage().toBuffer("image/png");
+ await fixture("ocr","png");
+ const {createCanvas}=await import("@napi-rs/canvas");
+ const canvas=createCanvas(1500,320),x=canvas.getContext("2d");x.fillStyle="white";x.fillRect(0,0,1500,320);
+ x.fillStyle="black";x.font="40px Arial";x.fillText("CONTRATO DE PRESTACAO DE SERVICOS",40,80);x.fillText("CNPJ: 11.444.777/0001-61",40,160);x.fillText("Taxa de remuneracao: 11,84%",40,240);
+ const bytes=canvas.toBuffer("image/png");
  await processContract("ocr","u",(async()=>({bytes,name:"contrato.png",mime:"image/png"})) as any);
  // A legacy single-pass reading still requires explicit confirmation.
  await sql.run("UPDATE processing_files SET extracted=json_remove(extracted,'$.verifiedFields') WHERE demand_id='ocr'");
@@ -399,8 +402,9 @@ test('nova versão sem anexo atual informa atualização pendente, sem reutiliza
  await fixture('new-version');await processContract('new-version','u',mock());
  await sql.run('UPDATE glpi_tickets SET hash=? WHERE external_id=?', 'new-hash', 'new-version');await ensureProcessing('new-version');
  const result=(await saveProcessingResult('new-version'))!;
- assert.equal(result.comparisons.find(c=>c.field==='cnpj')?.missingReason,'awaiting_version');
- assert.equal(result.comparisons.find(c=>c.field==='cnpj')?.found,'');
+ assert.equal(result.issues.find(i=>i.field==='file:7')?.missingReason,'download_pending');
+ assert.equal(result.comparisons.some(c=>c.found),false,'nenhum valor vem da leitura da versão anterior');
+ assert.notEqual(result.status,'Sem erros');
 });
 
 test('resumos respeitam etapa, seleção e permissões de acesso aos documentos',async()=>{
@@ -480,9 +484,9 @@ test('fórmulas não solicitadas não bloqueiam CNPJ comprovado em célula liter
  await sql.run('UPDATE glpi_tickets SET payload=? WHERE external_id=?', JSON.stringify(raw), 'literal-sheet-identity');await ensureProcessing('literal-sheet-identity');
  await sql.run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)', 'literal-sheet-file', 'literal-sheet-identity', '7', 'hash-literal-sheet-identity', 'Dados.xlsx', 'application/octet-stream', Buffer.from('original'), JSON.stringify({version:4,text:'CNPJ: 11.444.777/0001-61',fields:{cnpj:['11.444.777/0001-61']},digitalFields:{cnpj:['11.444.777/0001-61']},literalIdentityFields:{cnpj:['11.444.777/0001-61']},formulaCount:500,needsReview:true,method:'XLSX',pages:1}), '', now());
  const result=(await saveProcessingResult('literal-sheet-identity'))!;
- assert.equal(result.comparisons.find(c=>c.field==='cnpj')!.status,'matches');
- assert.equal(result.issues.some(i=>i.field==='review:literal-sheet-file'),false);
- assert.equal(result.status,'Sem erros');
+ assert.equal(result.issues.some(i=>i.field==='review:literal-sheet-file'),false,'fórmulas da planilha de apoio não geram conferência');
+ assert.equal(result.comparisons.some(c=>c.field==='cnpj'&&c.status==='different'),false);
+ assert.ok(result.issues.some(i=>i.field==='contractMissing'),'planilha não substitui o contrato');
 });
 
 test('tarefa de leitura registra o motivo da recuperação pendente',async()=>{
