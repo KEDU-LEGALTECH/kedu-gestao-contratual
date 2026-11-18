@@ -1,0 +1,62 @@
+name: Backup diário do banco
+
+# The Supabase free plan keeps no backups. This job dumps the portal schema every day, encrypts it with a
+# passphrase that only the company holds and keeps it 14 days as a private artifact of this repository.
+on:
+  schedule:
+    - cron: '30 6 * * *' # 03h30 de Brasília
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    if: ${{ vars.KEDU_BACKUP_ENABLED == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: kedu-ocr
+    concurrency:
+      group: kedu-backup
+      cancel-in-progress: false
+    steps:
+      - name: Instalar o cliente do PostgreSQL 17
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt noble-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+      - name: Gerar, conferir e criptografar o backup
+        id: backup
+        env:
+          KEDU_PG_SCHEMA: ${{ vars.KEDU_PG_SCHEMA }}
+          SUPABASE_DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+          SUPABASE_CA_CERT: ${{ secrets.SUPABASE_CA_CERT }}
+          KEDU_BACKUP_PASSPHRASE: ${{ secrets.KEDU_BACKUP_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          umask 077
+          if [[ -z "$KEDU_PG_SCHEMA" || -z "$SUPABASE_DATABASE_URL" || -z "$SUPABASE_CA_CERT" || ${#KEDU_BACKUP_PASSPHRASE} -lt 24 ]]; then
+            echo "::error::Configuração incompleta: confira KEDU_PG_SCHEMA, SUPABASE_DATABASE_URL, SUPABASE_CA_CERT e KEDU_BACKUP_PASSPHRASE (mínimo 24 caracteres)."
+            exit 1
+          fi
+          printf '%s\n' "$SUPABASE_CA_CERT" | sed 's/\\n/\n/g' > "$RUNNER_TEMP/ca.crt"
+          export PGSSLMODE=verify-full PGSSLROOTCERT="$RUNNER_TEMP/ca.crt"
+          bin=/usr/lib/postgresql/17/bin
+          name="kedu-$(date -u +%Y-%m-%dT%H%MZ).dump"
+          "$bin/pg_dump" --format=custom --no-owner --no-privileges --schema="$KEDU_PG_SCHEMA" --dbname="$SUPABASE_DATABASE_URL" --file="$RUNNER_TEMP/$name"
+          # A dump that pg_restore cannot list is not a backup.
+          tables=$("$bin/pg_restore" --list "$RUNNER_TEMP/$name" | grep -c " TABLE DATA ")
+          if [[ "$tables" -lt 20 ]]; then echo "::error::Backup com apenas $tables tabelas; esperado o esquema completo."; exit 1; fi
+          mkdir -p "$RUNNER_TEMP/out"
+          gpg --batch --yes --pinentry-mode loopback --passphrase-fd 3 --symmetric --cipher-algo AES256 \
+            --output "$RUNNER_TEMP/out/$name.gpg" "$RUNNER_TEMP/$name" 3<<<"$KEDU_BACKUP_PASSPHRASE"
+          rm -f "$RUNNER_TEMP/$name" "$RUNNER_TEMP/ca.crt"
+          echo "Backup $name.gpg: $tables tabelas, $(du -h "$RUNNER_TEMP/out/$name.gpg" | cut -f1)." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v5
+        with:
+          name: backup-banco-${{ github.run_id }}
+          path: ${{ runner.temp }}/out/*.gpg
+          retention-days: 14
+          if-no-files-found: error

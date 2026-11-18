@@ -127,7 +127,7 @@ app.use((req, res, next) => {
   res.on("close", () => { store.open = false; store.entries.clear(); });
   withReadCache(next, store);
 });
-// Supabase keeps PostgreSQL backups; the local job copies the SQLite file only.
+// PostgreSQL is backed up daily by .github/workflows/backup-banco.yml; the local job copies the SQLite file only.
 if(!postgresMode&&runsBackground)startBackups();
 app.get("/healthz",async (_req,res)=>{res.set("Cache-Control","no-store");res.set('X-Kedu-Build',backendVersion.build);try{await sql.one("SELECT 1");res.json({status:"ok"});}catch{res.status(503).json({status:"unavailable"});}});
 app.use("/api", (req, res, next) => {

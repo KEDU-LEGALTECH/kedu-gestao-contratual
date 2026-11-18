@@ -72,6 +72,10 @@ O OCR de páginas concluídas de PDF é salvo no PostgreSQL para a leitura conti
 - `npm start` sem `KEDU_ROLE`: um processo faz tudo (como no computador atual).
 - `npm run worker` (`KEDU_ROLE=worker`): só o trabalho em segundo plano, com PaddleOCR. É ele que lê os arquivos "Aguardando leitura com OCR" (no GitHub Actions, uns 40 minutos depois de cada sincronização; autorizado pela empresa).
 
+## Backup
+
+O banco é copiado todo dia pelo GitHub Actions, criptografado, e guardado por 14 dias. Ativação e restauração em [`deploy/BACKUP.md`](BACKUP.md).
+
 ## Ainda pendente
 
 - Documentos gerados e assinados continuam guardados no banco (`documents`, hoje sem nenhum); se crescerem, podem ir para o Storage como os anexos.
