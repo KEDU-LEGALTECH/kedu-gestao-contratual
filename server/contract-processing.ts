@@ -98,7 +98,7 @@ async function fingerprint(did:string) {
  ]);
  // Change this tag whenever a conferência rule changes: every open demand is then recalculated
  // by the next reading cycle, without anyone opening it.
- return sha256(Buffer.from(JSON.stringify(['v45-manual-correction-and-reading-doubts',resolutions,d,templates,contracts,signed,confirmed])));
+ return sha256(Buffer.from(JSON.stringify(['v46-failed-triage-reading',resolutions,d,templates,contracts,signed,confirmed])));
 }
 export async function processingSource(did:string) {
  const demand=await sql.one("SELECT * FROM demands WHERE id=?", did);
