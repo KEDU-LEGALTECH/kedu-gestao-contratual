@@ -16,6 +16,8 @@ const {processContract,saveProcessingResult,buildProcessingPlan,ensureProcessing
 const {registerProcessingRoutes,processingView}=await import("../server/processing-routes.js");
 const {inputLabels}=await import("../server/processing-extract.js");
 const {contractReadingScope}=await import("../server/contract-reading-scope.js");
+const {processingStatus}=await import("../server/processing-status.js");
+const processingStatusOf=(plan:any)=>processingStatus(plan.issues,plan.comparisons,true);
 await sql.run("INSERT INTO users VALUES('u','Teste','u@test.local','Administrador','unused')");
 await sql.run("INSERT INTO schools VALUES('s','Escola teste','Escola teste','11.444.777/0001-61','','')");
 await registerOfficialCatalog();
@@ -509,4 +511,24 @@ test('checksum importado do documento reutiliza bytes locais idênticos sem novo
  let downloads=0;await processContract('checksum-reuse','u',async()=>{downloads++;throw Error('Não deveria baixar bytes iguais');});
  assert.equal(downloads,0);
  assert.ok(await sql.one('SELECT id FROM processing_files WHERE demand_id=? AND ticket_hash=?', 'checksum-reuse', 'hash-checksum-current'));
+});
+
+test("número lido por OCR que o extenso ou um dígito confundido aponta como erro de leitura fica em conferência, não em correção",async()=>{
+ await fixture('ocr-doubt');await processContract('ocr-doubt','u',mock({...data,remuneracao:'11,64%'}) as any);
+ const digital=(await buildProcessingPlan('ocr-doubt'))!;
+ assert.equal(digital.comparisons.find(c=>c.field==='remuneracao')?.status,'different','no texto digital o número é certo');
+ const row=await sql.one("SELECT id,extracted FROM processing_files WHERE demand_id='ocr-doubt'");
+ const asOcr=(line:string)=>{const e=JSON.parse(row.extracted);delete e.digitalFields;return JSON.stringify({...e,method:'PDF com OCR',needsReview:false,text:e.text+'\n'+line,fields:{...e.fields,remuneracao:['11,64%']}});};
+ await sql.run('UPDATE processing_files SET extracted=? WHERE id=?', asOcr('Taxa de remuneração: 11,64% (onze vírgula oitenta e quatro por cento)'), row.id);
+ let plan=(await buildProcessingPlan('ocr-doubt'))!,rate=plan.comparisons.find(c=>c.field==='remuneracao')!;
+ assert.equal(rate.status,'review');assert.equal(rate.readingPending,true);assert.equal(rate.reviewReason?.code,'spelled_value_matches_request');
+ assert.equal(rate.found,'11,64%','o valor lido não é trocado pelo do GLPI');
+ assert.notEqual(processingStatusOf(plan),'Aguardando correção');
+ await sql.run('UPDATE processing_files SET extracted=? WHERE id=?', asOcr('Taxa de remuneração: 11,64% (onze vírgula sessenta e quatro por cento)'), row.id);
+ plan=(await buildProcessingPlan('ocr-doubt'))!;
+ assert.equal(plan.comparisons.find(c=>c.field==='remuneracao')?.status,'different','o extenso confirma a divergência');
+ assert.equal(processingStatusOf(plan),'Aguardando correção');
+ await sql.run('UPDATE processing_files SET extracted=? WHERE id=?', asOcr('Taxa de remuneração: 11,64%'), row.id);
+ rate=(await buildProcessingPlan('ocr-doubt'))!.comparisons.find(c=>c.field==='remuneracao')!;
+ assert.equal(rate.status,'review');assert.equal(rate.reviewReason?.code,'ocr_digit_confusion');
 });
