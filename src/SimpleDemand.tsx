@@ -9,6 +9,7 @@ import { ReceivedDocuments } from "./ReceivedDocuments";
 import { RequestComparison } from "./RequestComparison";
 import { ProcessingProgress } from './ProcessingProgress';
 import { DemandReport } from './DemandReport';
+import { FinalizeDemand } from './FinalizeDemand';
 const baseLabels:Record<string,string>={...fieldLabels,modalidade:"Modalidade de garantia",endereco:"Endereço",matriz:"Contrato matriz",motivo:"Descrição da solicitação"};
 const dateKeys=["inicio","fim","dataAssinaturaMatriz","dataFormalizacao"];
 export function SimpleDemand({detail,data,can,api,action,busy,onBack,onAdvanced,onModels}:any) {
@@ -82,6 +83,7 @@ export function SimpleDemand({detail,data,can,api,action,busy,onBack,onAdvanced,
   </section>}
   {!detail.glpiIntake && <details className="panel simple-source"><summary>Solicitação original</summary><p className="source-text">{detail.data.motivo || "Demanda registrada manualmente."}</p></details>}
 
+  {detail.glpi_id && <FinalizeDemand did={detail.id} stage={detail.stage} can={can} api={api} action={action} busy={busy}/>}
   <details className="simple-admin"><summary>Detalhes administrativos e histórico</summary><p className="muted">Controles adicionais de cadastro, governança e auditoria.</p><button className="secondary" onClick={onAdvanced}>Abrir detalhes administrativos</button></details>
  </>;
 }

@@ -71,6 +71,7 @@ import { processingView,registerProcessingRoutes } from "./processing-routes.js"
 import { fieldLabels as officialInputs } from "../shared/official-fields.js";
 import { officialVisible } from "../shared/request-policy.js";
 import { startBackups } from "./backup-service.js";
+import { finalization, finalizeDemand, finalOutcomes, reopenDemand } from "./demand-finalization.js";
 import {
   registerGovernance,
   seedCatalog,
@@ -718,6 +719,20 @@ app.post("/api/demands/:id/confirm", async (req: any, res) => {
 app.post("/api/demands/:id/stage", async (req: any, res) => {
   const d = await demand(req);
   await transition(req.user, d, String(req.body.stage), req.body.reason);
+  res.json({ ok: true });
+});
+app.get("/api/demands/:id/finalization", async (req: any, res) => {
+  const d = await demand(req);
+  res.json({ finalization: await finalization(d.id), outcomes: finalOutcomes });
+});
+app.post("/api/demands/:id/finalize", async (req: any, res) => {
+  const d = await demand(req);
+  await finalizeDemand(req.user, d, String(req.body.outcome || ""), String(req.body.reason || ""));
+  res.json({ ok: true });
+});
+app.post("/api/demands/:id/reopen", async (req: any, res) => {
+  const d = await demand(req);
+  await reopenDemand(req.user, d);
   res.json({ ok: true });
 });
 app.post("/api/demands/:id/generate", async (req: any, res) => {
