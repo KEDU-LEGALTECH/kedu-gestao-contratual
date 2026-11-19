@@ -19,6 +19,8 @@ export const labelLike=(value:string)=>labelText.test(norm(value).replace(/[:.]+
 export function plausibleFieldValue(key:string,value:string) {
  const v=value.trim();if(!v||labelLike(v))return false;
  if(['razaoSocial','nomeFantasia','titularConta'].includes(key)&&/^(?:LTDA|LTD|ME|EPP|EIRELI|S\/?A)(?:[\s.\-]+(?:LTDA|ME|EPP|[A-Z]{2}))*[.\s]*$/i.test(v))return false;
+ // A clause sentence under an "ENDEREÇO" heading is not the address itself.
+ if(['endereco','rua'].includes(key)&&/^(?:cl[áa]usula|par[áa]grafo)\b|\ba sociedade\b/i.test(v))return false;
  if(key==='cnpj')return /^[\d.\/\-\s]+$/.test(v)&&(v.replace(/\D/g,'').length===11?validCpf(v):validCnpj(v));
  if(key==='representanteCpf')return validCpf(v);
  if(key==='documentoTitular'){const d=v.replace(/\D/g,'');return /^[\d.\/\-\s]+$/.test(v)&&(d.length===11?validCpf(d):d.length===14&&validCnpj(d));}

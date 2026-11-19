@@ -11,8 +11,14 @@ const cpfMask=(d:string)=>`${d.slice(0,3)}.${d.slice(3,6)}.${d.slice(6,9)}-${d.s
 const partyStart=/(?:;|\b(?:contratante(?:\s*\d+)?|contratad[ao](?:\s*\d+)?|locador[a]?|locat[áa]ri[ao]|outorgante|outorgad[ao]|cedente|cession[áa]ri[ao]|partes|de um lado|de outro lado|s[íi]ntese do contrato|datas e porcentagens de pagamentos|considerando\s+que(?:\s+[ao])?|na\s+qualidade\s+de\s+(?:interveniente(?:\s+anuente)?|anuente|contratante|contratad[ao]))\b|\bdenominad[ao]s?\s+(?:doravante\s*,?\s*)?(?:simplesmente\s*,?\s*)?(?:como\s+|por\s+|de\s+)?(?:\[[^\]]+\]|["“][^"”]+["”]|contratante(?:\s*\d+)?|contratad[ao](?:\s*\d+)?|credor[a]?|devedor[a]?)\s*[.,;]?|(?<!\b(?:cep|bairro|complemento|cpf|rg|cnh|pis|pasep|t[íi]tulo|telefone|cel(?:ular)?|e-?mail|endere[çc]o(?:\s+de\s+entrega)?|logradouro|n[º°o]|n[úu]mero|ag[êe]ncia|conta(?:\s+corrente)?|banco|pix|titular(?:idade)?|cnpj(?:\s*\/\s*(?:me|mf|cpf))?)\s*):|(?<=[\p{Ll}\d\]"”])\s*\.\s+(?=\p{Lu})|,\s+e\s+(?=\p{Lu}{2}[\p{Lu}\s&.'’-]+\b(?:LTDA|LIMITADA|EIRELI|S\s*\.?\s*A\.?|S\s*\/\s*A|EPP|ME)\b))/giu;
 const fusedTitle=/^[\s\S]*?\b(?:INSTRUMENTO PARTICULAR DE RESCIS[ÃA]O CONTRATUAL|(?:(?:PRIMEIRO|SEGUNDO|TERCEIRO|QUARTO|\d+[º°]?)\s+)?(?:TERMO\s+)?(?:ADITIVO\s+AO\s+)?CONTRATO\s+DE\s+PRESTA[ÇC][ÃA]O\s+DE\s+SERVI[ÇC]OS?(?:\s+T[ÉE]CNICOS\s+E\s+CONTINUADOS\s+DE\s+MARKETING\s+E\s+COMUNICA[ÇC][ÃA]O|\s*[-–—]\s*KEDU\s+MARKETING)?)\s+/i;
 /** PDF columns can concatenate a known instrument title with the qualified company name. */
+/** A heading printed with spaced letters ("CO N T R ATO D E …") can precede the name in PDF reading order. */
+export function withoutSpacedHeading(value:string){
+ const tokens=value.trim().split(/\s+/);
+ let i=0;while(i<tokens.length&&tokens[i].length<=3)i++;
+ return i>=6&&i<tokens.length&&tokens.slice(0,i).filter(t=>t.length===1).length>=4?tokens.slice(i).join(' '):value;
+}
 export function qualifiedCompanyName(value:string){
- const name=value.trim().replace(fusedTitle,'').trim();
+ const name=withoutSpacedHeading(value.trim().replace(fusedTitle,'').trim());
  return /^(?:cl[áa]usula\b|par[áa]grafo\b|objeto do contrato\b|datas? de pagamento\b|instrumento particular\b)/i.test(name)?'':name;
 }
 const notName=/^(?:e|de|da|do|com|sede|endere[çc]o|nome fantasia|neste ato|pessoa jur[íi]dica|sociedade|contrato|instrumento|termo|aditivo|realiza[çc][ãa]o|procura[çc][ãa]o)\b/i;

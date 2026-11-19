@@ -1,6 +1,6 @@
 import {receiverBankFields} from './bank-reading.js';
 import {validCnpj} from './registration-reading.js';
-import {extractQualifiedParties} from './qualification-reading.js';
+import {extractQualifiedParties,withoutSpacedHeading} from './qualification-reading.js';
 import {sameRequestedValue} from './request-expectations.js';
 import {fieldsFromLines} from './processing-extract.js';
 export type ContractParty={role:string;name:string;cnpj:string;excerpt:string;aliases?:string[];fields?:Record<string,string[]>};
@@ -49,7 +49,7 @@ export function extractContractParties(text:string):ContractParty[] {
   const unique=[...new Set(ids)];if(unique.length!==1)continue;
   const named=/(?:^|\n)\s*(?:NOME|RAZ[ÃA]O SOCIAL|NOME EMPRESARIAL)\s*:\s*([^\n]+)/i.exec(block)?.[1];
   const first=block.split(/\s*(?:,?\s*inscrit[ao]\b|\bCNPJ\b|\bCPF\b)/i)[0].replace(/\s+/g,' ').trim();
-  const name=(named||first).split(/,\s*(?:pessoa jur[íi]dica|sociedade|mantenedora|inscrit[ao]|com sede)|\s+CNPJ\b/i)[0].replace(/[;,\s]+$/,'').trim();
+  const name=withoutSpacedHeading((named||first).split(/,\s*(?:pessoa jur[íi]dica|sociedade|mantenedora|inscrit[ao]|com sede)|\s+CNPJ\b/i)[0].replace(/[;,\s]+$/,'').trim());
   if(name.length<3||name.length>200||/^(?:CNPJ|ENDERE[ÇC]O)\b/i.test(name))continue;
   const party:ContractParty={role:match[1].toUpperCase(),name,cnpj:unique[0],excerpt:block.slice(0,500).trim()};
   if(!parties.some(p=>canon(p.name)===canon(name)&&p.cnpj===party.cnpj))parties.push(party);
