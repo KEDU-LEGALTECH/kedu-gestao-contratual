@@ -96,7 +96,9 @@ async function fingerprint(did:string) {
   sql.all("SELECT h.matrix_id,h.sequence,h.source,h.id FROM signed_history h JOIN contracts c ON c.id=h.matrix_id WHERE c.school_id=? ORDER BY h.id", d?.school_id),
   sql.all("SELECT h.matrix_id,h.sequence,h.id FROM history_confirmations h JOIN contracts c ON c.id=h.matrix_id WHERE c.school_id=? ORDER BY h.id", d?.school_id),
  ]);
- return sha256(Buffer.from(JSON.stringify(['hybrid-local-ocr-v44-approval-docs-and-party-scoping',resolutions,d,templates,contracts,signed,confirmed])));
+ // Change this tag whenever a conferência rule changes: every open demand is then recalculated
+ // by the next reading cycle, without anyone opening it.
+ return sha256(Buffer.from(JSON.stringify(['v45-manual-correction-and-reading-doubts',resolutions,d,templates,contracts,signed,confirmed])));
 }
 export async function processingSource(did:string) {
  const demand=await sql.one("SELECT * FROM demands WHERE id=?", did);
