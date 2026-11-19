@@ -40,3 +40,7 @@
 .received-review aside li { margin:16px 0; overflow-wrap:anywhere; }
 .received-review aside p { margin:8px 0; font-size:12px; }
 @media(max-width:850px) { .received-review { grid-template-columns:1fr; } .received-preview iframe { height:480px; } }
+.demand-report { display: grid; gap: 12px; }
+.demand-report-next { margin: 0; padding: 10px 12px; border-left: 3px solid var(--blue); background: var(--bg); }
+.demand-report .report-erro > summary { color: #b4433a; }
+.demand-report .report-aviso > summary { color: var(--muted); }

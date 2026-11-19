@@ -31,6 +31,7 @@ import "./simple-demand.css";
 import { ThemeToggle } from "./ThemeToggle";
 import { AttachmentCheck } from "./AttachmentCheck";
 import { SimpleDemand } from "./SimpleDemand";
+import { contractStageActions } from "../shared/demand-report";
 import { Reports } from "./Reports";
 import { ProcessingSummary } from './ProcessingSummary';
 import { ProcessingProgress } from './ProcessingProgress';
@@ -166,13 +167,6 @@ async function api(path: string, body?: any, method?: string) {
   if (!r.ok) throw Object.assign(Error(data.error), { fields: data.fields });
   return data;
 }
-const contractStageActions:Record<string,string> = {
-  "Aguardando elaboração do contrato": "O pedido ainda não tem contrato preenchido. Elabore o instrumento com os documentos enviados; quando o contrato preenchido for anexado no GLPI, ele é conferido automaticamente.",
-  "Consulta ao GLPI incompleta": "Confira os anexos e as aprovações na conversa do GLPI. Se a integração não tiver acesso, solicite a permissão de leitura.",
-  "Contrato não encontrado": "Confira a conversa do chamado. Se o contrato ainda não foi enviado, solicite o instrumento para conferência.",
-  "Contrato não lido": "Abra a demanda para ver se falta baixar o contrato ou concluir a leitura do arquivo.",
-  "Tipo a confirmar": "Abra o anexo indicado na demanda e confira se ele é o instrumento contratual.",
-};
 const Badge = ({ stage }: { stage: string }) => (
   <span className={"badge " + (stage==="Sem erros"?"conference-clean":stage==="Aguardando correção"?"conference-correction":Object.hasOwn(contractStageActions,stage)||["Aguardando análise","Conferência parcial"].includes(stage)?"conference-analysis":"stage-" + stages.indexOf(stage))}>
     <i />
