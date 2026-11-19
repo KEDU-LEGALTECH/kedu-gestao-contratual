@@ -167,6 +167,7 @@ async function api(path: string, body?: any, method?: string) {
   return data;
 }
 const contractStageActions:Record<string,string> = {
+  "Aguardando elaboração do contrato": "O pedido ainda não tem contrato preenchido. Elabore o instrumento com os documentos enviados; quando o contrato preenchido for anexado no GLPI, ele é conferido automaticamente.",
   "Consulta ao GLPI incompleta": "Confira os anexos e as aprovações na conversa do GLPI. Se a integração não tiver acesso, solicite a permissão de leitura.",
   "Contrato não encontrado": "Confira a conversa do chamado. Se o contrato ainda não foi enviado, solicite o instrumento para conferência.",
   "Contrato não lido": "Abra a demanda para ver se falta baixar o contrato ou concluir a leitura do arquivo.",
@@ -1559,7 +1560,7 @@ export function App() {
                                 <div
                                   className={"bar bar-" + listStages.indexOf(s)}
                                   style={{
-                                    background:s==="Sem erros"?"#58a879":s==="Aguardando correção"?"#d86b62":s==="Consulta ao GLPI incompleta"?"#8db9ce":s==="Contrato não lido"?"#cd8848":["Aguardando análise","Contrato não encontrado"].includes(s)?"#d5ab44":s==="Conferência parcial"?"#e2c675":undefined,
+                                    background:s==="Sem erros"?"#58a879":s==="Aguardando correção"?"#d86b62":s==="Consulta ao GLPI incompleta"?"#8db9ce":s==="Aguardando elaboração do contrato"?"#a99bd3":s==="Contrato não lido"?"#cd8848":["Aguardando análise","Contrato não encontrado"].includes(s)?"#d5ab44":s==="Conferência parcial"?"#e2c675":undefined,
                                     height:Math.max(8,(n/largestStage)*72)+"%",
                                   }}
                                 >
@@ -1567,7 +1568,7 @@ export function App() {
                                 </div>
                               </div>
                               <small>
-                                {s==="Consulta ao GLPI incompleta"?"Consulta incompleta":demandStageLabel(s)}
+                                {s==="Consulta ao GLPI incompleta"?"Consulta incompleta":s==="Aguardando elaboração do contrato"?"Aguardando elaboração":demandStageLabel(s)}
                               </small>
                             </button>
                           );
