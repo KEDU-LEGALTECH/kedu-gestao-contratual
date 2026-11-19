@@ -73,7 +73,7 @@ test("rotas do Vercel Cron exigem o segredo e respeitam a pausa da leitura", asy
   // Without configured daily times there is no slot to run.
   const sync = await call("/api/cron/glpi-sync", "Bearer segredo-de-teste-do-cron");
   assert.equal(sync.status, 200);
-  assert.deepEqual(await sync.json(), { synced: false });
+  assert.deepEqual(await sync.json(), { synced: false, reason: "no_times" });
 });
 
 test("API hospedada sem PaddleOCR lê só arquivos digitais e deixa imagens e escaneados aguardando OCR", async () => {

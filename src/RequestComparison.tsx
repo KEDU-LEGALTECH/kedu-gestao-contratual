@@ -1,7 +1,7 @@
 import {readingBlockers} from '../server/processing-status';
 import {FieldEvidence} from './FieldEvidence';
 import {pendingReason} from '../shared/pending-reason';
-const states:Record<string,string>={matches:"Confere",review:"Conferir leitura",different:"Erro — corrigir",missing:"Não lido",ambiguous:"Pedido ambíguo",corrected:"Corrigido na nova versão",not_applicable:"Não se aplica"};
+const states:Record<string,string>={matches:"Confere",review:"Conferir leitura",different:"Erro — corrigir",missing:"Não lido",ambiguous:"Pedido ambíguo",corrected:"Corrigido manualmente",not_applicable:"Não se aplica"};
 const order:Record<string,number>={different:0,ambiguous:1,missing:2,review:3,corrected:4,matches:5,not_applicable:6};
 function missingMessage(row:any){if(row.missingReason==='not_printed')return 'O arquivo foi conferido visualmente e este dado não está informado. Solicite um documento com a informação; não é falha de OCR.';return row.missingReason==="awaiting_version"?"O chamado foi atualizado. Aguardando obter e conferir os anexos da versão atual; isso não significa que o campo esteja ausente no documento.":row.missingReason==="not_sent"?`Envie o documento de origem: ${row.expectedDocument}.`:row.missingReason==="source_unidentified"?`Identifique o anexo que contém este campo. Fonte esperada: ${row.expectedDocument}.`:row.missingReason==="unreadable"?`O anexo foi enviado, mas a leitura falhou ou ficou parcial. Releia ou envie uma cópia legível de ${row.expectedDocument}.`:`O campo não foi encontrado no texto lido. Confira o original${row.expectedDocument?" — "+row.expectedDocument:""}.`;}
 /** A person decides here what the reader cannot. The note goes to the audit log; nothing is approved automatically. */
@@ -28,7 +28,7 @@ function action(r:any){
  if(r.status==='review'&&r.reviewReason?.message)return <p>{r.reviewReason.message}</p>;
  if(r.status==='review')return <p>{r.partlyMatches?"O documento traz mais de um valor e um deles confere com o GLPI. Confirme qual vale para este contrato.":r.matchesReference?"O valor coincide com o GLPI; falta confirmar a leitura no original.":"A leitura não é conclusiva. Confira o trecho no original antes de considerar o campo certo ou errado."}</p>;
  if(r.status==='ambiguous')return <p>O próprio chamado informa valores diferentes. Confirme qual deve ser usado.</p>;
- if(r.status==='corrected')return <p>Nova versão: <strong>{display(r.field,r.used)}</strong>. O original foi preservado.</p>;
+ if(r.status==='corrected')return <p>Transcrição corrigida no portal: <strong>{display(r.field,r.used)}</strong>, igual ao pedido. O original foi preservado.</p>;
  return null;
 }
 function Rows({rows,did,resolve,busy}:{rows:any[];did?:string;resolve?:Resolve;busy?:boolean}){
