@@ -47,3 +47,30 @@ test("dúvida de leitura nunca aceita o valor do GLPI e respeita documento digit
   assert.equal(readingDoubt("remuneracao", "5,00%", "4,58%", ["Taxa: 5,00%"], true), undefined);
   assert.equal(readingDoubt("razaoSocial", "Escola A", "Escola B", ["Escola A"], true), undefined);
 });
+
+test("nome contido no outro vai para conferência; nomes diferentes continuam divergentes", async () => {
+  const { containedName } = await import("../server/reading-doubt.js");
+  assert.equal(containedName("IENEC", "COLÉGIO IENEC"), true);
+  assert.equal(containedName("Escola Educriart LTDA", "Educriart"), true);
+  assert.equal(containedName("EDUCANDARIO SEMEAR MAIS LTDA", "EDUCANDÁRIO SEMEAR"), true);
+  assert.equal(containedName("FREME COMÉRCIO DE ALIMENTOS LTDA.", "(ISS RESTRO) FREME COMERCIO DE ALIMENTOS"), true);
+  assert.equal(containedName("POLIEDRO SISTEMA DE ENSINO LTDA.", "COLEGIO TIRADENTES"), false);
+  assert.equal(containedName("GENESIS CENTRO EDUCACIONAL LTDA", "ESCOLA CONFESSIONAL CRISTA GENESIS"), false, "palavras fora de ordem não são o mesmo nome");
+  assert.equal(containedName("ESCOLA", "ESCOLA PEQUENO PRINCIPE"), false, "palavra genérica não identifica a organização");
+  assert.equal(readingDoubt("nomeFantasia", "IENEC", "COLÉGIO IENEC", [], false)?.code, "name_contained");
+});
+
+test("conta lida pela metade numa foto vai para conferência, nunca em texto digital", () => {
+  assert.equal(readingDoubt("conta", "5726984", "572698416-8", [], true)?.code, "ocr_truncated");
+  assert.equal(readingDoubt("conta", "5726984", "572698416-8", [], false), undefined);
+  assert.equal(readingDoubt("conta", "5726985", "572698416-8", [], true), undefined);
+});
+
+test("título com letras espaçadas e cláusula não viram nome nem endereço", async () => {
+  const { withoutSpacedHeading, qualifiedCompanyName } = await import("../server/qualification-reading.js");
+  const { plausibleFieldValue } = await import("../server/field-plausibility.js");
+  assert.equal(qualifiedCompanyName("CO N T R ATO D E PAT R O C Í N I O E D U S U M M I T MASTER SOLUÇÕES EDUCACIONAIS LTDA"), "MASTER SOLUÇÕES EDUCACIONAIS LTDA");
+  assert.equal(withoutSpacedHeading("E E M ESCOLA DO SOL"), "E E M ESCOLA DO SOL", "siglas curtas no nome são preservadas");
+  assert.equal(plausibleFieldValue("endereco", "CLÁUSULA PRIMEIRA. A sociedade passa a exercer suas atividades no seguinte endereço sito à RUA"), false);
+  assert.equal(plausibleFieldValue("endereco", "Rua Furnas, 66, Jose e Maria"), true);
+});

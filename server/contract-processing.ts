@@ -407,12 +407,15 @@ export async function buildProcessingPlan(did:string) {
    if(expected?.length!==1||Object.hasOwn(overrides,key))continue;
    const found=distinctRequestedValues(key,(reading.fields?.[key]||[]).map((v:string)=>normalizeValue(key,v)).filter((v:string)=>v&&plausibleFieldValue(key,v)));
    if(!found.length||found.some(v=>sameRequestedValue(key,v,expected[0])))continue;
-   const message=`O comprovante bancário "${f.name}" informa ${found.join('; ')}, diferente do GLPI (${expected[0]}). Confira e corrija o dado bancário.`;
+   // A photo of a banking screen can split one number over two lines: that is a reading doubt, not a divergence.
+   const doubt=found.length===1?readingDoubt(key,found[0],expected[0],[reading.text||''],/OCR/i.test(reading.method||'')&&!hasDigitalField(reading,key,found[0])):undefined;
+   const message=doubt?.review?doubt.message:`O comprovante bancário "${f.name}" informa ${found.join('; ')}, diferente do GLPI (${expected[0]}). Confira e corrija o dado bancário.`;
    const detail={found:found.join('; '),expected:expected[0],source:f.name};
+   const status=doubt?.review?{status:'review',readingPending:true,reviewReason:{code:doubt.code,message:doubt.message}}:{status:'different',readingPending:false};
    const comparison=comparisons.find(c=>c.field===key);
    if(comparison?.status==='different')continue;
-   if(comparison)Object.assign(comparison,detail,{status:'different',readingPending:false,matchesReference:false,missingReason:undefined,message});
-   else comparisons.push({field:key,label:inputLabels[key]||key,status:'different',readingPending:false,matchesReference:false,...detail,message});
+   if(comparison)Object.assign(comparison,detail,status,{matchesReference:false,missingReason:undefined,message});
+   else comparisons.push({field:key,label:inputLabels[key]||key,...status,matchesReference:false,...detail,message});
    const issue=issues.find(i=>i.field===key);
    if(issue)Object.assign(issue,detail,{message});else add(key,message,detail);
   }

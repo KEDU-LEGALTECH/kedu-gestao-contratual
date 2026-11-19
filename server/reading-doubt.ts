@@ -103,12 +103,41 @@ export function confusedDigit(found: string, expected: string) {
   return confusable.has(pair) ? { read: a[at[0]], requested: b[at[0]] } : undefined;
 }
 
+const nameKeys = new Set(["razaoSocial", "nomeFantasia"]);
+const legalForms = new Set(["ltda", "limitada", "me", "epp", "eireli", "sa", "ss"]);
+// Words shared by many schools; they never identify an organization on their own.
+const genericWords = new Set(["escola", "colegio", "centro", "educacional", "educacionais", "ensino", "instituto",
+  "organizacao", "servicos", "sistema", "de", "da", "do", "das", "dos", "e"]);
+const nameTokens = (name: string) => name.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase()
+  .replace(/\([^)]*\)/g, " ").replace(/\bs\s*\/\s*a\b/g, "sa").replace(/[^a-z0-9]+/g, " ").trim().split(" ")
+  .filter(token => token && !legalForms.has(token));
+/** One name is the other with extra words around it ("IENEC" in "COLÉGIO IENEC"), ignoring legal form and accents. */
+export function containedName(a: string, b: string) {
+  const [shorter, longer] = [nameTokens(a), nameTokens(b)].sort((x, y) => x.length - y.length);
+  if (!shorter.some(token => token.length >= 4 && !genericWords.has(token))) return false;
+  for (let i = 0; i + shorter.length <= longer.length; i++)
+    if (shorter.every((token, j) => longer[i + j] === token)) return true;
+  return false;
+}
+
 export type ReadingDoubt = { code: string; message: string; review: boolean };
 /** Why a value that differs from the request may be a misreading, given the texts that supplied it.
  * `ocr` is true when no digital text of the document supplies the value. */
 export function readingDoubt(key: string, found: string, expected: string, texts: string[], ocr: boolean): ReadingDoubt | undefined {
+  if (sameRequestedValue(key, found, expected)) return undefined;
+  if (nameKeys.has(key)) return containedName(found, expected)
+    ? { code: "name_contained", review: true,
+        message: `"${found}" e "${expected}": um nome contém o outro. Pode ser o nome comercial e a razão social da mesma organização. Confira pelo CNPJ e pelo original antes de solicitar correção.` }
+    : undefined;
+  if (key === "conta") {
+    const a = found.replace(/\D/g, ""), b = expected.replace(/\D/g, "");
+    return ocr && a.length >= 4 && b.length > a.length && b.startsWith(a)
+      ? { code: "ocr_truncated", review: true,
+          message: `A conta lida (${found}) é o começo da conta pedida (${expected}). A leitura pode ter separado o número em duas linhas: confira a conta completa no original.` }
+      : undefined;
+  }
   const kind = kindOf(key);
-  if (!kind || sameRequestedValue(key, found, expected)) return undefined;
+  if (!kind) return undefined;
   const spelled = [...new Set(texts.flatMap(text => spelledNextTo(kind, text, found)))];
   if (spelled.length === 1 && sameRequestedValue(key, spelled[0], expected)) {
     return ocr
