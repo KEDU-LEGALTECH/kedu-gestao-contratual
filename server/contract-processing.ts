@@ -98,7 +98,7 @@ async function fingerprint(did:string) {
  ]);
  // Change this tag whenever a conferência rule changes: every open demand is then recalculated
  // by the next reading cycle, without anyone opening it.
- return sha256(Buffer.from(JSON.stringify(['v46-failed-triage-reading',resolutions,d,templates,contracts,signed,confirmed])));
+ return sha256(Buffer.from(JSON.stringify(['v47-awaiting-contract-drafting',resolutions,d,templates,contracts,signed,confirmed])));
 }
 export async function processingSource(did:string) {
  const demand=await sql.one("SELECT * FROM demands WHERE id=?", did);
@@ -266,7 +266,11 @@ export async function buildProcessingPlan(did:string) {
  }
  if(!files.length&&!pendingContracts.length&&unidentified.length)for(const doc of unidentified)add('file:'+doc.id,'A identificação inicial não confirmou que este anexo é um contrato. Abra o arquivo na conversa do GLPI para verificar o tipo.',{label:'Tipo a confirmar',source:doc.name});
  if(!files.length&&!pendingContracts.length&&!unidentified.length){
-  if(incompleteCoverage)
+  const typeUnknown=unavailable.some((doc:any)=>contractReadingScope(doc.name||'',cachedByDocument.get(String(doc.id))).kind==='unknown');
+  // A request for Kedu to draft the instrument has no filled contract yet: only an analysis request must bring one.
+  if(!typeUnknown&&!/an[áa]lise contratual/i.test(demandType+' '+raw.title))
+   add('contractMissing',`Pedido de elaboração: os anexos são documentos de apoio, propostas, relatórios ou modelos em branco, sem contrato preenchido para conferir.${incompleteCoverage?' As aprovações do chamado não puderam ser consultadas no GLPI.':''} Quando o contrato preenchido for anexado, ele é conferido automaticamente.`,{label:'Aguardando elaboração do contrato',missingReason:'awaiting_drafting'});
+  else if(incompleteCoverage)
    add('contractMissing','A consulta do GLPI deixou anexos ou aprovações por verificar. Confira a conversa do chamado e o acesso da integração antes de pedir o reenvio.',{label:'Consulta ao GLPI incompleta',missingReason:'coverage_partial'});
   else if(unavailable.some((doc:any)=>contractReadingScope(doc.name||'',cachedByDocument.get(String(doc.id))).kind==='unknown'))
    add('contractMissing','Ainda há anexos cujo tipo precisa ser identificado. Abra os arquivos na conversa do GLPI.',{label:'Tipo a confirmar',missingReason:'source_unidentified'});
@@ -803,7 +807,7 @@ const sqliteSummary=`SELECT d.id AS demand_id,d.stage,t.hash,p.status,p.ticket_h
   json_array_length(p.result,'$.issues') AS issues,
   CASE WHEN p.status='Aguardando análise' THEN (
    SELECT CASE
-    WHEN json_extract(issue.value,'$.field')='contractMissing' AND (
+    WHEN json_extract(issue.value,'$.field')='contractMissing' AND json_extract(issue.value,'$.label')<>'Aguardando elaboração do contrato' AND (
      json_extract(t.payload,'$.timelineCoverage')='partial'
      OR json_extract(t.payload,'$.approvalCoverage')='partial'
      OR json_extract(t.payload,'$.documentsAvailable')=0
@@ -829,7 +833,7 @@ const postgresSummary=`SELECT d.id AS demand_id,d.stage,t.hash,p.status,p.ticket
   jsonb_array_length(p.result::jsonb->'issues') AS issues,
   CASE WHEN p.status='Aguardando análise' THEN (
    SELECT CASE
-    WHEN issue->>'field'='contractMissing' AND (
+    WHEN issue->>'field'='contractMissing' AND issue->>'label'<>'Aguardando elaboração do contrato' AND (
      t.payload::jsonb->>'timelineCoverage'='partial'
      OR t.payload::jsonb->>'approvalCoverage'='partial'
      OR t.payload::jsonb->'documentsAvailable' IN ('false'::jsonb,'0'::jsonb)

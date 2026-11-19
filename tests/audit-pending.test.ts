@@ -20,8 +20,8 @@ const {pendingReason}=await import('../shared/pending-reason.js');
 await sql.run("INSERT INTO users VALUES('u','Teste','u@test.local','Administrador','unused')");
 await sql.run("INSERT INTO schools VALUES('s','Escola Teste Ltda','Escola Teste Ltda','11.444.777/0001-61','','')");
 const VALID='11.444.777/0001-61';
-async function demand(id:string,documents:any[],{cnpj=VALID,status='2',coverage={}}:{cnpj?:string;status?:string;coverage?:any}={}){
- const raw={externalId:id,title:'JURIDICO : SOLICITAÇÃO DE CONTRATO PARA ESCOLAS',status,content:`<p>RAZÃO SOCIAL: Escola Teste Ltda</p><p>CNPJ: ${cnpj}</p>`,followups:[],documents,documentsAvailable:true,...coverage};
+async function demand(id:string,documents:any[],{cnpj=VALID,status='2',coverage={},title='JURIDICO : SOLICITAÇÃO DE CONTRATO PARA ESCOLAS'}:{cnpj?:string;status?:string;coverage?:any;title?:string}={}){
+ const raw={externalId:id,title,status,content:`<p>RAZÃO SOCIAL: Escola Teste Ltda</p><p>CNPJ: ${cnpj}</p>`,followups:[],documents,documentsAvailable:true,...coverage};
  await sql.run("INSERT INTO demands(id,glpi_id,school_id,type,stage,priority,owner,due,data,created) VALUES(?,?,?,'Contrato de garantia','Recebido','Normal','u','','{}',?)", id, id, 's', now());
  await sql.run('INSERT INTO glpi_tickets VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', id, 'real', raw.title, status, 'hash-'+id, JSON.stringify(raw), '{}', 'vinculado', id, now(), now(), null);
  await ensureProcessing(id);
@@ -61,7 +61,7 @@ test('Conferência contratual: apoio com valores iguais não substitui o contrat
  await demand('only-support',[{id:'1',name:'Contrato social.pdf'}]);
  await file('only-support','1','Contrato social.pdf',{...contract,text:'CONTRATO SOCIAL\n'+contract.text});
  const plan=(await buildProcessingPlan('only-support'))!;
- assert.equal(plan.issues.find(i=>i.field==='contractMissing')?.label,'Contrato não encontrado');
+ assert.equal(plan.issues.find(i=>i.field==='contractMissing')?.label,'Aguardando elaboração do contrato');
  assert.equal(plan.comparisons.length,0);
  assert.equal(plan.files[0].contractForComparison,false);
 });
@@ -89,7 +89,7 @@ test('Fila contratual: planilha e aditivo societário ficam disponíveis sem dow
  await file(id,'3','Termo Anexo.pdf',{text:'ANEXO I - Demonstrativo de Antecipação'});
  await processContract(id,null,async()=>{assert.fail('Anexo de apoio não deve ser baixado pela fila');});
  const plan=(await buildProcessingPlan(id))!;
- assert.equal(plan.issues.find(i=>i.field==='contractMissing')?.label,'Contrato não encontrado');
+ assert.equal(plan.issues.find(i=>i.field==='contractMissing')?.label,'Aguardando elaboração do contrato');
  assert.equal(plan.files.length,1);
  const progress=await processingFileProgress(id);
  assert.deepEqual(progress.files.map((f:{state:string})=>f.state),['skipped','skipped','skipped']);
@@ -222,7 +222,8 @@ test('Cobertura incompleta não afirma que o arquivo não foi enviado',async ()=
  assert.equal(evidence.reason,'coverage_partial');assert.doesNotMatch(evidence.message,/não enviado/);
  assert.equal(pendingReason({status:'missing',missingReason:'coverage_partial'})!.label,'Cobertura parcial');
  assert.equal(pendingReason({status:'missing',missingReason:'download_pending'})!.label,'Arquivo ainda não importado');
- await demand('coverage',[],{coverage:{approvalCoverage:'partial',timelineCoverage:'complete'}});
+ // An analysis request must bring the contract; a drafting request does not have one yet.
+ await demand('coverage',[],{title:'JURIDICO : SOLICITAÇÃO DE ANÁLISE CONTRATUAL',coverage:{approvalCoverage:'partial',timelineCoverage:'complete'}});
  const plan=(await buildProcessingPlan('coverage'))!;
  assert.equal(plan.comparisons.length,0);
  const issue=plan.issues.find(i=>i.field==='contractMissing')!;
@@ -230,8 +231,13 @@ test('Cobertura incompleta não afirma que o arquivo não foi enviado',async ()=
  assert.equal(issue.missingReason,'coverage_partial');
  await sql.run("UPDATE contract_processing SET status='Aguardando análise',result=? WHERE demand_id='coverage'", JSON.stringify({issues:[{field:'contractMissing',label:'Contrato não encontrado',message:'Ainda há fontes por consultar.'}]}));
  assert.equal((await processingSummary('coverage'))?.contractStage,'Consulta ao GLPI incompleta');
- await demand('coverage-ok',[],{coverage:{approvalCoverage:'not_required',timelineCoverage:'complete'}});
+ await demand('coverage-ok',[],{title:'JURIDICO : SOLICITAÇÃO DE ANÁLISE CONTRATUAL',coverage:{approvalCoverage:'not_required',timelineCoverage:'complete'}});
  assert.equal((await buildProcessingPlan('coverage-ok'))!.issues.find(i=>i.field==='contractMissing')?.label,'Contrato não encontrado');
+ await demand('coverage-drafting',[],{coverage:{approvalCoverage:'partial',timelineCoverage:'complete'}});
+ const drafting=(await buildProcessingPlan('coverage-drafting'))!.issues.find(i=>i.field==='contractMissing')!;
+ assert.equal(drafting.label,'Aguardando elaboração do contrato');assert.match(drafting.message,/aprovações do chamado não puderam ser consultadas/);
+ await sql.run("UPDATE contract_processing SET status='Aguardando análise',result=? WHERE demand_id='coverage-drafting'", JSON.stringify({issues:[drafting]}));
+ assert.equal((await processingSummary('coverage-drafting'))?.contractStage,'Aguardando elaboração do contrato');
 });
 test('Formato sem leitor não é repetido e tem motivo próprio',()=>{
  const problem='Formato sem leitor disponível. O original foi preservado; envie PDF.';
@@ -341,7 +347,7 @@ test('Triagem contratual: reconhece contratos com prefixo no nome, move anexos n
  await file('read-non-contract','2','Boleto_Mensalidade.pdf',{text:'Boleto bancário vencimento 10/11/2026 valor R$ 500,00',triageOnly:true});
  const nonContractPlan=(await buildProcessingPlan('read-non-contract'))!;
  assert.ok(!nonContractPlan.issues.some((i:any)=>i.label==='Tipo a confirmar'));
- assert.equal(nonContractPlan.issues.find((i:any)=>i.field==='contractMissing')?.label,'Contrato não encontrado');
+ assert.equal(nonContractPlan.issues.find((i:any)=>i.field==='contractMissing')?.label,'Aguardando elaboração do contrato');
 
  // 3. Contrato não lido informs the exact cause (e.g. closed GLPI ticket, download failure with HTTP detail, or waiting in queue)
  await demand('unreadable-closed',[{id:'1',name:'Contrato_Garantia.pdf'}],{status:'5'});
