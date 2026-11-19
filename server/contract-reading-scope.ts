@@ -49,7 +49,9 @@ export function contractReadingScope(name:string,file?:Cached){
   return {kind:'support' as const,needsWork:false};
  if(screenshotName.test(name.trim())&&text.trim().length>=20&&!file?.problem&&!reading.problem&&!reading.incomplete&&!reading.transient)
   return {kind:'support' as const,needsWork:false};
- const finished=(reading.triageOnly&&!reading.transient)||!needsReadingRecovery(file)||!supportedReading.test(name);
+ // A failed identification (no text) says nothing about the document: it still needs a full reading.
+ const failedTriage=reading.triageOnly&&!text.trim()&&!!(file?.problem||reading.problem);
+ const finished=(reading.triageOnly&&!reading.transient&&!failedTriage)||!needsReadingRecovery(file)||!supportedReading.test(name);
  return {kind:'unknown' as const,needsWork:!finished};
 }
 
