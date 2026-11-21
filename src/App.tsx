@@ -32,6 +32,7 @@ import { ThemeToggle } from "./ThemeToggle";
 import { AttachmentCheck } from "./AttachmentCheck";
 import { SimpleDemand } from "./SimpleDemand";
 import { contractStageActions } from "../shared/demand-report";
+import { AccessRequests } from "./AccessRequests";
 import { Reports } from "./Reports";
 import { ProcessingSummary } from './ProcessingSummary';
 import { ProcessingProgress } from './ProcessingProgress';
@@ -204,6 +205,7 @@ export function App() {
     [busy, setBusy] = useState(false),
     [ready, setReady] = useState(false),
     [showDemoNotice, setShowDemoNotice] = useState(false),
+    [signup, setSignup] = useState<"" | "form" | "sent">(""),
     [query, setQuery] = useState(""),
     [stage, setStage] = useState(""),
     [owner, setOwner] = useState(""),
@@ -338,6 +340,42 @@ export function App() {
             <ShieldCheck /> Central de gestão contratual
           </div>
         </div>
+        {signup ? (
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const b = Object.fromEntries(new FormData(e.currentTarget));
+              if (b.password !== b.confirm) return setError("As senhas não conferem.");
+              setBusy(true);
+              try {
+                await api("/signup", { name: b.name, email: b.email, password: b.password });
+                setSignup("sent");
+                setError("");
+              } catch (e: any) {
+                setError(e.message);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            <span className="eyebrow">Bem-vindo à Kedu</span>
+            <h2>Pedir acesso</h2>
+            {signup === "sent" ? (
+              <p role="status">Pedido enviado. Um administrador vai analisar e liberar o seu acesso; depois disso, entre com o e-mail e a senha que você cadastrou.</p>
+            ) : (
+              <>
+                <p>A conta só funciona depois da aprovação de um administrador.</p>
+                <label>Nome completo<input name="name" required minLength={3} maxLength={120} /></label>
+                <label>E-mail<input name="email" type="email" required maxLength={200} /></label>
+                <label>Senha (mínimo 12 caracteres)<input name="password" type="password" required minLength={12} maxLength={200} autoComplete="new-password" /></label>
+                <label>Confirme a senha<input name="confirm" type="password" required minLength={12} maxLength={200} autoComplete="new-password" /></label>
+                {error && <div className="alert error" role="alert">{error}</div>}
+                <button className="primary" disabled={busy}>{busy ? "Enviando…" : "Enviar pedido"}<ArrowUpRight size={17} /></button>
+              </>
+            )}
+            <button type="button" className="text-button" onClick={() => { setSignup(""); setError(""); }}>Voltar para o login</button>
+          </form>
+        ) : (
         <form
           onSubmit={async (e) => {
             e.preventDefault();
@@ -382,6 +420,7 @@ export function App() {
             {busy ? "Entrando…" : "Entrar na central"}
             <ArrowUpRight size={17} />
           </button>
+          <button type="button" className="text-button" onClick={() => { setSignup("form"); setError(""); }}>Não tem conta? Pedir acesso</button>
           {showDemoNotice && (
             <small>
               Ambiente demonstrativo • Dados fictícios
@@ -390,6 +429,7 @@ export function App() {
             </small>
           )}
         </form>
+        )}
       </div>
     );
   if (!data)
@@ -598,6 +638,9 @@ export function App() {
               )}
               {title === "Chamados GLPI" && data.metrics.glpiTriage > 0 && (
                 <span className="nav-count">{data.metrics.glpiTriage}</span>
+              )}
+              {title === "Configurações" && can("settings") && data.users?.some((u: any) => u.pending) && (
+                <span className="nav-count" title="Pedidos de acesso">{data.users.filter((u: any) => u.pending).length}</span>
               )}
             </button>
           ))}
@@ -1995,6 +2038,7 @@ export function App() {
                         </button>
                       )}
                     </div>
+                    {can("settings") && <AccessRequests users={data.users} api={api} action={action} busy={busy} />}
                     <div className="table-scroll">
                       <table>
                         <thead>
@@ -2006,7 +2050,7 @@ export function App() {
                           </tr>
                         </thead>
                         <tbody>
-                          {data.users.map((u: any) => (
+                          {data.users.filter((u: any) => !u.pending).map((u: any) => (
                             <tr key={u.id}>
                               <td>{u.name}</td>
                               <td>{u.email}</td>

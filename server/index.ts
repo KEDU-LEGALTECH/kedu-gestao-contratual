@@ -72,6 +72,7 @@ import { fieldLabels as officialInputs } from "../shared/official-fields.js";
 import { officialVisible } from "../shared/request-policy.js";
 import { startBackups } from "./backup-service.js";
 import { finalization, finalizeDemand, finalOutcomes, reopenDemand } from "./demand-finalization.js";
+import { approveAccess, isPending, rejectAccess, requestAccess } from "./signup.js";
 import {
   registerGovernance,
   seedCatalog,
@@ -160,7 +161,7 @@ app.post(
   "/api/login",
   rateLimit({ windowMs: 900000, limit: 20 }),
   async (req, res) => {
-    const u = await sql.one("SELECT * FROM users WHERE email=?", String(req.body.email));
+    const u = await sql.one("SELECT * FROM users WHERE lower(email)=lower(?)", String(req.body.email).trim());
     if (
       process.env.NODE_ENV === "production" &&
       u?.email.endsWith("@demo.kedu.local")
@@ -169,7 +170,9 @@ app.post(
     if (!u || !verify(String(req.body.password), u.password))
       return res.status(401).json({ error: "E-mail ou senha inválidos." });
     if (await sql.one("SELECT user_id FROM user_access WHERE user_id=?", u.id))
-      return res.status(403).json({ error: "Acesso desativado. Fale com um administrador do portal." });
+      return res.status(403).json({ error: await isPending(u.id)
+        ? "Seu pedido de acesso ainda aguarda a aprovação de um administrador."
+        : "Acesso desativado. Fale com um administrador do portal." });
     const token = randomBytes(32).toString("hex");
     await sql.run("INSERT INTO sessions VALUES(?,?,?)", token, u.id, Date.now() + 8 * 3600000);
     res.cookie("session", token, {
@@ -186,6 +189,11 @@ app.post(
     });
   },
 );
+// Anyone can ask for an account; it only signs in after an administrator approves it.
+app.post("/api/signup", rateLimit({ windowMs: 3600000, limit: 5 }), async (req, res) => {
+  await requestAccess(req.body);
+  res.json({ ok: true });
+});
 // A scheduler (Supabase pg_cron, see deploy/supabase-cron.sql, or Vercel Cron) runs the background work
 // without a long-running process. It sends "Authorization: Bearer <CRON_SECRET>"; without CRON_SECRET
 // these routes stay closed.
@@ -274,7 +282,7 @@ app.get("/api/bootstrap", async (req: any, res) => {
           : ""), ...(req.user.role === "Solicitante" ? [req.user.id] : [])),
     req.user.role === "Solicitante"
         ? sql.all("SELECT id,name,role,email FROM users WHERE id=?", req.user.id)
-        : sql.all("SELECT u.id,u.name,u.role,u.email,CASE WHEN a.user_id IS NULL THEN 1 ELSE 0 END AS active FROM users u LEFT JOIN user_access a ON a.user_id=u.id"),
+        : sql.all("SELECT u.id,u.name,u.role,u.email,CASE WHEN a.user_id IS NULL THEN 1 ELSE 0 END AS active,CASE WHEN s.key IS NULL THEN 0 ELSE 1 END AS pending,a.disabled_at AS requested_at FROM users u LEFT JOIN user_access a ON a.user_id=u.id LEFT JOIN settings s ON s.key='signupPending:'||u.id"),
     sql.all("SELECT t.*,c.document_type,c.subtype,c.demonstration,EXISTS(SELECT 1 FROM template_sources ts WHERE ts.version_id=v.id) AS official,v.id AS version_id,v.version,CASE WHEN EXISTS(SELECT 1 FROM inactive_template_versions iv WHERE iv.version_id=v.id) THEN 'inativo' ELSE v.status END AS status FROM templates t JOIN template_versions v ON v.template_id=t.id LEFT JOIN template_catalog c ON c.version_id=v.id"),
     sql.all("SELECT * FROM sync_logs ORDER BY created DESC LIMIT 20"),
     sql.all("SELECT * FROM settings WHERE key IN ('legalPolicies','glpiMapping')"),
@@ -1207,6 +1215,14 @@ app.put("/api/users/:id/password", async (req: any, res) => {
   await sql.run("UPDATE users SET password=? WHERE id=?", hash(password), u.id);
   await sql.run("DELETE FROM sessions WHERE user_id=?", u.id);
   await auditAsync(null, req.user.id, "Senha de usuário redefinida por administrador; sessões revogadas: " + u.id);
+  res.json({ ok: true });
+});
+app.post("/api/users/:id/approve", async (req: any, res) => {
+  await approveAccess(req.user, req.params.id, String(req.body.role || ""));
+  res.json({ ok: true });
+});
+app.post("/api/users/:id/reject", async (req: any, res) => {
+  await rejectAccess(req.user, req.params.id);
   res.json({ ok: true });
 });
 app.put("/api/users/:id/access", async (req: any, res) => {
