@@ -13,3 +13,11 @@ test("identificação inicial que falhou sem texto volta para a leitura completa
   assert.equal(contractReadingScope("notificacao.pdf", read).needsWork, false);
 });
 
+
+test("identificação inconclusiva pede a leitura completa; foto lida por inteiro e áudio viram apoio", () => {
+  const triage = cached({ triageOnly: true, text: "Foto da fachada da escola", method: "Identificação inicial" });
+  assert.equal(contractReadingScope("photo_2026-11-18.jpg", triage).needsWork, true);
+  const full = cached({ text: "Comprovante de inscrição municipal da escola COC Bilíngue, emitido em 2026, situação ativa.", method: "OCR de imagem" });
+  assert.deepEqual(contractReadingScope("photo_2026-11-18.jpg", full), { kind: "support", needsWork: false });
+  assert.deepEqual(contractReadingScope("WhatsApp Ptt 2026-10-14 at 10.09.33.ogg", cached({ triageOnly: true, text: "" })), { kind: "support", needsWork: false });
+});
