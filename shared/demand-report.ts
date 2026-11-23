@@ -49,7 +49,7 @@ export function demandReport(job: any, intake?: any): DemandReport | undefined {
   for (const f of (job.files || []).filter((f: any) => f.readingScope === "unknown" && !named.has(f.name)))
     items.push({ kind: "pendencia", title: "Tipo do anexo a identificar", source: f.name, detail: f.problem
       ? (/fake worker|cannot find module|tempor/i.test(f.problem) ? "A leitura falhou por um problema temporário do servidor; o portal vai ler o arquivo de novo." : `A leitura falhou: ${String(f.problem).slice(0, 160)}`)
-      : f.method === "Identificação inicial" ? "O anexo passou só pela identificação inicial e aguarda a leitura completa. Fotos e digitalizações são lidas pelo OCR às 07h40, 12h40 e 16h40." : "Abra o anexo e confira se ele é o contrato." });
+      : f.method === "Identificação inicial" ? "O anexo passou só pela identificação inicial e aguarda a leitura completa. Fotos e digitalizações são lidas pelo OCR de hora em hora, das 07h40 às 19h40." : "Abra o anexo e confira se ele é o contrato." });
   if (intake?.approvalCoverage === "partial")
     items.push({ kind: "aviso", title: "Aprovações do GLPI não consultadas", detail: "A integração não tem permissão para ler as aprovações deste chamado. Se o contrato foi enviado numa aprovação, ele ainda não aparece aqui." });
   if (intake?.documentsAvailable === false)

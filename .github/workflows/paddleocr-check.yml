@@ -7,9 +7,10 @@ on:
         description: Executar o leitor somente no ambiente OCR autorizado
         type: boolean
         default: false
-  # Uns 40 minutos depois de cada sincronização do GLPI (07h, 12h e 16h de Brasília; o cron é em UTC).
+  # De hora em hora, das 07h40 às 19h40 de Brasília (o cron é em UTC). O GitHub atrasa ou descarta
+  # agendamentos em horários cheios; com mais horários a fila é lida no mesmo dia. Fila vazia termina em segundos.
   schedule:
-    - cron: '40 10,15,19 * * *'
+    - cron: '40 10-22 * * *'
 
 permissions:
   contents: read
