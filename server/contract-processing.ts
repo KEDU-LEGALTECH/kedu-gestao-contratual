@@ -83,6 +83,8 @@ export const processingStates=["Analisando","Aguardando análise","Conferência 
 type Issue={field:string;label:string;message:string;found?:string;expected?:string;source?:string;missingReason?:string};
 /** A registered human resolution applies only while the ticket shows the same reference or finding. */
 export const resolutionSignature=(field:string,value:string)=>sha256(Buffer.from(JSON.stringify([field,value])));
+export const divergenceField=(field:string)=>'divergence:'+field;
+export const divergenceSignature=(field:string,found:string,expected:string)=>resolutionSignature(divergenceField(field),JSON.stringify([found,expected]));
 const closedInGlpi=(status:unknown)=>['5','6'].includes(String(status));
 const running=new Set<string>();
 const activeFiles=new Map<string,{documentId:string;targeted?:boolean;page?:number}>();
@@ -98,7 +100,7 @@ async function fingerprint(did:string) {
  ]);
  // Change this tag whenever a conferência rule changes: every open demand is then recalculated
  // by the next reading cycle, without anyone opening it.
- return sha256(Buffer.from(JSON.stringify(['v47-awaiting-contract-drafting',resolutions,d,templates,contracts,signed,confirmed])));
+ return sha256(Buffer.from(JSON.stringify(['v48-accepted-divergences',resolutions,d,templates,contracts,signed,confirmed])));
 }
 export async function processingSource(did:string) {
  const demand=await sql.one("SELECT * FROM demands WHERE id=?", did);
@@ -175,7 +177,7 @@ export async function buildProcessingPlan(did:string) {
  const filesWithQualifiedParties=new Set<string>();
  // Reads that depend only on the demand and ticket version, fetched together.
  const [resolutions,allFiles,storedRows,reviewRows,fieldReviewRows]=await Promise.all([
-  sql.all('SELECT * FROM processing_resolutions WHERE demand_id=?', did),
+  sql.all('SELECT r.*,u.name AS author_name FROM processing_resolutions r LEFT JOIN users u ON u.id=r.author WHERE r.demand_id=?', did),
   filesFor(did,ticket.hash),
   sql.all('SELECT DISTINCT document_id FROM processing_files WHERE demand_id=?',did),
   sql.all('SELECT r.file_id,r.extraction_hash FROM processing_file_reviews r JOIN processing_files f ON f.id=r.file_id WHERE f.demand_id=?',did),
@@ -396,7 +398,7 @@ export async function buildProcessingPlan(did:string) {
   const related=comparisons.filter(c=>request[c.field]?.length&&(candidates[c.field]||[]).some(v=>v.fileId===f.id));
   // A completely read file that supplies no requested field does not block the demand once every
   // requested field is resolved by another source. It stays visible as not used.
-  if(!related.length&&comparisons.length&&comparisons.every(c=>['matches','corrected','not_applicable'].includes(c.status)&&!c.readingPending)){issues.splice(index,1);unusedFiles.add(f.id);continue;}
+  if(!related.length&&comparisons.length&&comparisons.every(c=>['matches','corrected','accepted','not_applicable'].includes(c.status)&&!c.readingPending)){issues.splice(index,1);unusedFiles.add(f.id);continue;}
   if(!Number.isInteger(e.pages)||e.pages<1)continue;
   if(!related.length&&unusedPersonalId(e,f.name,request,comparisons)){issues.splice(index,1);continue;}
   if(related.length&&related.every(c=>c.status==='matches'&&!c.readingPending))issues.splice(index,1);
@@ -425,6 +427,13 @@ export async function buildProcessingPlan(did:string) {
    const issue=issues.find(i=>i.field===key);
    if(issue)Object.assign(issue,detail,{message});else add(key,message,detail);
   }
+ }
+ // A divergence accepted with a justification counts as resolved while both values stay the same.
+ for(const c of comparisons.filter((c:any)=>c.status==='different')){
+  const accepted=resolutions.find((r:any)=>r.kind==='validation'&&r.field===divergenceField(c.field)&&r.signature===divergenceSignature(c.field,c.found,c.expected));
+  if(!accepted)continue;
+  Object.assign(c,{status:'accepted',readingPending:false,acceptance:{note:accepted.note,author:accepted.author_name||accepted.author,created:accepted.created}});
+  for(let i=issues.length-1;i>=0;i--)if(issues[i].field===c.field)issues.splice(i,1);
  }
  const validationFindings=validateReadings(files.filter(f=>!f.problem).map(f=>{const scoped=extractedByFile.get(f.id)||scopePartyReading(JSON.parse(f.extracted),expectedPartyCnpj,expectedPartyName).reading;const fields=scoped.fields as Record<string,string[]>;return {name:f.name,fields:Object.fromEntries(Object.entries(fields).map(([key,vs])=>[key,vs.filter(v=>plausibleFieldValue(key,v))]))};}));
  for(const finding of validationFindings){

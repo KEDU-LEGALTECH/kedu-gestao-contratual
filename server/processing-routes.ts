@@ -3,8 +3,8 @@ import multer from "multer";
 import { acceptStored } from "./stored-upload.js";
 import { z } from "zod";
 import { all, one, run, db, id, now, audit, sql, auditAsync } from "./db.js";
-import { access,permit,allocateAddendum,invalidate } from "./workflow.js";
-import { ensureProcessing,processContract,processingSource,saveProcessingResult,buildProcessingPlan,processingFileProgress,resolutionSignature } from "./contract-processing.js";
+import { access,permit,permissions,allocateAddendum,invalidate } from "./workflow.js";
+import { ensureProcessing,processContract,processingSource,saveProcessingResult,buildProcessingPlan,processingFileProgress,resolutionSignature,divergenceField,divergenceSignature } from "./contract-processing.js";
 import {plausibleFieldValue} from "./field-plausibility.js";
 import { editableKeys,extractProcessingFile,normalizeValue } from "./processing-extract.js";
 import { sha256,officialValues } from "./official-templates.js";
@@ -118,8 +118,13 @@ export function registerProcessingRoutes(app:Express,process:(did:string,userId?
  });
  // Human decisions the reader cannot make: which reference applies and why a finding is acceptable.
  app.post('/api/demands/:id/processing/resolutions',async (req:any,res)=>{
-  const {demand:d}=await get(req,true);
-  const body=z.object({revision:z.number().int().min(1),kind:z.enum(['reference','validation']),field:z.string().min(1).max(60),value:z.string().trim().max(500).optional(),note:z.string().trim().min(5).max(1000),confirmed:z.literal(true)}).parse(req.body);
+  const body=z.object({revision:z.number().int().min(1),kind:z.enum(['reference','validation','divergence']),field:z.string().min(1).max(40),value:z.string().trim().max(500).optional(),note:z.string().trim().min(5).max(1000),confirmed:z.literal(true)}).parse(req.body);
+  // Any profile that edits or reviews demands may accept a divergence, always with a justification.
+  const {demand:d}=await get(req,body.kind!=='divergence');
+  if(body.kind==='divergence'){
+   if(!['write','legal'].some(action=>permissions[req.user.role]?.includes(action)))throw Object.assign(Error('Seu perfil não tem permissão para esta ação.'),{status:403});
+   if(['Concluído','Cancelado','Em assinatura'].includes(d.stage))throw Error('Demanda encerrada ou em assinatura não permite alterações.');
+  }
   await sql.transaction(async()=>{
    const plan=await buildProcessingPlan(d.id);
    if(!plan||plan.job.status==='Analisando'||plan.job.revision!==body.revision||plan.job.ticket_hash!==plan.ticket.hash)throw Object.assign(Error('A análise mudou. Reabra a demanda.'),{status:409});
@@ -131,12 +136,20 @@ export function registerProcessingRoutes(app:Express,process:(did:string,userId?
     if(!value)throw Error('Informe o valor correto da referência.');
     if(['cnpj','representanteCpf','documentoTitular'].includes(body.field)&&!plausibleFieldValue(body.field,value))throw Error('O documento informado tem dígitos verificadores inválidos.');
     signature=resolutionSignature(body.field,row.expected);label='Referência do chamado definida: '+row.label;
+   }else if(body.kind==='divergence'){
+    const row=plan.comparisons.find((c:any)=>c.field===body.field&&c.status==='different');
+    if(!row)throw Object.assign(Error('Esta divergência não está pendente.'),{status:409});
+    // Tied to both values: if the document or the GLPI request changes, the acceptance no longer applies.
+    signature=divergenceSignature(body.field,row.found,row.expected);
+    label=`Divergência aceita: ${row.label} (documento: ${row.found}; GLPI: ${row.expected})`;
    }else{
     const finding=plan.validationFindings.find((f:any)=>f.field===body.field&&!f.resolution);
     if(!finding)throw Object.assign(Error('Este achado não está pendente.'),{status:409});
     signature=resolutionSignature(body.field,finding.found);label='Achado de validação conferido: '+body.field;
    }
-   await sql.run('INSERT INTO processing_resolutions VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(demand_id,kind,field) DO UPDATE SET signature=excluded.signature,value=excluded.value,note=excluded.note,author=excluded.author,created=excluded.created', d.id, body.kind, body.field, signature, value, body.note, req.user.id, now());
+   // Accepted divergences share the validation kind (no schema change), under a "divergence:" field.
+   const [kind,field]=body.kind==='divergence'?['validation',divergenceField(body.field)]:[body.kind,body.field];
+   await sql.run('INSERT INTO processing_resolutions VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(demand_id,kind,field) DO UPDATE SET signature=excluded.signature,value=excluded.value,note=excluded.note,author=excluded.author,created=excluded.created', d.id, kind, field, signature, value, body.note, req.user.id, now());
    await sql.run('UPDATE contract_processing SET revision=revision+1 WHERE demand_id=?', d.id);await invalidate(d.id);
    await auditAsync(d.id, req.user.id, label+'. Justificativa: '+body.note+'. Não constitui aprovação jurídica.');
    await saveProcessingResult(d.id);
