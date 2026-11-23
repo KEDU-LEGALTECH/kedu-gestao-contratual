@@ -175,6 +175,7 @@ app.post(
         ? "Seu pedido de acesso ainda aguarda a aprovação de um administrador."
         : "Acesso desativado. Fale com um administrador do portal." });
     const token = randomBytes(32).toString("hex");
+    await sql.run("DELETE FROM sessions WHERE expires<?", Date.now());
     await sql.run("INSERT INTO sessions VALUES(?,?,?)", token, u.id, Date.now() + 8 * 3600000);
     res.cookie("session", token, {
       httpOnly: true,
@@ -283,6 +284,9 @@ app.get("/api/bootstrap", async (req: any, res) => {
           : ""), ...(req.user.role === "Solicitante" ? [req.user.id] : [])),
     req.user.role === "Solicitante"
         ? sql.all("SELECT id,name,role,email FROM users WHERE id=?", req.user.id)
+        // E-mails, blocked accounts and access requests are for administrators only; others see names and profiles.
+        : !permissions[req.user.role]?.includes("settings")
+        ? sql.all("SELECT u.id,u.name,u.role,1 AS active,0 AS pending FROM users u WHERE NOT EXISTS(SELECT 1 FROM user_access a WHERE a.user_id=u.id)")
         : sql.all("SELECT u.id,u.name,u.role,u.email,CASE WHEN a.user_id IS NULL THEN 1 ELSE 0 END AS active,CASE WHEN s.key IS NULL THEN 0 ELSE 1 END AS pending,a.disabled_at AS requested_at FROM users u LEFT JOIN user_access a ON a.user_id=u.id LEFT JOIN settings s ON s.key='signupPending:'||u.id"),
     sql.all("SELECT t.*,c.document_type,c.subtype,c.demonstration,EXISTS(SELECT 1 FROM template_sources ts WHERE ts.version_id=v.id) AS official,v.id AS version_id,v.version,CASE WHEN EXISTS(SELECT 1 FROM inactive_template_versions iv WHERE iv.version_id=v.id) THEN 'inativo' ELSE v.status END AS status FROM templates t JOIN template_versions v ON v.template_id=t.id LEFT JOIN template_catalog c ON c.version_id=v.id"),
     sql.all("SELECT * FROM sync_logs ORDER BY created DESC LIMIT 20"),
