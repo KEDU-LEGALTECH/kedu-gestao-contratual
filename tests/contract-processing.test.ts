@@ -532,3 +532,21 @@ test("número lido por OCR que o extenso ou um dígito confundido aponta como er
  rate=(await buildProcessingPlan('ocr-doubt'))!.comparisons.find(c=>c.field==='remuneracao')!;
  assert.equal(rate.status,'review');assert.equal(rate.reviewReason?.code,'ocr_digit_confusion');
 });
+
+test("divergência aceita com justificativa resolve o campo só enquanto os dois valores forem os mesmos",async()=>{
+ await fixture("accepted");await processContract("accepted","u",mock({...data,remuneracao:"11,00%"}) as any);
+ const before=await completed("accepted");assert.equal(before.status,"Aguardando correção");
+ const accept=(role:string,note="A escola renegociou a taxa; o GLPI será atualizado.")=>fetch(base+"/accepted/processing/resolutions",{method:"POST",headers:{"Content-Type":"application/json","x-role":role},body:JSON.stringify({revision:before.revision,kind:"divergence",field:"remuneracao",note,confirmed:true})});
+ assert.equal((await accept("Consulta")).status,403);
+ assert.equal((await accept("Jurídico","ok")).status,400,"justificativa obrigatória");
+ const response=await accept("Jurídico");assert.equal(response.status,200);
+ const after=await response.json();
+ assert.equal(after.status,"Sem erros",JSON.stringify(after.issues));
+ assert.equal(after.comparisons.find((c:any)=>c.field==="remuneracao").status,"accepted");
+ assert.ok(await sql.one("SELECT id FROM audit WHERE demand_id='accepted' AND action LIKE 'Divergência aceita: %Justificativa: A escola renegociou%'"));
+ // The GLPI request changes: the acceptance no longer applies and the error returns.
+ const raw=JSON.parse((await sql.one("SELECT payload FROM glpi_tickets WHERE external_id='accepted'")).payload);
+ raw.content=raw.content.replace("11,84%","12,50%");
+ await sql.run("UPDATE glpi_tickets SET payload=? WHERE external_id='accepted'",JSON.stringify(raw));
+ assert.equal((await buildProcessingPlan("accepted"))!.comparisons.find(c=>c.field==="remuneracao")?.status,"different");
+});

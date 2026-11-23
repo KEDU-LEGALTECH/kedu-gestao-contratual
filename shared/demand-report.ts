@@ -43,6 +43,8 @@ export function demandReport(job: any, intake?: any): DemandReport | undefined {
     items.push({ kind: "pendencia", title: r.label || r.field, detail: fieldDetail(r), source: r.source, action: pendingReason(r)?.action });
   for (const i of issues.filter(i => blocker.test(i.field)))
     items.push({ kind: "pendencia", title: i.label || "Documento", detail: i.message, source: i.source, action: i.pendingReason?.action });
+  for (const r of rows.filter(r => r.status === "accepted"))
+    items.push({ kind: "aviso", title: "Divergência aceita: " + (r.label || r.field), detail: `Documento: ${r.found}. GLPI: ${r.expected}. Justificativa de ${r.acceptance?.author || "usuário"}: ${r.acceptance?.note || ""}` });
   const named = new Set(items.map(i => i.source).filter(Boolean));
   for (const f of (job.files || []).filter((f: any) => f.readingScope === "unknown" && !named.has(f.name)))
     items.push({ kind: "pendencia", title: "Tipo do anexo a identificar", source: f.name, detail: f.problem
