@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Download, TriangleAlert, ChevronRight } from "lucide-react";
+import { PeriodChanges } from "./PeriodChanges";
 export function Reports({
   users,
   canExport,
@@ -40,9 +41,10 @@ export function Reports({
   }, [params]);
   return (
     <>
+      <PeriodChanges open={open} />
       <section className="panel">
         <div className="panel-heading">
-          <h2>Filtrar período de criação</h2>
+          <h2>Demandas criadas no período</h2>
           {canExport && (
             <a className="secondary" href={"/api/reports.csv?" + params}>
               <Download size={16} /> Exportar CSV filtrado

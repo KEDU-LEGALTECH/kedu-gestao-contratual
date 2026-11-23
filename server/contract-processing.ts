@@ -25,6 +25,7 @@ import {scopePartyReading,extractContractParties,selectContractParty} from './co
 import {fieldExcerpt,readingGuidance,proposedChanges} from './reading-guidance.js';
 import {processingStatus} from './processing-status.js';
 import {pendingReason} from '../shared/pending-reason.js';
+import {demandArea} from '../shared/demand-report.js';
 import {missingFieldEvidence} from './document-evidence.js';
 import {validateReadings} from './reading-validation.js';
 import {ReadingJobQueue} from './reading-job-queue.js';
@@ -100,7 +101,7 @@ async function fingerprint(did:string) {
  ]);
  // Change this tag whenever a conferência rule changes: every open demand is then recalculated
  // by the next reading cycle, without anyone opening it.
- return sha256(Buffer.from(JSON.stringify(['v50-no-type-to-confirm-area',resolutions,d,templates,contracts,signed,confirmed])));
+ return sha256(Buffer.from(JSON.stringify(['v51-requested-fields-and-area-history',resolutions,d,templates,contracts,signed,confirmed])));
 }
 export async function processingSource(did:string) {
  const demand=await sql.one("SELECT * FROM demands WHERE id=?", did);
@@ -491,7 +492,9 @@ export async function buildProcessingPlan(did:string) {
   if(!issues.length){generated=generate(Buffer.from(version.bytes),derived);if(review(generated,derived,Buffer.from(version.bytes)).status!=="conforme"){generated=null;add("generation","A conferência do documento gerado encontrou divergência. O download permanece bloqueado.");}}
  }catch{add("generation","Não foi possível preencher o modelo com estes dados. Confira o modelo e os campos indicados.");}
  const typeIdentification={type:actualType||"Não identificado",source:analysis.suggestion.type?analysis.suggestion.basis:d.type!=="A classificar"?"Classificação registrada na demanda":documentTypes.length===1?"Título no início do documento ou nome do arquivo":"Conferência manual necessária",ticketTitle:raw.title,correction:templates.length?"Modelo oficial":"Lista de erros (tipo sem modelo oficial)"};
- return {demand:d,ticket,job,values,origins,issues:issues.map(issue=>({...issue,pendingReason:pendingReason({...issue,...comparisons.find(c=>c.field===issue.field)})})),comparisons,validationFindings,typeIdentification,template,templates,version,sequence,matrix,derived,generated,type:actualType,subtype:actualSubtype,
+ // What the GLPI asks for, shown in the comparison table even before a filled contract exists.
+ const requested=Object.entries(request).filter(([key,expected])=>comparable.has(key)&&expected.length).map(([key,expected])=>({field:key,label:inputLabels[key]||key,expected:expected.join('; ')}));
+ return {requested,demand:d,ticket,job,values,origins,issues:issues.map(issue=>({...issue,pendingReason:pendingReason({...issue,...comparisons.find(c=>c.field===issue.field)})})),comparisons,validationFindings,typeIdentification,template,templates,version,sequence,matrix,derived,generated,type:actualType,subtype:actualSubtype,
   files:allFiles.map(f=>{const saved=JSON.parse(f.extracted);const savedFields={...saved.fields};if(savedFields.razaoSocial)savedFields.razaoSocial=savedFields.razaoSocial.map(qualifiedCompanyName).filter(Boolean);const fields={...savedFields,...recoverTextFields(saved.text||'',savedFields)};const enriched={...saved,fields:Object.fromEntries(Object.entries(fields).map(([key,vs])=>[key,(vs as string[]).map(v=>normalizeValue(key,v)).filter(Boolean)]))};const scope=scopePartyReading(enriched,expectedPartyCnpj,expectedPartyName),e=extractedByFile.get(f.id)||scope.reading;return {
    parties:scope.parties,selectedParty:scope.selected,vision:e.vision,
    guidance:readingGuidance(e,attachmentRole(f.name,e.text||'')),changes:proposedChanges(e.text||''),
@@ -515,10 +518,15 @@ export async function buildProcessingPlan(did:string) {
 }
 export async function saveProcessingResult(did:string) {
  const plan=await buildProcessingPlan(did);if(!plan)return null;
- const result={values:plan.values,origins:plan.origins,issues:plan.issues,comparisons:plan.comparisons.map(row=>({...row,evidence:row.evidence||comparisonSources(row,plan.files)})),validationFindings:plan.validationFindings,typeIdentification:plan.typeIdentification,template:plan.template,templates:plan.templates,files:plan.files,type:plan.type,subtype:plan.subtype,fingerprint:await fingerprint(did)};
+ const previous=await sql.one('SELECT result FROM contract_processing WHERE demand_id=?', did);
+ const result={requested:plan.requested,values:plan.values,origins:plan.origins,issues:plan.issues,comparisons:plan.comparisons.map(row=>({...row,evidence:row.evidence||comparisonSources(row,plan.files)})),validationFindings:plan.validationFindings,typeIdentification:plan.typeIdentification,template:plan.template,templates:plan.templates,files:plan.files,type:plan.type,subtype:plan.subtype,fingerprint:await fingerprint(did)};
  const hasReadableDocument=plan.files.some(file=>file.contractForComparison&&file.available);
  const status=processingStatus(plan.issues,plan.comparisons,hasReadableDocument);
- await sql.run("UPDATE contract_processing SET status=?,result=?,updated=? WHERE demand_id=?", status, JSON.stringify(result), now(), did);
+ // The area is kept with the result; a change is audited so reports can show movements per period.
+ const area=demandArea({status,issues:plan.issues},JSON.parse(plan.ticket.payload));
+ let before='';try{before=JSON.parse(previous?.result||'{}').area||'';}catch{}
+ await sql.run("UPDATE contract_processing SET status=?,result=?,updated=? WHERE demand_id=?", status, JSON.stringify({...result,area}), now(), did);
+ if(before&&before!==area)await auditAsync(did,null,`Conferência: ${before} → ${area}`);
  return {status,revision:plan.job.revision,ticket_hash:plan.ticket.hash,...result};
 }
 export async function processContract(did:string,userId:string|null=null,download:(ticketId:string,documentId:string,signal:AbortSignal)=>Promise<{bytes:Buffer;name:string;mime:string}>=downloadGlpiAttachment,force=false,targetedOnly=false,deadline=Infinity) {

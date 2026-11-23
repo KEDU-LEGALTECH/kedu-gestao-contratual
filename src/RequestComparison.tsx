@@ -42,8 +42,13 @@ function Rows({rows,did,resolve,accept,busy}:{rows:any[];did?:string;resolve?:Re
 }
 type Resolve=(kind:string,field:string,note:string,value?:string)=>void;
 type Accept=(field:string,note:string)=>void;
-export function RequestComparison({rows,did,issues=[],resolve,accept,busy}:{rows:any[];did?:string;issues?:any[];resolve?:Resolve;accept?:Accept;busy?:boolean}){
- if(!rows?.length)return null;
+export function RequestComparison({rows,did,issues=[],requested=[],reason,resolve,accept,busy}:{rows:any[];did?:string;issues?:any[];requested?:any[];reason?:string;resolve?:Resolve;accept?:Accept;busy?:boolean}){
+ // Before a filled contract exists the table still shows what the GLPI asks for.
+ if(!rows?.length)return <section id="conferencia-preenchimento" className="panel request-comparison" aria-label="Conferência do preenchimento">
+  <div className="comparison-heading"><div><h2>Contrato × solicitação GLPI</h2><p className="muted">{reason?`${reason}: ainda não há contrato preenchido para comparar.`:"Ainda não há contrato preenchido para comparar."} Quando o contrato for anexado, a comparação é feita automaticamente.</p></div></div>
+  {requested.length?<div className="table-scroll"><table><thead><tr><th scope="col">Campo</th><th scope="col">No documento</th><th scope="col" className="requested-column">Como deve ser preenchido · GLPI</th></tr></thead><tbody>{requested.map((r:any)=><tr key={r.field}><th scope="row">{r.label}</th><td><span className="muted">Sem contrato para comparar</span></td><td className="requested-column"><strong>{display(r.field,r.expected)}</strong></td></tr>)}</tbody></table></div>
+   :<p className="muted">O chamado não informa campos de contrato para comparar.</p>}
+ </section>;
  const blockers=readingBlockers(issues) as any[];
  const sorted=[...rows].sort((a,b)=>(order[a.status]??9)-(order[b.status]??9));
  const errors=sorted.filter(r=>r.status==='different'),pending=sorted.filter(r=>['missing','review','ambiguous'].includes(r.status)),done=sorted.filter(r=>['matches','corrected','accepted'].includes(r.status)),notApplicable=sorted.filter(r=>r.status==='not_applicable');
