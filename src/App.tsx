@@ -33,6 +33,7 @@ import { AttachmentCheck } from "./AttachmentCheck";
 import { SimpleDemand } from "./SimpleDemand";
 import { contractStageActions } from "../shared/demand-report";
 import { AccessRequests } from "./AccessRequests";
+import { PeriodChanges } from "./PeriodChanges";
 import { Reports } from "./Reports";
 import { ProcessingSummary } from './ProcessingSummary';
 import { ProcessingProgress } from './ProcessingProgress';
@@ -1615,34 +1616,7 @@ export function App() {
                         })}
                       </div> : <p className="muted" role="status">Nenhuma demanda neste grupo.</p>}
                     </section>
-                    <section className="summary-panel">
-                      <span className="summary-symbol">
-                        <Check size={23} />
-                      </span>
-                      <h2>
-                        Cada contrato concluído,
-                        <br />
-                        um passo em frente.
-                      </h2>
-                      <div className="summary-numbers">
-                        <div>
-                          <strong>
-                            {data.metrics.completed.toString().padStart(2, "0")}
-                          </strong>
-                          <small>concluídos neste mês</small>
-                        </div>
-                        <div>
-                          <strong>
-                            {data.metrics.average}
-                            <span> dias</span>
-                          </strong>
-                          <small>tempo médio de atendimento</small>
-                        </div>
-                      </div>
-                      <button onClick={() => setPage("Relatórios")}>
-                        Acompanhar resultados <ArrowUpRight size={16} />
-                      </button>
-                    </section>
+                    <PeriodChanges compact open={open} onMore={() => setPage("Relatórios")} />
                   </div>
                   <section className="panel demand-panel">
                     <div className="panel-heading">

@@ -73,6 +73,7 @@ import { officialVisible } from "../shared/request-policy.js";
 import { startBackups } from "./backup-service.js";
 import { finalization, finalizeDemand, finalOutcomes, reopenDemand } from "./demand-finalization.js";
 import { approveAccess, isPending, rejectAccess, requestAccess } from "./signup.js";
+import { periodChanges } from "./period-report.js";
 import {
   registerGovernance,
   seedCatalog,
@@ -1350,6 +1351,10 @@ async function reportRows(req: any) {
       (req.user.role !== "Solicitante" || d.owner === req.user.id),
   );
 }
+app.get("/api/reports/changes", async (req: any, res) => {
+  const group = ["day", "week", "month"].includes(String(req.query.group)) ? String(req.query.group) as "day" | "week" | "month" : "day";
+  res.json(await periodChanges(req.user, String(req.query.from || ""), String(req.query.to || ""), group));
+});
 app.get("/api/reports", async (req: any, res) => {
   const rows = await reportRows(req),
     completed = rows.filter((d) => d.completed),

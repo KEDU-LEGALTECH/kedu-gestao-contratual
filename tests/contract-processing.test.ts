@@ -544,6 +544,7 @@ test("divergência aceita com justificativa resolve o campo só enquanto os dois
  assert.equal(after.status,"Sem erros",JSON.stringify(after.issues));
  assert.equal(after.comparisons.find((c:any)=>c.field==="remuneracao").status,"accepted");
  assert.ok(await sql.one("SELECT id FROM audit WHERE demand_id='accepted' AND action LIKE 'Divergência aceita: %Justificativa: A escola renegociou%'"));
+ assert.ok(await sql.one("SELECT id FROM audit WHERE demand_id='accepted' AND action='Conferência: Aguardando correção → Sem erros'"),'mudança de área registrada para os relatórios');
  // The GLPI request changes: the acceptance no longer applies and the error returns.
  const raw=JSON.parse((await sql.one("SELECT payload FROM glpi_tickets WHERE external_id='accepted'")).payload);
  raw.content=raw.content.replace("11,84%","12,50%");
