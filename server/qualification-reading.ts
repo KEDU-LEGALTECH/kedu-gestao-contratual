@@ -8,7 +8,7 @@ const digits=(s:string)=>s.replace(/\D/g,'');
 const cnpjMask=(d:string)=>`${d.slice(0,2)}.${d.slice(2,5)}.${d.slice(5,8)}/${d.slice(8,12)}-${d.slice(12)}`;
 const cpfMask=(d:string)=>`${d.slice(0,3)}.${d.slice(3,6)}.${d.slice(6,9)}-${d.slice(9)}`;
 // Words that begin a party declaration; the company name follows the last one before "inscrita no CNPJ".
-const partyStart=/(?:;|\b(?:contratante(?:\s*\d+)?|contratad[ao](?:\s*\d+)?|locador[a]?|locat[áa]ri[ao]|outorgante|outorgad[ao]|cedente|cession[áa]ri[ao]|partes|de um lado|de outro lado|s[íi]ntese do contrato|datas e porcentagens de pagamentos|considerando\s+que(?:\s+[ao])?|na\s+qualidade\s+de\s+(?:interveniente(?:\s+anuente)?|anuente|contratante|contratad[ao]))\b|\bdenominad[ao]s?\s+(?:doravante\s*,?\s*)?(?:simplesmente\s*,?\s*)?(?:como\s+|por\s+|de\s+)?(?:\[[^\]]+\]|["“][^"”]+["”]|contratante(?:\s*\d+)?|contratad[ao](?:\s*\d+)?|credor[a]?|devedor[a]?)\s*[.,;]?|(?<!\b(?:cep|bairro|complemento|cpf|rg|cnh|pis|pasep|t[íi]tulo|telefone|cel(?:ular)?|e-?mail|endere[çc]o(?:\s+de\s+entrega)?|logradouro|n[º°o]|n[úu]mero|ag[êe]ncia|conta(?:\s+corrente)?|banco|pix|titular(?:idade)?|cnpj(?:\s*\/\s*(?:me|mf|cpf))?)\s*):|(?<=[\p{Ll}\d\]"”])\s*\.\s+(?=\p{Lu})|,\s+e\s+(?=\p{Lu}{2}[\p{Lu}\s&.'’-]+\b(?:LTDA|LIMITADA|EIRELI|S\s*\.?\s*A\.?|S\s*\/\s*A|EPP|ME)\b))/giu;
+const partyStart=/(?:;|\b(?:contratante(?:\s*\d+)?|contratad[ao](?:\s*\d+)?|locador[a]?|locat[áa]ri[ao]|outorgante|outorgad[ao]|cedente|cession[áa]ri[ao]|partes|de um lado|de outro lado|(?:e\s+)?do\s+outro(?:\s+lado)?|s[íi]ntese do contrato|datas e porcentagens de pagamentos|considerando\s+que(?:\s+[ao])?|na\s+qualidade\s+de\s+(?:interveniente(?:\s+anuente)?|anuente|contratante|contratad[ao]))\b|\bdenominad[ao]s?\s+(?:doravante\s*,?\s*)?(?:simplesmente\s*,?\s*)?(?:como\s+|por\s+|de\s+)?(?:\[[^\]]+\]|["“][^"”]+["”]|contratante(?:\s*\d+)?|contratad[ao](?:\s*\d+)?|credor[a]?|devedor[a]?)\s*[.,;]?|(?<!\b(?:cep|bairro|complemento|cpf|rg|cnh|pis|pasep|t[íi]tulo|telefone|cel(?:ular)?|e-?mail|endere[çc]o(?:\s+de\s+entrega)?|logradouro|n[º°o]|n[úu]mero|ag[êe]ncia|conta(?:\s+corrente)?|banco|pix|titular(?:idade)?|cnpj(?:\s*\/\s*(?:me|mf|cpf))?)\s*):|(?<=[\p{Ll}\d\]"”])\s*\.\s+(?=\p{Lu})|,\s+e\s+(?=\p{Lu}{2}[\p{Lu}\s&.'’-]+\b(?:LTDA|LIMITADA|EIRELI|S\s*\.?\s*A\.?|S\s*\/\s*A|EPP|ME)\b))/giu;
 const fusedTitle=/^[\s\S]*?\b(?:INSTRUMENTO PARTICULAR DE RESCIS[ÃA]O CONTRATUAL|(?:(?:PRIMEIRO|SEGUNDO|TERCEIRO|QUARTO|\d+[º°]?)\s+)?(?:TERMO\s+)?(?:ADITIVO\s+AO\s+)?CONTRATO\s+DE\s+PRESTA[ÇC][ÃA]O\s+DE\s+SERVI[ÇC]OS?(?:\s+T[ÉE]CNICOS\s+E\s+CONTINUADOS\s+DE\s+MARKETING\s+E\s+COMUNICA[ÇC][ÃA]O|\s*[-–—]\s*KEDU\s+MARKETING)?)\s+/i;
 /** PDF columns can concatenate a known instrument title with the qualified company name. */
 /** A heading printed with spaced letters ("CO N T R ATO D E …") can precede the name in PDF reading order. */
@@ -21,14 +21,14 @@ export function qualifiedCompanyName(value:string){
  const name=withoutSpacedHeading(value.trim().replace(fusedTitle,'').trim());
  return /^(?:cl[áa]usula\b|par[áa]grafo\b|objeto do contrato\b|datas? de pagamento\b|instrumento particular\b)/i.test(name)?'':name;
 }
-const notName=/^(?:e|de|da|do|com|sede|endere[çc]o|nome fantasia|neste ato|pessoa jur[íi]dica|sociedade|contrato|instrumento|termo|aditivo|realiza[çc][ãa]o|procura[çc][ãa]o)\b/i;
+const notName=/^(?:e|de|da|do|com|sede|endere[çc]o|nome fantasia|neste ato|pessoa jur[íi]dica|sociedade|contrato|instrumento|termo|aditivo|realiza[çc][ãa]o|procura[çc][ãa]o)(?![\p{L}\d.])/iu; // "E.M DA CUNHA" is a name, not the word "e"
 
 export type QualifiedParty={role:string;name:string;cnpj:string;excerpt:string;fields:Fields};
 
 export function extractQualifiedParties(source:string,isOwn:(cnpj:string)=>boolean=()=>false):QualifiedParty[] {
  const text=source.replace(/(\d)\s*[—–]\s*(\d)/g,'$1-$2').replace(/[ \t]*\n[ \t]*/g,' ').replace(/[ \t]{2,}/g,' ');
  const parties:QualifiedParty[]=[];
- const anchors=[...text.matchAll(/inscrit[ao]\s+no\s+(?:Cadastro Nacional[^,;]{0,40}?)?CNPJ\s*(?:\/\s*(?:ME|MF))?\s*(?:sob\s*(?:o\s*)?)?(?:n[º°o.]*)?\s*[:\s]*(\d{2}\.?\d{3}\.?\d{3}\s*\/?\s*\d{4}\s*-?\s*\d{2})(?!\d)/giu)];
+ const anchors=[...text.matchAll(/inscrit[ao]\s+(?:no|sob\s+o)\s+(?:Cadastro Nacional[^,;]{0,40}?)?CNPJ\s*(?:\/\s*(?:ME|MF))?\s*(?:sob\s*(?:o\s*)?)?(?:n[º°o.]*)?\s*[:\s]*(\d{2}\.?\d{3}\.?\d{3}\s*\/?\s*\d{4}\s*-?\s*\d{2})(?!\d)/giu)];
  const roleParen=/\(\s*["“]?(CONTRATANTE(?:\s*\d+)?|CONTRATAD[AO](?:\s*\d+)?|ESCOLA|COL[ÉE]GIO|CEDENTE|CESSION[ÁA]RI[AO]|ANUENTE|INTERVENIENTE)["”]?\s*\)/i;
  for(const [index,anchor] of anchors.entries()){
   const cnpj=digits(anchor[1]);if(!validCnpj(cnpj)||isOwn(cnpj))continue;
