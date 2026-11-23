@@ -1,7 +1,7 @@
 ---
 name: kedu-leitura-precisa
 description: Use em anexos Kedu. Leia por campo, página e entidade.
-version: 1.9.0
+version: 1.10.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -45,6 +45,17 @@ Para ler contrato, aditivo, proposta, contraproposta, documento societário/cada
 
 Quando o mesmo anexo trouxer mais de uma empresa ou o identificador aparecer no texto mas faltar na tabela, consulte **Identidade por parte ou aba** em [Formatos e documentos de origem](references/formatos-e-fontes.md). Entregue à conferência um par de razão social e CNPJ por entidade, com os respectivos trechos ou células.
 
+Redações de qualificação que o extrator reconhece (`server/qualification-reading.ts`, `server/contract-parties.ts`) — antes de declarar um campo de identidade "não localizado", confira se o texto usa uma delas:
+
+- "inscrita **no** CNPJ" e "inscrita **sob o** CNPJ nº";
+- início da segunda parte com "de outro lado", "do outro", "e do outro";
+- nome que começa com sigla ("E.M DA CUNHA ESCOLA LTDA" é nome, não a conjunção "e");
+- título do contrato colado ao nome da escola (o título é retirado, como "CO N T R ATO…" com letras espaçadas);
+- pessoa física com o CPF na linha seguinte ao nome **ou na mesma linha** ("Jair Rodrigues Melo, inscrito no CPF sob o nº …");
+- endereço com cidade e UF separados por vírgula, hífen ou travessão ("CIDADE UNIVERSITÁRIA — MACEIÓ/AL — CEP …").
+
+Quando o valor do GLPI aparece no texto do contrato mas o campo fica "não localizado", o problema costuma ser de associação à parte, não de OCR: mostre o trecho e verifique qual dessas redações (ou uma nova) foi usada. Na medição de 23/11/2026, 16 de 26 campos "não localizados" tinham o valor no texto por esse motivo.
+
 A identificação da organização da demanda usa a parte qualificada no contrato (`extractContractParties`) só para desempatar o que o formulário GLPI deixou em aberto. Nunca substitui um CNPJ válido do formulário nem escolhe entre vários sem que exatamente um apareça no documento. O CNPJ da Kedu (raiz 45.543.580) nunca é a organização da demanda.
 
 Em cartão cadastral, leia o cabeçalho e a linha de valores em conjunto. O OCR pode trocar o hífen do CNPJ por ponto ou espaço. Use o contexto de **Número de inscrição** para localizar a ocorrência e preserve os dígitos na transcrição.
@@ -62,7 +73,9 @@ Erros de captura já corrigidos no extrator: título com letras espaçadas (`CO 
 
 ## Armadilhas
 
-- Kedu/contratante não é automaticamente escola/contratada. Sócio não é automaticamente administrador/representante com poderes. Residência/foro não é sede.
+- Kedu/contratante não é automaticamente escola/contratada. Sócio não é automaticamente administrador/representante com poderes. Residência/foro não é sede: "Comarca de Fortaleza/CE" não prova a cidade da escola.
+- Contrato social, documento constitutivo, alteração e consolidação contratual são documentos de apoio da escola, nunca o contrato Kedu: não comparar banco, conta ou titular com eles.
+- Aditivo que cita o contrato só pelo número ("Aditivo 01 ao Contrato 188/2026") pode não repetir razão social e CNPJ: "não localizado" é o resultado correto, não falha de leitura.
 - Nome no cabeçalho/logotipo pode ser fantasia. Nome curto e mantenedora não devem ser escolhidos por semelhança. Múltiplas empresas exigem associação explícita.
 - Pagador, remetente, recebedor, favorecido e titular não são intercambiáveis. Pix não comprova titularidade sozinho.
 - Proposta não é aceite; simulação não é condição contratada; contrato nomeado assinado não comprova autenticidade/assinatura.

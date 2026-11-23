@@ -66,7 +66,8 @@ export function extractQualifiedParties(source:string,isOwn:(cnpj:string)=>boole
    const bairro=/\bbairro\s+(?!:)([^,;]{3,60})/i.exec(address)?.[1];
    if(bairro)add('bairro',bairro);
    const named=/na cidade de\s+([^,;]{3,60}?)\s*,\s*Estado d[aeo]\s+([^,;]{2,30})/i.exec(address);
-   const slash=/(?:^|,|\s-\s)\s*([\p{L}][\p{L} ']{2,40}?)\s*(?:\/|\s-\s)\s*([A-Z]{2})\b/u.exec(address);
+   // Scanned contracts often separate "BAIRRO — CIDADE/UF — CEP" with dashes of any length.
+   const slash=/(?:^|,|\s[-–—]\s)\s*([\p{L}][\p{L} ']{2,40}?)\s*(?:\/|\s[-–—]\s)\s*([A-Z]{2})\b/u.exec(address);
    if(named){add('cidade',named[1]);const uf=states[plain(named[2])]||(ufs.has(named[2].trim().toUpperCase())?named[2].trim().toUpperCase():'');if(uf)add('estado',uf);}
    else if(slash&&ufs.has(slash[2])&&!/\b(?:rua|avenida|av|bairro|sala)\b/i.test(slash[1])){add('cidade',slash[1]);add('estado',slash[2]);}
   }
