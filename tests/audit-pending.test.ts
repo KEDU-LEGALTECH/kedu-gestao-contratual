@@ -194,7 +194,11 @@ test('Foto de tipo incerto fica fora de novas tentativas automáticas',async ()=
  await demand('unused-open',[{id:'2',name:'foto.jpeg'}]);
  await file('unused-open','2','foto.jpeg',ocrPhoto);
  const plan=(await buildProcessingPlan('unused-open'))!;
- assert.equal(plan.issues.find(i=>i.field==='file:2')?.label,'Tipo a confirmar');
+ // No "type to confirm" area: the demand goes to its area and names the photo still unidentified.
+ assert.equal(plan.issues.some(i=>i.label==='Tipo a confirmar'),false);
+ const missing=plan.issues.find(i=>i.field==='contractMissing')!;
+ assert.equal(missing.label,'Aguardando elaboração do contrato');
+ assert.ok(missing.message.includes('ainda não identificado(s): foto.jpeg'));
  assert.equal(processingStatus(plan.issues,plan.comparisons),'Aguardando análise');
 });
 test('Leitura parcial de um contrato ainda bloqueia a conferência',async ()=>{
