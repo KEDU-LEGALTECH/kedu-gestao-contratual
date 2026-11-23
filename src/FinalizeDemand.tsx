@@ -14,8 +14,8 @@ export function FinalizeDemand({ did, stage, can, api, action, busy }: any) {
     onClick={() => action(() => api(`/demands/${did}/reopen`, {}), "Demanda reaberta.")}>Reabrir demanda</button>}
   </section>;
   if (["Concluído", "Cancelado"].includes(stage) || !(can("write") || can("legal"))) return null;
-  return <details className="panel simple-source">
-   <summary>Finalizar demanda</summary>
+  return <details className="panel fold">
+   <summary><strong>Finalizar demanda</strong><small>Quando já foi resolvida fora do portal</small></summary>
    <p className="muted">Use quando a demanda já foi resolvida, por exemplo no GLPI, sem passar pelo portal. Ela sai das listas de pendências e o motivo fica registrado na auditoria.</p>
    <form onSubmit={e => {
     e.preventDefault();

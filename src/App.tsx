@@ -206,6 +206,7 @@ export function App() {
     [ready, setReady] = useState(false),
     [showDemoNotice, setShowDemoNotice] = useState(false),
     [signup, setSignup] = useState<"" | "form" | "sent">(""),
+    [listLimit, setListLimit] = useState(30),
     [query, setQuery] = useState(""),
     [stage, setStage] = useState(""),
     [owner, setOwner] = useState(""),
@@ -225,6 +226,8 @@ export function App() {
     const timer=setInterval(()=>{api("/bootstrap").then(setData).catch(()=>{});},2500);
     return()=>clearInterval(timer);
   },[user?.id,!!data?.demands?.some((d:any)=>d.processing?.status==="Analisando")]);
+  // A new search or filter starts again from the first rows.
+  useEffect(() => setListLimit(30), [query, stage, page]);
   useEffect(() => {
     api("/login-info")
       .then((info) => setShowDemoNotice(info.showDemoNotice === true))
@@ -373,7 +376,7 @@ export function App() {
                 <button className="primary" disabled={busy}>{busy ? "Enviando…" : "Enviar pedido"}<ArrowUpRight size={17} /></button>
               </>
             )}
-            <button type="button" className="text-button" onClick={() => { setSignup(""); setError(""); }}>Voltar para o login</button>
+            <button type="button" className="text-button login-signup" onClick={() => { setSignup(""); setError(""); }}>Voltar para o login</button>
           </form>
         ) : (
         <form
@@ -420,7 +423,7 @@ export function App() {
             {busy ? "Entrando…" : "Entrar na central"}
             <ArrowUpRight size={17} />
           </button>
-          <button type="button" className="text-button" onClick={() => { setSignup("form"); setError(""); }}>Não tem conta? Pedir acesso</button>
+          <button type="button" className="text-button login-signup" onClick={() => { setSignup("form"); setError(""); }}>Não tem conta? Pedir acesso</button>
           {showDemoNotice && (
             <small>
               Ambiente demonstrativo • Dados fictícios
@@ -1770,9 +1773,11 @@ export function App() {
                     </div>
                     </details>
                   </section>
-                  <ProcessingProgress demands={filtered} api={api} allowed={!!can('files')&&!!can('bank')}/>
+                  <details className="panel fold"><summary><strong>Andamento da leitura dos arquivos</strong><small>Fila, leituras concluídas e falhas</small></summary><ProcessingProgress demands={filtered} api={api} allowed={!!can('files')&&!!can('bank')}/></details>
                   {(Object.hasOwn(contractStageActions,stage)||['Aguardando análise','Conferência parcial','Aguardando correção'].includes(stage))&&can('files')&&can('bank')&&<ProcessingSummary stage={Object.hasOwn(contractStageActions,stage)?'Aguardando análise':stage} demands={filtered} api={api}/>}
-                  <section className="panel">{table(filtered)}</section>
+                  <section className="panel">{table(filtered.slice(0, listLimit))}
+                    {filtered.length > listLimit && <button type="button" className="secondary list-more" onClick={() => setListLimit(listLimit + 30)}>Mostrar mais {Math.min(30, filtered.length - listLimit)} de {filtered.length - listLimit} restantes</button>}
+                  </section>
                   <p className="muted">
                     {filtered.length} demandas encontradas. Etapas são alteradas
                     no detalhe com validação de pendências.

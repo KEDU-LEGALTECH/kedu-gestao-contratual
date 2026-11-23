@@ -44,3 +44,12 @@
 .demand-report-next { margin: 0; padding: 10px 12px; border-left: 3px solid var(--blue); background: var(--bg); }
 .demand-report .report-erro > summary { color: #b4433a; }
 .demand-report .report-aviso > summary { color: var(--muted); }
+.fold { margin-bottom: 14px; padding: 14px 18px; }
+.fold > summary { cursor: pointer; display: flex; align-items: baseline; gap: 10px; font-size: 14px; list-style: none; }
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary::before { content: "▸"; color: var(--muted); transition: transform .15s; }
+.fold[open] > summary::before { transform: rotate(90deg); }
+.fold > summary small { color: var(--muted); font-weight: 400; }
+.fold > section, .fold > .panel { border: 0; box-shadow: none; padding: 0; margin: 14px 0 0; background: transparent; }
+.report-docs { margin-top: 4px; }
+.list-more { display: block; margin: 16px auto 4px; }
