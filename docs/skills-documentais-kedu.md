@@ -32,6 +32,11 @@ Relatório por demanda e documento: campos encontrados e esperados separados, en
 
 Ausências reais exigem pedir documentos ou esclarecimentos; OCR repetido não resolve falta de fonte. A redução da fila depende de execução e validação no fluxo oficial. Criar skills não executa automaticamente essa fila, não altera o motor de OCR e não comprova acurácia.
 
+## Atualização triagem 1.9.0 / leitura 1.10.0 (23/11/2026, medição)
+
+- **Medição da qualidade da leitura (`kedu-triagem-documental` v1.9.0)**: método para contar campos por situação e motivo e para separar falha de associação (valor no texto) de ausência real. Linha de base: 70% dos campos conferidos sozinhos; depois das correções, 78%; "não localizado" de 15% para 7%.
+- **Redações de qualificação (`kedu-leitura-precisa` v1.10.0)**: "inscrita sob o CNPJ", "e do outro", nome iniciado por sigla, pessoa física com CPF na mesma linha, cidade/UF separadas por travessão. Contrato social e documento constitutivo são apoio, nunca o contrato Kedu. Foro não é sede. Aditivo que cita o contrato só pelo número pode não repetir CNPJ e razão social.
+
 ## Atualização 1.8.0 / 1.9.0 / 1.10.0 (23/11/2026)
 
 - **Áreas das demandas (`kedu-triagem-documental` v1.8.0, `kedu-conferencia-documental` v1.10.0)**: "Tipo a confirmar" deixou de existir, por decisão da usuária; a demanda vai para uma área real e cita os anexos ainda não identificados. Nova área **Aguardando elaboração do contrato** para pedidos sem contrato preenchido (só apoio, propostas, relatórios ou modelos em branco). **Contrato não encontrado** e **Consulta ao GLPI incompleta** ficam para pedidos de análise contratual. Na simulação, "Contrato não encontrado" caiu de 53 para 2 demandas.

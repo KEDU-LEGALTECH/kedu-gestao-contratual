@@ -43,7 +43,9 @@ export function extractContractParties(text:string):ContractParty[] {
   const block=text.slice(start,Math.min(declarations[i+1]?.index??text.length,start+1800)).split(/\n\s*(?:DADOS (?:DE PAGAMENTO|BANC[ÁA]RIOS)|OBSERVA[ÇC][ÕO]ES|CL[ÁA]USULA|OBJETO DO CONTRATO)\b/i)[0];
   const ids=[...block.matchAll(/\bCNPJ(?:\/(?:MF|ME))?\s*(?:sob\s*(?:o\s*)?)?(?:n[º°o.]?\s*)?[:\s]*(\d{2}\.?\d{3}\.?\d{3}\s*\/?\s*\d{4}\s*[-–—]?\s*\d{2})(?!\d)/gi)].map(m=>mask(m[1]));
   if(!ids.length){
-   const personal=/^\s*([^\n]+)\n\s*CPF\s*(?:n[º°o.]?\s*)?[:\s]*(\d{3}\.?\d{3}\.?\d{3}-?\d{2})(?!\d)/i.exec(block);
+   // A person is declared with the CPF on the next line, or on the same line ("Nome, inscrito no CPF sob o nº …").
+   const personal=/^\s*([^\n]+)\n\s*CPF\s*(?:n[º°o.]?\s*)?[:\s]*(\d{3}\.?\d{3}\.?\d{3}-?\d{2})(?!\d)/i.exec(block)
+    ||/^\s*([^,\n]{3,120}?)\s*,\s*inscrit[ao]\s+no\s+CPF[^\d\n]{0,25}(\d{3}\.?\d{3}\.?\d{3}-?\d{2})(?!\d)/i.exec(block);
    if(personal&&!/\b(?:LTDA|EIRELI|SOCIEDADE|REPRESENTANTE|CNPJ)\b/i.test(personal[1]))ids.push(personal[2]);
   }
   const unique=[...new Set(ids)];if(unique.length!==1)continue;

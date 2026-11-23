@@ -1,7 +1,7 @@
 ---
 name: kedu-triagem-documental
 description: Use na fila Kedu. Priorize pendências com evidência.
-version: 1.8.0
+version: 1.9.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -67,6 +67,17 @@ O vínculo automático (`linkPendingOrganizations`, a cada sincronização e no 
 - **Relatórios por período** (`server/period-report.ts`): movimentos do GLPI vêm de `glpi_ticket_versions` (desde 20/10/2026); mudanças de área na conferência vêm da auditoria (`Conferência: <antes> → <depois>`), registradas a partir de 23/11/2026.
 - **Aguardando a vez na fila** indica que a tentativa de um arquivo ainda vai começar. **Nova tentativa programada** tem horário próprio. **Em leitura** indica obtenção ou leitura em andamento. **Ainda não há tentativa automática agendada** é um estado separado.
 - **Leitura concluída** descreve o arquivo. Para classificar a demanda, conferir os campos e demais bloqueios com `kedu-conferencia-documental`. Um arquivo na fila pode coexistir com outro já lido.
+
+## Medir a qualidade da leitura
+
+Para decidir a próxima melhoria com números, só leitura e direto no Supabase:
+
+1. Coorte: demandas com chamado aberto no GLPI (status diferente de 5 e 6) e pelo menos uma comparação, ignorando `not_applicable`.
+2. Contar os campos por situação (`matches`, `missing`, `review`, `different`, `ambiguous`), por campo e pelo motivo (`reviewReason.code`, `missingReason`).
+3. Para cada `missing`, procurar o valor do GLPI no texto dos contratos comparados (dígitos para CNPJ/CEP; texto sem acento e pontuação para nomes). Valor no texto = falha de associação (redação não reconhecida, parte errada, documento errado). Fora do texto = ausência real ou leitura parcial.
+4. Antes de publicar uma correção, simular com `buildProcessingPlan` sobre os mesmos dados e comparar antes × depois campo a campo; divergência nova que aparece porque o campo passou a ser lido é achado real, não regressão.
+
+Linha de base em 23/11/2026 (66 demandas, ~210 campos): conferidos sozinhos 70% → 78% depois das correções de redação; não localizados 15% → 7%. Os restantes são majoritariamente dados ausentes do próprio contrato.
 
 ## Armadilhas
 
