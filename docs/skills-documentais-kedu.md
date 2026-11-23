@@ -32,6 +32,13 @@ Relatório por demanda e documento: campos encontrados e esperados separados, en
 
 Ausências reais exigem pedir documentos ou esclarecimentos; OCR repetido não resolve falta de fonte. A redução da fila depende de execução e validação no fluxo oficial. Criar skills não executa automaticamente essa fila, não altera o motor de OCR e não comprova acurácia.
 
+## Atualização 1.8.0 / 1.9.0 / 1.10.0 (23/11/2026)
+
+- **Áreas das demandas (`kedu-triagem-documental` v1.8.0, `kedu-conferencia-documental` v1.10.0)**: "Tipo a confirmar" deixou de existir, por decisão da usuária; a demanda vai para uma área real e cita os anexos ainda não identificados. Nova área **Aguardando elaboração do contrato** para pedidos sem contrato preenchido (só apoio, propostas, relatórios ou modelos em branco). **Contrato não encontrado** e **Consulta ao GLPI incompleta** ficam para pedidos de análise contratual. Na simulação, "Contrato não encontrado" caiu de 53 para 2 demandas.
+- **Leitura (`kedu-leitura-precisa` v1.9.0)**: identificação inconclusiva leva à leitura completa; foto lida com confiança sem estrutura de contrato, áudio e vídeo viram apoio. Dúvidas de leitura reconhecidas: valor por extenso, dígito confundido pelo OCR, conta cortada em duas linhas e nome contido no outro. Corrigidos o título com letras espaçadas grudado na razão social e a cláusula aceita como endereço.
+- **Conferência (`kedu-conferencia-documental` v1.10.0)**: correção manual igual ao GLPI resolve o campo; divergência aceita com justificativa (qualquer perfil de edição ou Jurídico), válida só enquanto documento e GLPI não mudarem; tabela Contrato × GLPI em toda demanda.
+- **Operação**: OCR do GitHub de hora em hora (07h40–19h40); contar áreas só com chamados abertos no GLPI; relatórios por período a partir das versões dos chamados e da auditoria; etiqueta de versão das regras em `fingerprint()` a cada mudança de regra.
+
 ## Atualização 1.7.0 / 1.8.0 / 1.9.0 (18/11/2026)
 
 - **Organização da demanda (`kedu-triagem-documental` v1.7.0, `kedu-leitura-precisa` v1.8.0)**: CNPJ do formulário GLPI corrigido só quando o dígito verificador comprova (campo numérico `…,00`, zero inicial perdido) e CPF de pessoa física aceito. Vários CNPJs no campo são desempatados apenas por um único identificador presente nos documentos lidos. Demandas ainda não confirmadas são vinculadas a cada sincronização, com auditoria. No piloto, 18 das 24 demandas sem organização passaram a ser identificadas; as 6 restantes têm CNPJ com erro de digitação ou ambiguidade real.

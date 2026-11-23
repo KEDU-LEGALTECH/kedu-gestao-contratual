@@ -1,7 +1,7 @@
 ---
 name: kedu-leitura-precisa
 description: Use em anexos Kedu. Leia por campo, página e entidade.
-version: 1.8.0
+version: 1.9.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -23,7 +23,8 @@ Para ler contrato, aditivo, proposta, contraproposta, documento societário/cada
 3. Filtrar o que precisa ser lido pelo papel do anexo (`server/reading-policy.ts` e `server/contract-reading-scope.ts`) antes de gastar OCR:
    - Quando a tarefa for conferir o contrato, use `server/contract-reading-scope.ts` e `shared/document-heading.ts` para distinguir instrumento (`isFilledContract(text, name)`), candidato a contrato (`contractCandidateFile`) e documento de apoio (`isSupportDocument`). Reconhecer nomes de contrato mesmo com prefixo da escola ou pasta (`Colégio X - 1º Termo Aditivo.pdf`, `Minuta - Contrato...`, `Assinatura_Contrato...`) e títulos como `Aditamento`, `Rescisão Contratual` e `Confissão e Parcelamento de Dívida`.
    - Em PDFs com nome genérico lidos inicialmente apenas na página 1 (`triageOnly`), verificar se a capa traz termos contratuais ou de plataforma de assinatura (`Clicksign`, `DocuSign`, `ZapSign`, `D4Sign`, `Autentique`, `Contratante`, `Cláusula` — `likelyContractOnCover`); quando presentes, disparar imediatamente a leitura completa de todas as páginas do PDF.
-   - Anexos `.pdf`, `.docx`, `.doc` ou `.odt` já lidos por completo que não tenham cláusulas nem estrutura contratual (ou sejam identificados como boleto, estatuto, ata, certidão, alvará, ficha cadastral, DANFE/NF-e, declaração, ofício, requerimento) ficam classificados como `support`, permitindo deslocar demandas sem contrato de **Tipo a confirmar** para **Contrato não encontrado**. Extraia campos para comparação contratual somente do instrumento vigente.
+   - Anexos `.pdf`, `.docx`, `.doc` ou `.odt` já lidos por completo que não tenham cláusulas nem estrutura contratual (ou sejam identificados como boleto, estatuto, ata, certidão, alvará, ficha cadastral, DANFE/NF-e, declaração, ofício, requerimento) ficam classificados como `support`. Foto lida por completo e com confiança, sem estrutura de contrato, também; leitura duvidosa fica pendente. Áudio e vídeo são `support` e nunca são lidos. Extraia campos para comparação contratual somente do instrumento vigente.
+   - Identificação inicial inconclusiva (`triageOnly`) leva à leitura completa do arquivo, nunca a uma nova identificação.
    - Quando o escopo incluir leitura de apoio, aplique as regras por papel abaixo. Para `registration` (Cartão CNPJ), leia apenas `cnpj`, `razaoSocial`, `nomeFantasia`, `endereco`, `rua`, `numero`, `bairro`, `cep`, `cidade`, `estado`.
    - `bank` (Comprovante bancário / tela de conta): ler apenas `banco`, `agencia`, `conta`, `titularConta`, `documentoTitular`, `pix`.
    - `report` (Planilha de descredenciamento / relatório): ler apenas a identificação da escola (`razaoSocial` e `cnpj`); nunca adotar valores financeiros ou fórmulas do relatório como cláusula contratual.
@@ -48,6 +49,17 @@ A identificação da organização da demanda usa a parte qualificada no contrat
 
 Em cartão cadastral, leia o cabeçalho e a linha de valores em conjunto. O OCR pode trocar o hífen do CNPJ por ponto ou espaço. Use o contexto de **Número de inscrição** para localizar a ocorrência e preserve os dígitos na transcrição.
 
+## Dúvidas de leitura que o portal reconhece
+
+Nenhuma delas troca o valor lido pelo do GLPI; no máximo, o campo vai de **Erro** para **Conferir leitura** (`server/reading-doubt.ts`):
+
+- **Valor por extenso**: em OCR, se o número lido difere do GLPI, mas o extenso entre parênteses ao lado dele corresponde ao GLPI (`11,64% (onze vírgula oitenta e quatro por cento)`), é provável erro de leitura. Se número e extenso concordam entre si, a divergência é real. Em texto digital, número e extenso diferentes são inconsistência do próprio documento.
+- **Dígito confundido**: em OCR, diferença de exatamente um dígito de um par comum (8↔6, 3↔8, 1↔7, 0↔8, 5↔6…).
+- **Conta cortada**: em foto de tela bancária, conta lida que é o começo da conta pedida (`5726984` × `572698416-8`): o OCR separou o número em duas linhas.
+- **Nome contido no outro** (`IENEC` × `COLÉGIO IENEC`, `Educriart` × `Escola Educriart LTDA`), ignorando natureza jurídica, acentos e parênteses; exige uma palavra que identifique a organização (palavras genéricas como "Escola" não contam).
+
+Erros de captura já corrigidos no extrator: título com letras espaçadas (`CO N T R ATO D E …`) grudado na razão social e frase de cláusula (`CLÁUSULA PRIMEIRA. A sociedade passa a…`) aceita como endereço.
+
 ## Armadilhas
 
 - Kedu/contratante não é automaticamente escola/contratada. Sócio não é automaticamente administrador/representante com poderes. Residência/foro não é sede.
@@ -59,7 +71,7 @@ Em cartão cadastral, leia o cabeçalho e a linha de valores em conjunto. O OCR 
 - Estouro de tempo não é arquivo em branco: página com "tempo de leitura excedido" continua pendente. Antes de culpar o OCR, confirmar que o arquivo e as páginas certas chegaram ao leitor e que havia memória (o leitor adia abaixo de 512 MB livres).
 - Imagem sem contraste (fundo, marca d'água, área em branco; desvio em tons de cinza abaixo de 12, `server/image-content.ts`) não tem dados a ler e não torna o documento parcial. Imagem com contraste e sem texto reconhecido continua pendente: pode ser página escaneada.
 - Word com fontes incorporadas (`word/fonts/`) ou imagens grandes não é "grande demais": o limite de 20 MB vale para o texto; fontes e imagens têm limite próprio de 100 MB, com proteção contra expansão anormal. Imagem ou desenho marcado como oculto, sem texto, não impede a leitura. Texto oculto e revisões controladas continuam exigindo conferência manual.
-- Na publicação sem PaddleOCR (Vercel), PDF com texto, Word, ODT, XLSX e PPTX sem imagens a ler são lidos na hora; qualquer página escaneada ou imagem com texto deixa o arquivo inteiro "Aguardando leitura com OCR", sem Tesseract isolado e sem substituir leitura anterior que funcionou.
+- Na publicação sem PaddleOCR (Vercel), PDF com texto, Word, ODT, XLSX e PPTX sem imagens a ler são lidos na hora; qualquer página escaneada ou imagem com texto deixa o arquivo inteiro "Aguardando leitura com OCR", sem Tesseract isolado e sem substituir leitura anterior que funcionou. O OCR do GitHub lê essa fila de hora em hora, das 07h40 às 19h40.
 - ZIP e outros contêineres não têm leitor: registrar "formato sem leitor" e pedir os arquivos separados; não tratar como falha de OCR nem repetir a tentativa.
 
 ## Verificação
