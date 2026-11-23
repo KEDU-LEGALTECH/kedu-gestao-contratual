@@ -87,7 +87,7 @@ O plano gratuito do Supabase tem 1 GB de Storage. Em 18/11/2026 os anexos ocupav
 
 ### Leitor PaddleOCR no GitHub Actions
 
-O workflow `.github/workflows/paddleocr-check.yml` roda sozinho às 07h40, 12h40 e 16h40 de Brasília (o GitHub pode atrasar o início em alguns minutos) e também pode ser disparado à mão. Agendado ou com `run_worker`, ele confere a fila antes e termina em cerca de 1 minuto quando nenhum arquivo aguarda OCR. A execução manual sem `run_worker` verifica PNG, JPEG e PDF escaneado com os arquivos sintéticos de `tests/reading-fixtures.ts`, sem acessar o Supabase. O job roda no Ubuntu com Node 24 e Python 3.11.
+O workflow `.github/workflows/paddleocr-check.yml` roda sozinho de hora em hora, das 07h40 às 19h40 de Brasília (o GitHub pode atrasar ou descartar alguns horários) e também pode ser disparado à mão. Agendado ou com `run_worker`, ele confere a fila antes e termina em cerca de 1 minuto quando nenhum arquivo aguarda OCR. A execução manual sem `run_worker` verifica PNG, JPEG e PDF escaneado com os arquivos sintéticos de `tests/reading-fixtures.ts`, sem acessar o Supabase. O job roda no Ubuntu com Node 24 e Python 3.11.
 
 O processamento de anexos reais em runners do GitHub depende de autorização LGPD da empresa. Após essa autorização, configure o ambiente protegido `kedu-ocr`, com revisão obrigatória, e restrinja suas branches. Defina `KEDU_PG_SCHEMA`, `SUPABASE_URL` e `SUPABASE_STORAGE_BUCKET` como variáveis desse ambiente e `SUPABASE_DATABASE_URL`, `SUPABASE_CA_CERT` e `SUPABASE_SECRET_KEY` como segredos. Só então defina a variável do repositório `KEDU_OCR_WORKER_ENABLED=true` e selecione `run_worker` na execução manual.
 

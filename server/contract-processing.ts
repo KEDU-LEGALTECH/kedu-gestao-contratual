@@ -100,7 +100,7 @@ async function fingerprint(did:string) {
  ]);
  // Change this tag whenever a conferência rule changes: every open demand is then recalculated
  // by the next reading cycle, without anyone opening it.
- return sha256(Buffer.from(JSON.stringify(['v49-inconclusive-triage-full-reading',resolutions,d,templates,contracts,signed,confirmed])));
+ return sha256(Buffer.from(JSON.stringify(['v50-no-type-to-confirm-area',resolutions,d,templates,contracts,signed,confirmed])));
 }
 export async function processingSource(did:string) {
  const demand=await sql.one("SELECT * FROM demands WHERE id=?", did);
@@ -266,18 +266,18 @@ export async function buildProcessingPlan(did:string) {
   const reason=unreadableContractIssue(doc,cachedByDocument.get(String(doc.id)),raw,ticket.status);
   add('file:'+doc.id,reason.message,{label:'Contrato não lido',source:doc.name,missingReason:reason.missingReason});
  }
- if(!files.length&&!pendingContracts.length&&unidentified.length)for(const doc of unidentified)add('file:'+doc.id,'A identificação inicial não confirmou que este anexo é um contrato. Abra o arquivo na conversa do GLPI para verificar o tipo.',{label:'Tipo a confirmar',source:doc.name});
- if(!files.length&&!pendingContracts.length&&!unidentified.length){
-  const typeUnknown=unavailable.some((doc:any)=>contractReadingScope(doc.name||'',cachedByDocument.get(String(doc.id))).kind==='unknown');
+ if(!files.length&&!pendingContracts.length){
+  // There is no "type to confirm" area: attachments still unidentified are named in the message of the
+  // area the demand goes to, and a contract found among them later is compared automatically.
+  const unknownNames=[...new Set([...unidentified,...unavailable.filter((doc:any)=>contractReadingScope(doc.name||'',cachedByDocument.get(String(doc.id))).kind==='unknown')].map((doc:any)=>doc.name))];
+  const unknownNote=unknownNames.length?` Anexo(s) ainda não identificado(s): ${unknownNames.join('; ')}. Se algum for contrato, a demanda é conferida automaticamente depois da leitura.`:'';
   // A request for Kedu to draft the instrument has no filled contract yet: only an analysis request must bring one.
-  if(!typeUnknown&&!/an[áa]lise contratual/i.test(demandType+' '+raw.title))
-   add('contractMissing',`Pedido de elaboração: os anexos são documentos de apoio, propostas, relatórios ou modelos em branco, sem contrato preenchido para conferir.${incompleteCoverage?' As aprovações do chamado não puderam ser consultadas no GLPI.':''} Quando o contrato preenchido for anexado, ele é conferido automaticamente.`,{label:'Aguardando elaboração do contrato',missingReason:'awaiting_drafting'});
+  if(!/an[áa]lise contratual/i.test(demandType+' '+raw.title))
+   add('contractMissing',`Pedido de elaboração: os anexos são documentos de apoio, propostas, relatórios ou modelos em branco, sem contrato preenchido para conferir.${incompleteCoverage?' As aprovações do chamado não puderam ser consultadas no GLPI.':''}${unknownNote} Quando o contrato preenchido for anexado, ele é conferido automaticamente.`,{label:'Aguardando elaboração do contrato',missingReason:'awaiting_drafting'});
   else if(incompleteCoverage)
-   add('contractMissing','A consulta do GLPI deixou anexos ou aprovações por verificar. Confira a conversa do chamado e o acesso da integração antes de pedir o reenvio.',{label:'Consulta ao GLPI incompleta',missingReason:'coverage_partial'});
-  else if(unavailable.some((doc:any)=>contractReadingScope(doc.name||'',cachedByDocument.get(String(doc.id))).kind==='unknown'))
-   add('contractMissing','Ainda há anexos cujo tipo precisa ser identificado. Abra os arquivos na conversa do GLPI.',{label:'Tipo a confirmar',missingReason:'source_unidentified'});
+   add('contractMissing','A consulta do GLPI deixou anexos ou aprovações por verificar. Confira a conversa do chamado e o acesso da integração antes de pedir o reenvio.'+unknownNote,{label:'Consulta ao GLPI incompleta',missingReason:'coverage_partial'});
   else
-   add('contractMissing','Nenhum contrato foi identificado entre os anexos do chamado. Obtenha o contrato no GLPI para conferir o preenchimento.',{label:'Contrato não encontrado'});
+   add('contractMissing','Nenhum contrato foi identificado entre os anexos do chamado. Obtenha o contrato no GLPI para conferir o preenchimento.'+unknownNote,{label:'Contrato não encontrado'});
  }
  for(const [key,vs] of Object.entries(candidates)) {
   const distinct=vs.map(x=>normalizeValue(key,x.value)).filter((v,i,a)=>a.findIndex(x=>sameRequestedValue(key,x,v))===i);

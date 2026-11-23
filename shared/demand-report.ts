@@ -6,7 +6,6 @@ export const contractStageActions: Record<string, string> = {
   "Consulta ao GLPI incompleta": "Confira os anexos e as aprovações na conversa do GLPI. Se a integração não tiver acesso, solicite a permissão de leitura.",
   "Contrato não encontrado": "Confira a conversa do chamado. Se o contrato ainda não foi enviado, solicite o instrumento para conferência.",
   "Contrato não lido": "Abra a demanda para ver se falta baixar o contrato ou concluir a leitura do arquivo.",
-  "Tipo a confirmar": "Abra o anexo indicado na demanda e confira se ele é o instrumento contratual.",
 };
 
 export type ReportItem = { kind: "erro" | "pendencia" | "aviso"; title: string; detail: string; source?: string; action?: string };
@@ -19,7 +18,7 @@ export function demandArea(job: any, intake?: any) {
   if (job?.status !== "Aguardando análise") return job?.status || "";
   const missing = (job.issues || []).find((i: any) => i.field === "contractMissing");
   if (missing) return missing.label !== "Aguardando elaboração do contrato" && partialGlpi(intake) ? "Consulta ao GLPI incompleta" : missing.label;
-  return (job.issues || []).find((i: any) => ["Contrato não lido", "Tipo a confirmar"].includes(i.label))?.label || job.status;
+  return (job.issues || []).find((i: any) => i.label === "Contrato não lido")?.label || job.status;
 }
 
 const blocker = /^(file:|review:|files$|processing$)/;
@@ -47,9 +46,9 @@ export function demandReport(job: any, intake?: any): DemandReport | undefined {
     items.push({ kind: "aviso", title: "Divergência aceita: " + (r.label || r.field), detail: `Documento: ${r.found}. GLPI: ${r.expected}. Justificativa de ${r.acceptance?.author || "usuário"}: ${r.acceptance?.note || ""}` });
   const named = new Set(items.map(i => i.source).filter(Boolean));
   for (const f of (job.files || []).filter((f: any) => f.readingScope === "unknown" && !named.has(f.name)))
-    items.push({ kind: "pendencia", title: "Tipo do anexo a identificar", source: f.name, detail: f.problem
+    items.push({ kind: "pendencia", title: "Anexo ainda não identificado", source: f.name, detail: f.problem
       ? (/fake worker|cannot find module|tempor/i.test(f.problem) ? "A leitura falhou por um problema temporário do servidor; o portal vai ler o arquivo de novo." : `A leitura falhou: ${String(f.problem).slice(0, 160)}`)
-      : f.method === "Identificação inicial" ? "O anexo passou só pela identificação inicial e aguarda a leitura completa. Fotos e digitalizações são lidas pelo OCR às 07h40, 12h40 e 16h40." : "Abra o anexo e confira se ele é o contrato." });
+      : f.method === "Identificação inicial" ? "O anexo passou só pela identificação inicial e aguarda a leitura completa. Fotos e digitalizações são lidas pelo OCR de hora em hora, das 07h40 às 19h40." : "Abra o anexo e confira se ele é o contrato." });
   if (intake?.approvalCoverage === "partial")
     items.push({ kind: "aviso", title: "Aprovações do GLPI não consultadas", detail: "A integração não tem permissão para ler as aprovações deste chamado. Se o contrato foi enviado numa aprovação, ele ainda não aparece aqui." });
   if (intake?.documentsAvailable === false)
@@ -66,7 +65,7 @@ export function demandReport(job: any, intake?: any): DemandReport | undefined {
   if (job.status === "Conferência parcial")
     return { situation: "Conferência parcial", reason: `Nenhum erro encontrado, mas ${pending} item(ns) precisam de conferência humana.`, next: "Confira no original cada pendência abaixo e confirme ou corrija a leitura.", items };
   const missing = issues.find(i => i.field === "contractMissing");
-  const first = issues.find(i => ["Contrato não lido", "Tipo a confirmar"].includes(i.label));
+  const first = issues.find(i => i.label === "Contrato não lido");
   return {
     situation: area,
     reason: area === "Consulta ao GLPI incompleta" ? "Nenhum contrato foi identificado nos anexos, e parte do chamado não pôde ser consultada no GLPI." : missing?.message || first?.message || "Aguardando a leitura do contrato.",

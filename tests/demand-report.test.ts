@@ -41,6 +41,6 @@ test("relatório de Tipo a confirmar cita cada anexo ainda não identificado e o
   const report = demandReport({ status: "Aguardando análise", comparisons: [], issues: [{ field: "contractMissing", label: "Tipo a confirmar", message: "Ainda há anexos cujo tipo precisa ser identificado." }],
     files: [{ name: "foto.jpeg", readingScope: "unknown", method: "Identificação inicial" }, { name: "CTT.pdf", readingScope: "unknown", problem: "Setting up fake worker failed" }, { name: "cartao.pdf", readingScope: "support" }] })!;
   assert.deepEqual(report.items.map(i => i.source), ["foto.jpeg", "CTT.pdf"]);
-  assert.match(report.items[0].detail, /OCR às 07h40/);
+  assert.match(report.items[0].detail, /OCR de hora em hora/);
   assert.match(report.items[1].detail, /problema temporário do servidor/);
 });
