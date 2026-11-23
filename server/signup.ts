@@ -5,6 +5,7 @@ import { permit } from "../shared/access-policy.js";
 /** Self-service access requests. The account exists from the request on, but stays blocked
  * (user_access) until an administrator approves it and chooses the profile. */
 const pendingKey = (userId: string) => "signupPending:" + userId;
+const maxPending = 20;
 export const roles = ["Administrador", "Solicitante", "Operação", "Jurídico", "Aprovador", "Consulta", "Risco", "Financeiro"] as const;
 
 export async function requestAccess(body: unknown) {
@@ -16,6 +17,9 @@ export async function requestAccess(body: unknown) {
   const email = b.email.trim().toLowerCase();
   // Same answer whether or not the e-mail exists, so the form does not reveal who has an account.
   if (await sql.one("SELECT id FROM users WHERE lower(email)=?", email)) return;
+  // The per-address limit does not stop requests from many addresses: cap what waits for an administrator.
+  if ((await sql.one("SELECT COUNT(*) AS n FROM settings WHERE key LIKE 'signupPending:%'")).n >= maxPending)
+    throw Object.assign(Error("Há muitos pedidos de acesso aguardando aprovação. Tente novamente mais tarde ou fale com um administrador."), { status: 429 });
   const userId = id();
   await sql.transaction(async () => {
     await sql.run("INSERT INTO users VALUES(?,?,?,?,?)", userId, b.name, email, "Consulta", hash(b.password));

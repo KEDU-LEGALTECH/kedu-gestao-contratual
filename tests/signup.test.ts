@@ -53,3 +53,16 @@ test("pedido recusado continua bloqueado e o solicitante não aprova a si mesmo"
   assert.equal(refused.status, 403);
   assert.match(refused.body.error, /Acesso desativado/);
 });
+
+test("só o administrador vê e-mails e pedidos de acesso; pedidos param ao chegar no teto", async () => {
+  await sql.run("INSERT INTO users VALUES('con','Consulta Teste','con@test.local','Consulta',?)", hash("senha-da-consulta-1"));
+  await post("/signup", { name: "Pessoa Pendente", email: "pendente@externo.com", password: "senha-forte-pendente" });
+  const consulta = await login("con@test.local", "senha-da-consulta-1");
+  const seen = await (await fetch(base + "/bootstrap", { headers: { cookie: consulta.cookie } })).json();
+  assert.equal(seen.users.some((u: any) => u.email), false, "sem e-mails para quem não é administrador");
+  assert.equal(seen.users.some((u: any) => u.name === "Pessoa Pendente"), false, "pedidos pendentes não aparecem");
+  for (let i = 0; i < 20; i++) await sql.run("INSERT INTO settings(key,value) VALUES(?,?)", "signupPending:teto-" + i, "{}");
+  const full = await post("/signup", { name: "Mais Uma", email: "mais@externo.com", password: "senha-forte-mais-uma" });
+  assert.equal(full.status, 429);
+  assert.equal(await sql.one("SELECT id FROM users WHERE email='mais@externo.com'"), undefined);
+});
