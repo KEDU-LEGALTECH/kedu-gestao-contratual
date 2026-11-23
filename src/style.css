@@ -1894,3 +1894,4 @@ input[type="checkbox"] {
   margin: 14px 18px;
 }
 .glpi-queue-tabs {display:flex;flex-wrap:wrap;gap:12px;margin:16px 0;}
+.login-signup { display: flex; margin: 14px 0 8px; }
