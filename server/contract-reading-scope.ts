@@ -35,10 +35,13 @@ export function isFilledContract(text:string,name=''){
  return /\b(?:taxa de remuneracao|remuneracao kedu|percentual de garantia|percentual de repasse|modalidade de garantia|valor parcelado)\b/.test(folded)&&/\b(?:razao social|cnpj|contratad[ao]|contratante)\b/.test(folded);
 }
 type Cached={extracted:string;byteLength?:number;problem?:string;name?:string};
+const mediaName=/\.(?:ogg|oga|opus|mp3|m4a|aac|wav|amr|mp4|mov|avi|3gp|webm)$/i;
 export function contractReadingScope(name:string,file?:Cached){
  let reading:any={};
  try{reading=JSON.parse(file?.extracted||'{}')||{};}catch{}
  const text=String(reading.text||'');
+ // Audio and video messages are never the contract and cannot be read.
+ if(mediaName.test(name))return {kind:'support' as const,needsWork:false};
  if(isFilledContract(text,name))return {kind:'contract' as const,needsWork:reading.triageOnly===true||needsReadingRecovery(file)};
  if(isSupportDocument(name,text)||isContractInstrument(text))
   return {kind:'support' as const,needsWork:isBankDocument(name,text)&&needsReadingRecovery(file)};
@@ -49,9 +52,13 @@ export function contractReadingScope(name:string,file?:Cached){
   return {kind:'support' as const,needsWork:false};
  if(screenshotName.test(name.trim())&&text.trim().length>=20&&!file?.problem&&!reading.problem&&!reading.incomplete&&!reading.transient)
   return {kind:'support' as const,needsWork:false};
- // A failed identification (no text) says nothing about the document: it still needs a full reading.
- const failedTriage=reading.triageOnly&&!text.trim()&&!!(file?.problem||reading.problem);
- const finished=(reading.triageOnly&&!reading.transient&&!failedTriage)||!needsReadingRecovery(file)||!supportedReading.test(name);
+ // A photo or scan read in full and with confidence that is not a contract is a supporting document;
+ // a doubtful reading may be a poorly photographed contract page and stays for a person to check.
+ if(!reading.triageOnly&&!reading.needsReview&&/\.(?:png|jpe?g|webp|tiff?|bmp|gif)$/i.test(name)&&text.trim().length>=40&&!file?.problem&&!reading.problem&&!reading.incomplete&&!reading.transient&&!reading.awaitingOcr)
+  return {kind:'support' as const,needsWork:false};
+ // An identification that failed or could not tell what the file is still needs a full reading.
+ if(reading.triageOnly&&supportedReading.test(name))return {kind:'unknown' as const,needsWork:true};
+ const finished=!needsReadingRecovery(file)||!supportedReading.test(name);
  return {kind:'unknown' as const,needsWork:!finished};
 }
 

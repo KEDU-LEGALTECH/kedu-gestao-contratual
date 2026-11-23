@@ -100,7 +100,7 @@ async function fingerprint(did:string) {
  ]);
  // Change this tag whenever a conferência rule changes: every open demand is then recalculated
  // by the next reading cycle, without anyone opening it.
- return sha256(Buffer.from(JSON.stringify(['v48-accepted-divergences',resolutions,d,templates,contracts,signed,confirmed])));
+ return sha256(Buffer.from(JSON.stringify(['v49-inconclusive-triage-full-reading',resolutions,d,templates,contracts,signed,confirmed])));
 }
 export async function processingSource(did:string) {
  const demand=await sql.one("SELECT * FROM demands WHERE id=?", did);
@@ -559,7 +559,8 @@ export async function processContract(did:string,userId:string|null=null,downloa
     const previous=provenPrevious||(!cached?.byteLength?await sql.one(`SELECT * FROM processing_files WHERE demand_id=? AND document_id=? AND ${byteSizeSql()}>0 ORDER BY rowid DESC LIMIT 1`, did, String(doc.id)):null);
     // A changed ticket can retain the exact same attachment. Verify current GLPI bytes before reuse.
     if(previous&&!previous.problem&&storedHash(previous)===sha256(file.bytes)&&!contractReadingScope(file.name,{byteLength:file.bytes.length,extracted:previous.extracted}).needsWork){extracted=JSON.parse(previous.extracted);reusedFrom=previous.id;}
-    else if(scope.kind==='contract')extracted={...await readProcessingFile(file.bytes,file.name,undefined,false,readingOptions),contractIdentified:!!cached&&JSON.parse(cached.extracted).contractIdentified===true};
+    // An inconclusive identification is followed by a full reading, never by the same identification again.
+    else if(scope.kind==='contract'||(!!cached&&JSON.parse(cached.extracted).triageOnly===true))extracted={...await readProcessingFile(file.bytes,file.name,undefined,false,readingOptions),contractIdentified:!!cached&&JSON.parse(cached.extracted).contractIdentified===true};
     else {
      const detected=readingFilename(file.bytes,file.name);
      const preview=/\.(pdf|png|jpe?g|webp|tiff?|bmp|gif)$/i.test(detected)
