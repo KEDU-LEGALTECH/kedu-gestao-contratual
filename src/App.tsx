@@ -213,7 +213,7 @@ export function App() {
     [owner, setOwner] = useState(""),
     [priority, setPriority] = useState(""),
     [demandQueue,setDemandQueue]=useState<DemandQueue>("all"),
-    [dashboardQueue, setDashboardQueue] = useState<"all"|"open"|"pending">("all"),
+    [dashboardQueue, setDashboardQueue] = useState<"all"|"open"|"pending">("open"),
     [showAllDashboardDemands, setShowAllDashboardDemands] = useState(false),
     [type, setType] = useState(""),
     [deadline, setDeadline] = useState(""),
@@ -456,10 +456,11 @@ export function App() {
     );
   const displayStage = (d: any) => demandContractStage(d);
   const listStages=[...new Set<string>(["Analisando","Aguardando análise","Conferência parcial","Aguardando correção","Sem erros",...data.demands.map(displayStage)])];
+  // Tickets in progress come first and open by default; "all" is the last option.
   const dashboardQueues = [
-    ["all", "Todos"],
     ["open", "Em andamento no GLPI"],
     ["pending", "Pendentes no GLPI"],
+    ["all", "Todos"],
   ] as const;
   const dashboardGroups = dashboardQueues.map(([key,label])=>({
     key,label,demands:data.demands.filter((d:any)=>matchesDemandQueue(d,key)),
