@@ -624,7 +624,8 @@ export function App() {
           </div>
         </div>
         <nav>
-          {nav.map(([title, Icon]) => (
+          {/* The signed-history screen only matters once contracts are generated from a homologated model. */}
+          {nav.filter(([title]) => title !== "Contratos e aditivos" || data.templates?.some((t: any) => t.status === "aprovado")).map(([title, Icon]) => (
             <button
               key={title}
               className={page === title ? "active" : ""}
