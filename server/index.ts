@@ -14,7 +14,8 @@ import { z } from "zod";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { directLimit, uploadUrl } from "./processing-files.js";
 import { uploadPath } from "./stored-upload.js";
-import { db, all, one, run, id, now, verify, audit, hash, localDate, sql, auditAsync, postgresMode } from "./db.js";
+import { db, all, one, run, id, now, verify, audit, hash, localDate, sql, auditAsync, postgresMode, sessionKey } from "./db.js";
+import { loginBlocked, recordFailedLogin, clearFailedLogins } from "./login-guard.js";
 import "./seed.js";
 import { fields, generate, review, paragraphs } from "./documents.js";
 import {
@@ -162,21 +163,28 @@ app.post(
   "/api/login",
   rateLimit({ windowMs: 900000, limit: 20 }),
   async (req, res) => {
-    const u = await sql.one("SELECT * FROM users WHERE lower(email)=lower(?)", String(req.body.email).trim());
+    const email = String(req.body.email).trim();
+    // Behind Vercel the address is only known when TRUST_PROXY_HOPS is set; otherwise every request
+    // would share the proxy's address and one attacker could lock everybody out.
+    const address = process.env.VERCEL && !app.get("trust proxy") ? undefined : req.ip;
+    if (await loginBlocked(email, address))
+      return res.status(429).json({ error: "Muitas tentativas de entrada. Aguarde 15 minutos e tente novamente." });
+    const u = await sql.one("SELECT * FROM users WHERE lower(email)=lower(?)", email);
     if (
-      process.env.NODE_ENV === "production" &&
-      u?.email.endsWith("@demo.kedu.local")
-    )
+      (process.env.NODE_ENV === "production" && u?.email.endsWith("@demo.kedu.local")) ||
+      !u || !verify(String(req.body.password), u.password)
+    ) {
+      await recordFailedLogin(email, address);
       return res.status(401).json({ error: "E-mail ou senha inválidos." });
-    if (!u || !verify(String(req.body.password), u.password))
-      return res.status(401).json({ error: "E-mail ou senha inválidos." });
+    }
+    await clearFailedLogins(email);
     if (await sql.one("SELECT user_id FROM user_access WHERE user_id=?", u.id))
       return res.status(403).json({ error: await isPending(u.id)
         ? "Seu pedido de acesso ainda aguarda a aprovação de um administrador."
         : "Acesso desativado. Fale com um administrador do portal." });
     const token = randomBytes(32).toString("hex");
     await sql.run("DELETE FROM sessions WHERE expires<?", Date.now());
-    await sql.run("INSERT INTO sessions VALUES(?,?,?)", token, u.id, Date.now() + 8 * 3600000);
+    await sql.run("INSERT INTO sessions VALUES(?,?,?)", sessionKey(token), u.id, Date.now() + 8 * 3600000);
     res.cookie("session", token, {
       httpOnly: true,
       sameSite: "strict",
@@ -214,7 +222,7 @@ app.get("/api/cron/reading", async (req, res) => {
   res.json(await readCache.exit(() => runReadingCycle(Number(process.env.READING_CYCLE_SECONDS || (process.env.VERCEL ? 180 : 240)) * 1000)));
 });
 app.use("/api", async (req: any, res, next) => {
-  const u = await sql.one("SELECT users.* FROM sessions JOIN users ON users.id=sessions.user_id WHERE token=? AND expires>? AND NOT EXISTS(SELECT 1 FROM user_access a WHERE a.user_id=users.id)", req.cookies.session || "", Date.now());
+  const u = await sql.one("SELECT users.* FROM sessions JOIN users ON users.id=sessions.user_id WHERE token=? AND expires>? AND NOT EXISTS(SELECT 1 FROM user_access a WHERE a.user_id=users.id)", sessionKey(req.cookies.session), Date.now());
   if (!u)
     return res
       .status(401)
@@ -223,7 +231,7 @@ app.use("/api", async (req: any, res, next) => {
   next();
 });
 app.post("/api/logout", async (req, res) => {
-  await sql.run("DELETE FROM sessions WHERE token=?", req.cookies.session || "");
+  await sql.run("DELETE FROM sessions WHERE token=?", sessionKey(req.cookies.session));
   res.clearCookie("session");
   res.json({ ok: true });
 });
@@ -1166,7 +1174,11 @@ app.post("/api/users", async (req: any, res) => {
       password: z.string().min(12),
     })
     .parse(req.body);
-  await sql.run("INSERT INTO users VALUES(?,?,?,?,?)", id(), b.name, b.email, b.role, hash(b.password));
+  // Sign-in compares e-mails without case; the unique column does not, so two spellings would clash there.
+  const email = b.email.trim().toLowerCase();
+  if (await sql.one("SELECT id FROM users WHERE lower(email)=?", email))
+    throw Error("Já existe um usuário com este e-mail.");
+  await sql.run("INSERT INTO users VALUES(?,?,?,?,?)", id(), b.name, email, b.role, hash(b.password));
   await auditAsync(null, req.user.id, "Usuário cadastrado");
   res.json({ ok: true });
 });
@@ -1207,7 +1219,7 @@ app.post("/api/me/password", rateLimit({ windowMs: 900000, limit: 10 }), async (
   if (b.current === b.password) return res.status(400).json({ error: "A nova senha precisa ser diferente da atual." });
   await sql.run("UPDATE users SET password=? WHERE id=?", hash(b.password), req.user.id);
   // Other browsers signed in with the old password are signed out; this one stays.
-  await sql.run("DELETE FROM sessions WHERE user_id=? AND token<>?", req.user.id, req.cookies.session || "");
+  await sql.run("DELETE FROM sessions WHERE user_id=? AND token<>?", req.user.id, sessionKey(req.cookies.session));
   await auditAsync(null, req.user.id, "Senha alterada pelo próprio usuário; outras sessões encerradas");
   res.json({ ok: true });
 });

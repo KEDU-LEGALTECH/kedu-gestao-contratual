@@ -46,12 +46,12 @@ glpi.listen(0, "127.0.0.1");
 await new Promise<void>(resolve => glpi.on("listening", resolve));
 process.env.GLPI_URL = `http://127.0.0.1:${(glpi.address() as any).port}/apirest.php`;
 const { default: app } = await import("../server/index.js");
-const { run, one, sql } = await import("../server/db.js");
+const { run, one, sql, sessionKey } = await import("../server/db.js");
 const { GlpiClient, glpiConfig } = await import("../server/glpi.js");
 await sql.run("INSERT INTO glpi_tickets VALUES('1001','real','Chamado real de teste','2','hash',?,'{}','novo',NULL,'2026-10-20','2026-10-20',NULL)", JSON.stringify({ documents: [{ id: "51", name: "arquivo.docx" }], groups: ["JURIDICO CONTRATOS"] }));
 for (const [id, role] of [["admin", "Administrador"], ["requester", "Solicitante"], ["reader", "Consulta"]]) {
   await sql.run("INSERT INTO users VALUES(?,?,?,?,?)", id, "Teste " + role, id + "@example.com", role, "unused");
-  await sql.run("INSERT INTO sessions VALUES(?,?,?)", "session-" + id, id, Date.now() + 60000);
+  await sql.run("INSERT INTO sessions VALUES(?,?,?)", sessionKey("session-" + id), id, Date.now() + 60000);
 }
 const server = app.listen(0, "127.0.0.1");
 await new Promise<void>(resolve => server.on("listening", resolve));

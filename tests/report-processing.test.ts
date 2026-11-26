@@ -5,10 +5,10 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 process.env.DATABASE_PATH=join(mkdtempSync(join(tmpdir(),"kedu-report-processing-")),"test.sqlite");
 process.env.NODE_ENV="test";process.env.DEMO_SEED="false";process.env.GLPI_MODE="demo";
-const { run, now, hash, sql } = await import("../server/db.js");
+const { run, now, hash, sql, sessionKey } = await import("../server/db.js");
 const {ensureProcessing,saveProcessingResult}=await import("../server/contract-processing.js");
 await sql.run("INSERT INTO users VALUES('u','Administrador','admin@test.local','Administrador',?)", hash("senha-de-teste-12345"));
-await sql.run("INSERT INTO sessions VALUES('session','u',?)", Date.now()+60000);
+await sql.run("INSERT INTO sessions VALUES(?,'u',?)", sessionKey('session'), Date.now()+60000);
 await sql.run("INSERT INTO schools VALUES('s','Escola teste','Escola teste','11.444.777/0001-61','','')");
 for(const [id,stage,status] of [["pending","Recebido","2"],["canceled","Cancelado","2"],["solved","Recebido","5"],["closed","Recebido","6"]]){
  await sql.run("INSERT INTO demands(id,glpi_id,school_id,type,stage,priority,owner,due,data,created) VALUES(?,?,?,'Contrato educacional',?,'Normal','u',?,'{}',?)", id, id, "s", stage, ["solved","closed"].includes(id)?"2000-01-01":"", now());

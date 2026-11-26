@@ -11,7 +11,7 @@ process.env.DATABASE_PATH = join(
 process.env.NODE_ENV = "test";
 process.env.DEMO_SEED = "true";
 const { default: app } = await import("../server/index.js");
-const { one, all, run, db, hash, id, sql } = await import("../server/db.js");
+const { one, all, run, db, hash, id, sql, sessionKey } = await import("../server/db.js");
 const { demoTemplate } = await import("../server/documents.js");
 const { transition, allocateAddendum } = await import("../server/workflow.js");
 const { requiredFor, visibleFor, operationFields } =
@@ -112,7 +112,7 @@ test("Documentos da demanda mostram apenas a matriz e seus aditivos e respeitam 
   assert.equal(result.data.documentBundle.signed.some((d: any) => d.demand_id === unrelated.id), false);
   const uid = id(), token = id();
   await sql.run("INSERT INTO users VALUES(?,?,?,?,?)", uid, "Consulta teste", uid + "@test.local", "Consulta", hash("Test-password-restricted"));
-  await sql.run("INSERT INTO sessions VALUES(?,?,?)", token, uid, Date.now() + 60000);
+  await sql.run("INSERT INTO sessions VALUES(?,?,?)", sessionKey(token), uid, Date.now() + 60000);
   const restricted = await fetch(base + `/demands/${child.id}`, { headers: { cookie: "session=" + token } });
   assert.equal(restricted.status, 200);
   assert.equal((await restricted.json()).documentBundle, null);
