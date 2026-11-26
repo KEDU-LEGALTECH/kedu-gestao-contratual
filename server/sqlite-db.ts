@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, readFileSync } from "node:fs";
+import { portableMigrations } from "./migrations.js";
 mkdirSync("data", { recursive: true });
 /** The local SQLite database with its schema migrations applied. */
 export const db = new DatabaseSync(
@@ -43,8 +44,7 @@ db.exec(readFileSync("migrations/016.sql", "utf8"));
 db.exec(readFileSync("migrations/017.sql", "utf8"));
 if(!(db.prepare('PRAGMA table_info(reading_jobs)').all() as any[]).some(c=>c.name==='progress'))db.exec(readFileSync('migrations/018.sql','utf8'));
 db.exec(readFileSync("migrations/019.sql", "utf8"));
-db.exec(readFileSync("migrations/020.sql", "utf8"));
-db.exec(readFileSync("migrations/021.sql", "utf8"));
+for (const migration of portableMigrations()) db.exec(migration.sql);
 if (!(db.prepare("SELECT sql FROM sqlite_master WHERE name='contract_processing'").get() as any).sql.includes("Conferência parcial")) {
  db.exec(`BEGIN IMMEDIATE;
  CREATE TABLE contract_processing_next(

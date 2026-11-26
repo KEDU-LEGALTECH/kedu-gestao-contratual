@@ -8,7 +8,7 @@ process.env.DATABASE_PATH = join(mkdtempSync(join(tmpdir(), "kedu-schools-")), "
 process.env.NODE_ENV = "test";
 process.env.DEMO_SEED = "false";
 process.env.GLPI_MODE = "demo";
-const { one, run, db, sql } = await import("../server/db.js");
+const { one, run, db, sql, sessionKey } = await import("../server/db.js");
 const { importGlpiSchools } = await import("../server/glpi-schools.js");
 const { referenceDocuments, formatDocument } = await import("../server/reference-document.js");
 const { syncGlpi, listTickets } = await import("../server/glpi-sync.js");
@@ -101,7 +101,7 @@ test("Portal expõe a origem das escolas e restringe a atualização a quem pode
       const uid = "school-user-" + index;
       const token = "test-school-session-" + index;
       await sql.run("INSERT INTO users VALUES(?,?,?,?,?)", uid, "Usuário de teste", `teste${index}@example.com`, role, "unused");
-      await sql.run("INSERT INTO sessions VALUES(?,?,?)", token, uid, Date.now() + 60000);
+      await sql.run("INSERT INTO sessions VALUES(?,?,?)", sessionKey(token), uid, Date.now() + 60000);
       const response = await fetch(base + "/glpi/schools/import", { method: "POST", headers: { cookie: "session=" + token, "Content-Type": "application/json" }, body: "{}" });
       assert.equal(response.status, role === "Operação" ? 200 : 403);
       if (role === "Operação") {

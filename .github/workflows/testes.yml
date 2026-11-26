@@ -1,0 +1,33 @@
+name: Testes
+
+# Every pull request and every change to the main branch is type-checked, built and tested
+# before it reaches the Vercel deploy. Uses only the demo data created by the tests themselves.
+on:
+  pull_request:
+  push:
+    branches: [migracao-supabase]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testes-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  testes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      READING_CACHE: 'off'
+      DOCUMENT_VISION_ENABLED: 'false'
+      GEMINI_PAID_DATA_APPROVED: 'false'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test

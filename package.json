@@ -23,7 +23,8 @@
     "supabase:check": "tsx server/supabase-check.ts",
     "glpi:check": "tsx server/glpi-check.ts",
     "legal:package": "tsx server/legal-review-package.ts",
-    "production:check": "tsx server/readiness.ts"
+    "production:check": "tsx server/readiness.ts",
+    "rules:record": "tsx scripts/rules-version.ts"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.13",

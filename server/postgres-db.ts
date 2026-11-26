@@ -1,6 +1,7 @@
 import postgres from "postgres";
 import { supabaseConfig } from "./supabase-config.js";
 import { postgresSql, postgresTypes } from "./sql.js";
+import { migratePostgres } from "./migrations.js";
 
 /** KEDU_PG_URL selects a local PostgreSQL (tests); otherwise the Supabase connection is used. */
 function target(env: NodeJS.ProcessEnv) {
@@ -14,7 +15,7 @@ function target(env: NodeJS.ProcessEnv) {
 }
 
 /** Connects to the schema named by KEDU_PG_SCHEMA. The schema is created by the importer;
- * this never creates or migrates tables. */
+ * later migrations (migrations/020.sql on) are applied here, see server/migrations.ts. */
 export async function openPostgres(env: NodeJS.ProcessEnv = process.env) {
   const schema = env.KEDU_PG_SCHEMA || "kedu";
   if (!/^[a-z_][a-z0-9_]{0,62}$/.test(schema)) throw Error("KEDU_PG_SCHEMA inválido.");
@@ -29,5 +30,8 @@ export async function openPostgres(env: NodeJS.ProcessEnv = process.env) {
     await pool.end({ timeout: 2 });
     throw Error(`Esquema ${schema} sem as tabelas do portal. Importe os dados antes de usar KEDU_DATABASE=postgres.`);
   }
+  const migrated = await migratePostgres(pool);
+  // stderr: scripts print their results as JSON on stdout.
+  if (migrated.length) console.warn(`Migrações aplicadas no esquema ${schema}: ${migrated.join(", ")}`);
   return postgresSql(pool);
 }
