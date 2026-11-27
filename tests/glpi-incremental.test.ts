@@ -48,3 +48,31 @@ test("GLPI reaproveita date_mod, isola chamado com falha e separa cobertura de a
   assert.ok(!calls.some(path => path.startsWith("Ticket/13/")));
   assert.ok(!calls.includes("Ticket/12/TicketValidation"));
 });
+
+test("chamado sem mudança, mas com aprovações antes recusadas, é lido de novo", async () => {
+  const calls: string[] = [];
+  const cached: RawTicket = {
+    externalId: "20", title: "Aprovação recusada antes", status: "2", updated: "2026-11-05 15:00:00",
+    created: "", category: "", groups: [], content: "", followups: [], documents: [],
+    documentsAvailable: true, approvalCoverage: "partial", timelineCoverage: "complete",
+  };
+  const config = glpiConfig({ GLPI_URL: "https://fake.local/apirest.php", GLPI_GROUP_IDS: "21",
+    GLPI_GROUPS: "", GLPI_APP_TOKEN: "fake-app", GLPI_USER_TOKEN: "novo-token", GLPI_RETRIES: "0" });
+  const fake: typeof fetch = async input => {
+    const path = new URL(String(input)).pathname.split("/apirest.php/")[1];
+    calls.push(path);
+    const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+    if (path === "initSession") return response({ session_token: "fake" });
+    if (path === "killSession") return response(true);
+    if (path === "Group/21") return response({ name: "Jurídico" });
+    if (path === "Group/21/Group_Ticket") return response([{ tickets_id: 20, groups_id: 21, type: 2 }]);
+    if (path === "Ticket/20") return response({ id: 20, date_mod: cached.updated, status: 2, global_validation: 2 });
+    if (path === "Ticket/20/TicketValidation") return response([{ id: 5, comment_submission: "Aprovar contrato", date_creation: "2026-11-05 14:00:00" }]);
+    return response([]);
+  };
+  const source = new RealGlpiSource(config, fake, [], new Map([["20", cached]]));
+  const [ticket] = await source.read(AbortSignal.timeout(1000));
+  assert.equal(source.reused, 0);
+  assert.ok(calls.includes("Ticket/20/TicketValidation"));
+  assert.equal(ticket.approvalCoverage, "complete");
+});

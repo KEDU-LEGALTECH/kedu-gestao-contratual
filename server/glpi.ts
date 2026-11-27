@@ -638,7 +638,8 @@ export class RealGlpiSource implements TicketSource {
     const { body: t } = await client.get(`Ticket/${id}`, { expand_dropdowns: "true" }, signal);
     if (!t || String(t.id) !== id) throw new GlpiError("Resposta inválida para o chamado GLPI " + id);
     const updated = String(t.date_mod || "");
-    if (previous?.timelineCoverage === "complete" && updated && previous.updated === updated) {
+    // Approvals once refused (403) are read again: the token's rights may change without the ticket changing.
+    if (previous?.timelineCoverage === "complete" && previous.approvalCoverage !== "partial" && updated && previous.updated === updated) {
       this.reused++;
       return { ...previous, groups, status: String(t.status ?? ""), priority: String(t.priority ?? "") };
     }
