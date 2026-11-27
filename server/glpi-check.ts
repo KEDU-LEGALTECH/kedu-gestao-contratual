@@ -36,6 +36,8 @@ async function main(){
   for(const name of config.groups)if(!groups.length)for(const g of await client.list("Group",{"searchText[name]":name},200,signal))if(g.name===name||g.completename===name)groups.push(Number(g.id));
   ok=await step("grupos autorizados",async()=>{if(!groups.length)throw Error("Nenhum grupo configurado foi encontrado com este token.");for(const id of groups)await client.get(`Group/${id}`,{},signal);return groups.length+" grupo(s) acessível(is)";})&&ok;
   ok=await step("leitura de chamados dos grupos",async()=>{let total=0;for(const id of groups){const {range}=await client.get(`Group/${id}/Group_Ticket`,{range:"0-0"},signal);total+=Number(/\/(\d+)$/.exec(range)?.[1]||0);}return total+" vínculo(s) de chamado visível(is)";})&&ok;
+  // Without this right the sync still works, but approvals and their attachments stay out of the demands.
+  if(groups.length&&!await step("leitura de aprovações dos chamados",async()=>{const {body}=await client.get(`Group/${groups[0]}/Group_Ticket`,{range:"0-0",order:"DESC"},signal);const id=Number(body?.[0]?.tickets_id);if(!id)return "nenhum chamado para testar";await client.get(`Ticket/${id}/TicketValidation`,{},signal);return "permitida";}))console.log("AVISO aprovações — sem este direito, as aprovações e os anexos enviados nelas ficam fora das demandas.");
  }finally{
   await step("encerramento da sessão",async()=>{await client.close();return "";});
  }
