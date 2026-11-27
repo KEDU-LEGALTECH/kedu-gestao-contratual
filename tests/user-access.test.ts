@@ -23,7 +23,7 @@ const call = (cookie: string, path: string, method: string, body?: unknown) =>
   fetch(base + path, { method, headers: { cookie, ...(body ? { "Content-Type": "application/json" } : {}) }, body: body ? JSON.stringify(body) : undefined });
 
 await sql.run("INSERT INTO users VALUES(?,?,?,?,?)", "admin", "Administradora", "admin@empresa.test", "Administrador", hash("senha-da-admin-123"));
-await sql.run("INSERT INTO users VALUES(?,?,?,?,?)", "ana", "Ana", "ana@empresa.test", "Jurídico", hash("senha-inicial-123"));
+await sql.run("INSERT INTO users VALUES(?,?,?,?,?)", "ana", "Ana", "ana@empresa.test", "Operação", hash("senha-inicial-123"));
 
 test("usuário troca a própria senha conferindo a atual e as outras sessões são encerradas", async () => {
   const first = await login("ana@empresa.test", "senha-inicial-123");

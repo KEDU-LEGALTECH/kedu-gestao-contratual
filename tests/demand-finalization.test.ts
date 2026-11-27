@@ -30,9 +30,9 @@ test("finalizar exige perfil, forma de resolução e motivo, e fica na auditoria
   await assert.rejects(finalizeDemand(user("jur", "Jurídico"), await sql.one("SELECT * FROM demands WHERE id='d1'"), "Resolvido no GLPI", "De novo."), /já está encerrada/);
 });
 
-test("só o administrador reabre, e a demanda volta para a etapa anterior", async () => {
+test("só administrador e Jurídico reabrem, e a demanda volta para a etapa anterior", async () => {
   const d = await sql.one("SELECT * FROM demands WHERE id='d1'");
-  await assert.rejects(reopenDemand(user("jur", "Jurídico"), d), /permissão/);
+  await assert.rejects(reopenDemand(user("con", "Consulta"), d), /permissão/);
   await reopenDemand(user("adm", "Administrador"), d);
   assert.equal(await stage(), "Recebido");
   assert.equal(await finalization("d1"), null);
