@@ -36,6 +36,8 @@ export function demandReport(job: any, intake?: any): DemandReport | undefined {
   if (!job) return undefined;
   const rows: any[] = job.comparisons || [], issues: any[] = job.issues || [];
   const items: ReportItem[] = [];
+  for (const warning of job.supportWarnings || [])
+    items.push({ kind: "aviso", title: "Comprovante bancário: " + (warning.label || warning.field), detail: warning.message, source: warning.source });
   for (const r of rows.filter(r => r.status === "different"))
     items.push({ kind: "erro", title: r.label || r.field, detail: fieldDetail(r), source: r.source });
   for (const r of rows.filter(r => ["review", "missing", "ambiguous"].includes(r.status)))
@@ -59,7 +61,7 @@ export function demandReport(job: any, intake?: any): DemandReport | undefined {
   if (job.status === "Analisando")
     return { situation: "Lendo os documentos", reason: "O portal está lendo os anexos e comparando com o pedido do GLPI.", next: "Aguarde: o resultado aparece nesta página automaticamente.", items };
   if (job.status === "Sem erros")
-    return { situation: "Sem erros", reason: "Os dados do contrato conferem com o pedido do GLPI.", next: "Pode seguir com a demanda. A conferência verifica preenchimento e consistência, não a autenticidade das assinaturas.", items };
+    return { situation: "Sem erros", reason: "Os dados do contrato conferem com o pedido do GLPI.", next: job.supportWarnings?.length ? "Confira também os avisos dos comprovantes bancários abaixo. Eles são separados da conferência do contrato." : "Pode seguir com a demanda. A conferência verifica preenchimento e consistência, não a autenticidade das assinaturas.", items };
   if (job.status === "Aguardando correção")
     return { situation: "Aguardando correção", reason: `${errors || "Um"} campo(s) do contrato diferem do pedido no GLPI.`, next: "Solicite a correção do contrato ou da referência no GLPI, conforme cada erro abaixo.", items };
   if (job.status === "Conferência parcial")

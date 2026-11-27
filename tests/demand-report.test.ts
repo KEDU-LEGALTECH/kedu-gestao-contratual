@@ -2,6 +2,15 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { demandReport, demandArea } from "../shared/demand-report.js";
 
+test("aviso bancário aparece separado e preserva a situação do contrato", () => {
+  const report = demandReport({ status: "Sem erros", comparisons: [{field:"agencia",status:"matches",found:"0001",expected:"0001",source:"Contrato.docx"}],
+    supportWarnings: [{field:"agencia",label:"Agência",found:"0002",expected:"0001",source:"Comprovante.png",message:"Confira o comprovante: agência 0002, diferente do GLPI (0001)."}] })!;
+  assert.equal(report.situation,"Sem erros");
+  assert.deepEqual(report.items.map(i=>[i.kind,i.title,i.source]),[["aviso","Comprovante bancário: Agência","Comprovante.png"]]);
+  assert.match(report.items[0].detail,/0002/);
+  assert.match(report.next,/avisos dos comprovantes/);
+});
+
 test("relatório de demanda com erro lista o campo, o valor do contrato e o do GLPI", () => {
   const report = demandReport({ status: "Aguardando correção", issues: [], comparisons: [
     { field: "remuneracao", label: "Taxa de remuneração", status: "different", found: "5,00%", expected: "4,58%", source: "Contrato.pdf" },
