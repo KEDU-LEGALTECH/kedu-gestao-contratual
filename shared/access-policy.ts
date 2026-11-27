@@ -26,7 +26,22 @@ export const permissions: Record<string, string[]> = {
     "files",
     "export",
   ],
-  Jurídico: ["review", "legal", "bank", "files", "export"],
+  // Same powers as the administrator, by decision of the client.
+  Jurídico: [
+    "write",
+    "schools",
+    "confirm",
+    "review",
+    "commercial",
+    "legal",
+    "bank",
+    "files",
+    "sync",
+    "settings",
+    "export",
+    "risk",
+    "finance",
+  ],
   Aprovador: ["commercial", "bank", "files", "export"],
   Consulta: [],
   Risco: [
