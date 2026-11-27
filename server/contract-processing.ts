@@ -101,7 +101,7 @@ async function fingerprint(did:string) {
  ]);
  // Change this tag whenever a conferência rule changes: every open demand is then recalculated
  // by the next reading cycle, without anyone opening it.
- return sha256(Buffer.from(JSON.stringify(['v53-constitutive-dash-city-person-cpf',resolutions,d,templates,contracts,signed,confirmed])));
+ return sha256(Buffer.from(JSON.stringify(['v54-bank-support-warnings-separate',resolutions,d,templates,contracts,signed,confirmed])));
 }
 export async function processingSource(did:string) {
  const demand=await sql.one("SELECT * FROM demands WHERE id=?", did);
@@ -170,7 +170,7 @@ export async function buildProcessingPlan(did:string) {
  const [{demand:d,ticket},job]=await Promise.all([processingSource(did),sql.one("SELECT * FROM contract_processing WHERE demand_id=?", did)]);
  if(!d || !ticket || !job)return null;
  const raw=JSON.parse(ticket.payload),analysis=analyzeTicket(raw,{schools:[],matrices:[]});
- const overrides=JSON.parse(job.overrides),values:Record<string,string>={},origins:Record<string,string>={},issues:Issue[]=[];
+ const overrides=JSON.parse(job.overrides),values:Record<string,string>={},origins:Record<string,string>={},issues:Issue[]=[],supportWarnings:(Issue & {fileId:string;readingPending:boolean})[]=[];
  const systemLabels:Record<string,string>={template:"Modelo do contrato",templateApproval:"Validação do modelo",history:"Numeração do aditivo",organization:"Organização",files:"Documentos",generation:"Geração do contrato",consistency:"Consistência dos dados"};
  const add=(field:string,message:string,extra:Partial<Issue>={})=>issues.push({field,label:field.startsWith("review:")?"Conferência da leitura":inputLabels[field]||systemLabels[field]||field,message,...extra});
  const {fields:request,corrections:conversationCorrections,advanceRates}=conversationReferences(raw,analysis.fields),candidates:Record<string,{value:string;source:string;fileId:string}[]>={};
@@ -406,27 +406,21 @@ export async function buildProcessingPlan(did:string) {
  }
  const cession=files.length?cessionClauseCheck(demandType,profileFiles):null;
  if(cession){comparisons.push(cession);if(cession.status!=='matches')add('clausulaCessao',cession.message,{label:cession.label});}
- // A bank receipt is not a contract, but bank data printed in it that differs from the GLPI reference needs correction.
+ // Supporting receipts have their own alerts: never replace contract values, evidence or status.
  for(const f of currentFiles){
   if(contractIds.has(f.id)||f.problem)continue;
   const reading=JSON.parse(f.extracted);
   if(reading.triageOnly||reading.awaitingOcr||!isBankDocument(f.name,reading.text||''))continue;
   for(const key of ['banco','agencia','conta','titularConta','documentoTitular','pix']){
    const expected=request[key];
-   if(expected?.length!==1||Object.hasOwn(overrides,key))continue;
+   if(expected?.length!==1)continue;
    const found=distinctRequestedValues(key,(reading.fields?.[key]||[]).map((v:string)=>normalizeValue(key,v)).filter((v:string)=>v&&plausibleFieldValue(key,v)));
    if(!found.length||found.some(v=>sameRequestedValue(key,v,expected[0])))continue;
    // A photo of a banking screen can split one number over two lines: that is a reading doubt, not a divergence.
    const doubt=found.length===1?readingDoubt(key,found[0],expected[0],[reading.text||''],/OCR/i.test(reading.method||'')&&!hasDigitalField(reading,key,found[0])):undefined;
-   const message=doubt?.review?doubt.message:`O comprovante bancário "${f.name}" informa ${found.join('; ')}, diferente do GLPI (${expected[0]}). Confira e corrija o dado bancário.`;
+   const message=doubt?.review?doubt.message:`O comprovante bancário "${f.name}" informa ${found.join('; ')}, diferente do GLPI (${expected[0]}). Confira o comprovante e a referência no chamado. Este aviso não altera a conferência do contrato.`;
    const detail={found:found.join('; '),expected:expected[0],source:f.name};
-   const status=doubt?.review?{status:'review',readingPending:true,reviewReason:{code:doubt.code,message:doubt.message}}:{status:'different',readingPending:false};
-   const comparison=comparisons.find(c=>c.field===key);
-   if(comparison?.status==='different')continue;
-   if(comparison)Object.assign(comparison,detail,status,{matchesReference:false,missingReason:undefined,message});
-   else comparisons.push({field:key,label:inputLabels[key]||key,...status,matchesReference:false,...detail,message});
-   const issue=issues.find(i=>i.field===key);
-   if(issue)Object.assign(issue,detail,{message});else add(key,message,detail);
+   supportWarnings.push({field:key,label:inputLabels[key]||key,message,...detail,fileId:f.id,readingPending:!!doubt?.review});
   }
  }
  // A divergence accepted with a justification counts as resolved while both values stay the same.
@@ -494,7 +488,7 @@ export async function buildProcessingPlan(did:string) {
  const typeIdentification={type:actualType||"Não identificado",source:analysis.suggestion.type?analysis.suggestion.basis:d.type!=="A classificar"?"Classificação registrada na demanda":documentTypes.length===1?"Título no início do documento ou nome do arquivo":"Conferência manual necessária",ticketTitle:raw.title,correction:templates.length?"Modelo oficial":"Lista de erros (tipo sem modelo oficial)"};
  // What the GLPI asks for, shown in the comparison table even before a filled contract exists.
  const requested=Object.entries(request).filter(([key,expected])=>comparable.has(key)&&expected.length).map(([key,expected])=>({field:key,label:inputLabels[key]||key,expected:expected.join('; ')}));
- return {requested,demand:d,ticket,job,values,origins,issues:issues.map(issue=>({...issue,pendingReason:pendingReason({...issue,...comparisons.find(c=>c.field===issue.field)})})),comparisons,validationFindings,typeIdentification,template,templates,version,sequence,matrix,derived,generated,type:actualType,subtype:actualSubtype,
+ return {requested,demand:d,ticket,job,values,origins,supportWarnings,issues:issues.map(issue=>({...issue,pendingReason:pendingReason({...issue,...comparisons.find(c=>c.field===issue.field)})})),comparisons,validationFindings,typeIdentification,template,templates,version,sequence,matrix,derived,generated,type:actualType,subtype:actualSubtype,
   files:allFiles.map(f=>{const saved=JSON.parse(f.extracted);const savedFields={...saved.fields};if(savedFields.razaoSocial)savedFields.razaoSocial=savedFields.razaoSocial.map(qualifiedCompanyName).filter(Boolean);const fields={...savedFields,...recoverTextFields(saved.text||'',savedFields)};const enriched={...saved,fields:Object.fromEntries(Object.entries(fields).map(([key,vs])=>[key,(vs as string[]).map(v=>normalizeValue(key,v)).filter(Boolean)]))};const scope=scopePartyReading(enriched,expectedPartyCnpj,expectedPartyName),e=extractedByFile.get(f.id)||scope.reading;return {
    parties:scope.parties,selectedParty:scope.selected,vision:e.vision,
    guidance:readingGuidance(e,attachmentRole(f.name,e.text||'')),changes:proposedChanges(e.text||''),
@@ -519,7 +513,7 @@ export async function buildProcessingPlan(did:string) {
 export async function saveProcessingResult(did:string) {
  const plan=await buildProcessingPlan(did);if(!plan)return null;
  const previous=await sql.one('SELECT result FROM contract_processing WHERE demand_id=?', did);
- const result={requested:plan.requested,values:plan.values,origins:plan.origins,issues:plan.issues,comparisons:plan.comparisons.map(row=>({...row,evidence:row.evidence||comparisonSources(row,plan.files)})),validationFindings:plan.validationFindings,typeIdentification:plan.typeIdentification,template:plan.template,templates:plan.templates,files:plan.files,type:plan.type,subtype:plan.subtype,fingerprint:await fingerprint(did)};
+ const result={requested:plan.requested,values:plan.values,origins:plan.origins,supportWarnings:plan.supportWarnings,issues:plan.issues,comparisons:plan.comparisons.map(row=>({...row,evidence:row.evidence||comparisonSources(row,plan.files)})),validationFindings:plan.validationFindings,typeIdentification:plan.typeIdentification,template:plan.template,templates:plan.templates,files:plan.files,type:plan.type,subtype:plan.subtype,fingerprint:await fingerprint(did)};
  const hasReadableDocument=plan.files.some(file=>file.contractForComparison&&file.available);
  const status=processingStatus(plan.issues,plan.comparisons,hasReadableDocument);
  // The area is kept with the result; a change is audited so reports can show movements per period.

@@ -1,5 +1,5 @@
 {
-  "tag": "v53-constitutive-dash-city-person-cpf",
+  "tag": "v54-bank-support-warnings-separate",
   "files": {
     "server/assisted-visual-evidence.ts": "452fd0e18568c5b2aa08a5b7c3c2aa1ea89353c0ebf2052d5b327308c64372ef",
     "server/attachment-analysis.ts": "fb74dee336224ec2b5729f831701843a2b9a7f4ea1367f848763b8aac3fe19cf",
@@ -10,7 +10,7 @@
     "server/comparison-sources.ts": "3fb5f9bd96b955433719033c4f016a42f94cc67225588f85a3933560b6bfb443",
     "server/contextual-layout-fields.ts": "cf59e0b8f953d87cb3539211d7319c05c6227f8cc7a1f00faab6a60ef812deff",
     "server/contract-parties.ts": "36b2820fbcb4b96cdfbd26ccd8f145782cbd5274c874c3d377484f7019c6ddb2",
-    "server/contract-processing.ts": "8777947effb896791f57d7c590fc8a5b6ed4eece34253c8282b5c9679e8470e9",
+    "server/contract-processing.ts": "e19658c5a24665cc539a27530f399d63c3359d663ec9299c5b55902790647d95",
     "server/contract-reading-scope.ts": "97a8598006ea443c9777b500cba717d159c838e434dd5d654a42898235c481f1",
     "server/document-evidence.ts": "b2016d1c133848b0cfd18742f57b7ed29961520c3b2c9f2cf03dad1085ab0cb8",
     "server/explicit-contract-total.ts": "ab428f3ba937f0184ddd2ee9fcad2ffaa8111260bc92ebab510e3c5ca08874f8",
@@ -31,7 +31,7 @@
     "server/text-recovery.ts": "a8ed1a62aae4e473dc9032b9b6d37a593898e44de4e3dff86cd92f83bceec7d6",
     "server/verified-field-evidence.ts": "524a4396cf17292c8eef1890db5d581dc22e64639d55fb8e4d21685138add04c",
     "shared/data-validation.ts": "0ebb155ec194e536ef404c5006059fb6f6e398d2c151294f947e1b9dd6588b5d",
-    "shared/demand-report.ts": "276ea790338cba93bb02b2f34dec47ed08cc6aaa2958046768f626dae2b4c1d7",
+    "shared/demand-report.ts": "5407fca77df623db4194665ef3e79da2eb1f02c611254ef32a02079e6a02dea6",
     "shared/document-heading.ts": "b449c30d7786cd05cc80b68225bb619ad108639a49d20dbb7eadcf904b11a32d",
     "shared/extenso.ts": "b353e4665e98183b629178d1332e2a9ab826cb5a39b597b07153fd1adf6cca0d",
     "shared/official-fields.ts": "6d3f14a8e074ef0ff9ed4b5c80ee65a45aae05b0a04a5d4a2af616ba33e3fe9e",

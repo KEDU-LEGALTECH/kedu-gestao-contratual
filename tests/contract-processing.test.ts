@@ -124,7 +124,7 @@ test('sem conferência anterior, a nova versão não cria conferência nem regis
  assert.equal((await sql.one('SELECT count(*) n FROM processing_field_reviews WHERE file_id=?', current.id)).n,0);
  assert.equal((await sql.one("SELECT count(*) n FROM audit WHERE demand_id=? AND action LIKE 'Conferência humana mantida%'", 'no-review')).n,0);
 });
-test('comprovante bancário igual ao GLPI não pede revisão; divergente vai para correção',async()=>{
+test('comprovante bancário divergente gera aviso sem substituir a conferência do contrato',async()=>{
  const raw=await fixture('corroborated');raw.content+='<p>AGÊNCIA: 0001</p>';
  await sql.run('UPDATE glpi_tickets SET payload=? WHERE external_id=?', JSON.stringify(raw), 'corroborated');
  await processContract('corroborated','u',mock());
@@ -132,15 +132,38 @@ test('comprovante bancário igual ao GLPI não pede revisão; divergente vai par
  await sql.run('INSERT INTO processing_files VALUES(?,?,?,?,?,?,?,?,?,?)', 'bank-support', 'corroborated', '8', 'hash-corroborated', 'Comprovante bancario.png', 'image/png', Buffer.from('original'), JSON.stringify(extracted), '', now());
  assert.equal((await buildProcessingPlan('corroborated'))!.issues.some(i=>i.field==='review:bank-support'),false);
  const source=await sql.one('SELECT * FROM processing_files WHERE demand_id=? AND id<>?', 'corroborated', 'bank-support');
+ const original=(await buildProcessingPlan('corroborated'))!;
+ assert.equal(original.supportWarnings.length,0);
+ const contractAgency=original.comparisons.find(c=>c.field==='agencia');
+ assert.equal(contractAgency?.status,'matches');
  await sql.run('UPDATE processing_files SET extracted=? WHERE id=?', JSON.stringify({...JSON.parse(source.extracted),method:'PDF com OCR',needsReview:true,incomplete:true,digitalFields:{agencia:['0001']}}), source.id);
  const mixed=(await buildProcessingPlan('corroborated'))!;
  assert.equal(mixed.issues.some(i=>i.field==='review:bank-support'),false,'campo digital independente evita confirmação duplicada');
  assert.ok(mixed.issues.some(i=>i.field==='review:partial:'+source.id),'outra página parcial continua pendente');
  extracted.fields.agencia=['0002'];await sql.run('UPDATE processing_files SET extracted=? WHERE id=?', JSON.stringify(extracted), 'bank-support');
  const divergent=(await buildProcessingPlan('corroborated'))!;
- assert.ok(divergent.issues.some(i=>i.field==='agencia'&&/Comprovante bancario\.png/.test(i.message)),'o comprovante divergente do GLPI gera aviso');
- assert.equal(divergent.comparisons.find(c=>c.field==='agencia')?.status,'different');
- assert.equal((await saveProcessingResult('corroborated'))!.status,'Aguardando correção');
+ assert.deepEqual(divergent.comparisons.find(c=>c.field==='agencia'),mixed.comparisons.find(c=>c.field==='agencia'),'o aviso não substitui o resultado nem a origem do contrato');
+ assert.equal(divergent.issues.some(i=>i.field==='agencia'),false);
+ assert.deepEqual(divergent.supportWarnings.map(w=>[w.field,w.found,w.expected,w.source]),[['agencia','0002','0001','Comprovante bancario.png']]);
+ assert.equal((await saveProcessingResult('corroborated'))!.status,'Conferência parcial','a leitura parcial do contrato continua pendente');
+ await sql.run('UPDATE processing_files SET extracted=? WHERE id=?', source.extracted, source.id);
+ const saved=(await saveProcessingResult('corroborated'))!;
+ assert.equal(saved.status,'Sem erros');
+ assert.deepEqual(saved.comparisons.find(c=>c.field==='agencia'),{...contractAgency,evidence:saved.comparisons.find(c=>c.field==='agencia')?.evidence});
+ const stored=JSON.parse((await sql.one('SELECT result FROM contract_processing WHERE demand_id=?','corroborated')).result);
+ assert.deepEqual(stored.supportWarnings,saved.supportWarnings,'o aviso é preservado no resultado entregue ao portal');
+ const wrongContract=JSON.parse(source.extracted);
+ wrongContract.fields.agencia=['0003'];wrongContract.text=wrongContract.text.replaceAll('0001','0003');
+ await sql.run('UPDATE processing_files SET extracted=? WHERE id=?',JSON.stringify(wrongContract),source.id);
+ const wrong=(await saveProcessingResult('corroborated'))!;
+ assert.equal(wrong.status,'Aguardando correção','a divergência do próprio contrato continua bloqueando');
+ assert.equal(wrong.comparisons.find(c=>c.field==='agencia')?.found,'0003');
+ assert.equal(wrong.supportWarnings[0].found,'0002');
+ await sql.run('DELETE FROM processing_files WHERE id=?',source.id);
+ const withoutContract=(await saveProcessingResult('corroborated'))!;
+ assert.equal(withoutContract.status,'Aguardando análise');
+ assert.ok(!withoutContract.comparisons.some(c=>c.field==='agencia'&&c.found==='0002'),'comprovante sozinho não vira valor contratual');
+ assert.equal(withoutContract.supportWarnings.length,1);
 });
 test('comprovante bancário ainda não lido entra na fila de leitura',()=>{
  assert.deepEqual(contractReadingScope('Comprovante bancario.png'),{kind:'support',needsWork:true});
