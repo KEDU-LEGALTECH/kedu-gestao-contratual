@@ -1,15 +1,16 @@
 import { readdirSync, readFileSync } from "node:fs";
 import type postgres from "postgres";
+const migrationsDirectory = new URL("../migrations/", import.meta.url);
 
 /** Migrations up to 019 built the SQLite schema the PostgreSQL import was converted from
  * (scripts/postgres-rehearsal.ts). From 020 on they must work on both databases and be idempotent
  * (IF NOT EXISTS): SQLite runs them at every start, PostgreSQL records them in schema_migrations. */
 export const firstPortable = 20;
 export const portableMigrations = () =>
-  readdirSync("migrations")
+  readdirSync(migrationsDirectory)
     .filter((name) => /^\d{3}\.sql$/.test(name) && Number(name.slice(0, 3)) >= firstPortable)
     .sort()
-    .map((name) => ({ name, sql: readFileSync("migrations/" + name, "utf8") }));
+    .map((name) => ({ name, sql: readFileSync(new URL(name, migrationsDirectory), "utf8") }));
 
 /** Same column types as the importer, plus the _rowid column that stands in for SQLite's rowid. */
 export function postgresDdl(sqlite: string) {
