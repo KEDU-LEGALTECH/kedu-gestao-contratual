@@ -9,6 +9,14 @@
       "includeFiles": "{server,shared,templates,migrations,node_modules/pdfjs-dist/standard_fonts,node_modules/pdfjs-dist/cmaps,node_modules/pdfjs-dist/wasm,node_modules/pdfjs-dist/legacy/build}/**"
     }
   },
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Content-Security-Policy", "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://*.supabase.co; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" }
+      ]
+    }
+  ],
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api" },
     { "source": "/healthz", "destination": "/api" }

@@ -6,6 +6,7 @@ import { readCache, withReadCache } from "./sql.js";
 import express from "express";
 import { contractParagraphs } from "./attachment-analysis.js";
 import helmet from "helmet";
+import { contentSecurityPolicy } from "./security-headers.js";
 import rateLimit from "express-rate-limit";
 import cookieParser from "cookie-parser";
 import multer from "multer";
@@ -110,6 +111,7 @@ const app = express();
 if(process.env.TRUST_PROXY_HOPS==="1")app.set("trust proxy",1);
 app.disable("x-powered-by");
 app.use(helmet({ contentSecurityPolicy: false }));
+app.use((_req, res, next) => { res.setHeader("Content-Security-Policy", contentSecurityPolicy); next(); });
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 // Vercel Functions answer at most 4.5 MB, except streamed responses: larger files are sent in parts.
