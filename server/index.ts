@@ -1,4 +1,5 @@
 import {isOpenDemand,demandDisplayStage} from "../shared/glpi-ticket-meta.js";
+import {demandKind,demandKinds,glpiCategoryName,countBy} from "../shared/demand-kind.js";
 import "dotenv/config";
 import {acquireBackendInstance,backendVersion} from './backend-instance.js';
 import { runsBackground, servesHttp, role } from "./role.js";
@@ -1358,7 +1359,7 @@ async function reportRows(req: any) {
     to = req.query.to ? z.iso.date().parse(req.query.to) : "2100-12-31";
   if (from > to) throw Error("O início do período deve ser anterior ao fim.");
   const rows: any[] = [], summaries = await processingSummaries();
-  for (const d of await sql.all("SELECT d.id,d.created,d.completed,d.due,d.owner,d.stage,d.type,COALESCE(s.name,json_extract(d.data,'$.razaoSocial'),'Organização a identificar') AS school,COALESCE(u.name,'Não atribuído') AS owner_name,(SELECT t.status FROM glpi_tickets t WHERE t.external_id=d.glpi_id) AS glpi_status FROM demands d LEFT JOIN schools s ON s.id=d.school_id LEFT JOIN users u ON u.id=d.owner ORDER BY d.rowid")) {const glpiOrigin=d.glpi_status?{status:d.glpi_status}:null;rows.push({...d,workflow_stage:d.stage,glpiOrigin,stage:demandDisplayStage({stage:d.stage,glpiOrigin,processing:summaries.get(d.id) ?? null})});}
+  for (const d of await sql.all("SELECT d.id,d.created,d.completed,d.due,d.owner,d.stage,d.type,COALESCE(s.name,json_extract(d.data,'$.razaoSocial'),'Organização a identificar') AS school,COALESCE(u.name,'Não atribuído') AS owner_name,(SELECT t.status FROM glpi_tickets t WHERE t.external_id=d.glpi_id) AS glpi_status,(SELECT json_extract(t.payload,'$.category') FROM glpi_tickets t WHERE t.external_id=d.glpi_id) AS glpi_category FROM demands d LEFT JOIN schools s ON s.id=d.school_id LEFT JOIN users u ON u.id=d.owner ORDER BY d.rowid")) {const glpiOrigin=d.glpi_status?{status:d.glpi_status}:null;rows.push({...d,workflow_stage:d.stage,glpiOrigin,kind:demandKind(d.type,d.glpi_category),category:d.glpi_status?glpiCategoryName(d.glpi_category):"Sem chamado no GLPI",stage:demandDisplayStage({stage:d.stage,glpiOrigin,processing:summaries.get(d.id) ?? null})});}
   return rows.filter(
     (d) =>
       localDate(d.created) >= from &&
@@ -1416,6 +1417,9 @@ app.get("/api/reports", async (req: any, res) => {
       stage,
       count: rows.filter((d) => d.stage === stage).length,
     })),
+    byKind: countBy(rows.map((d) => d.kind), demandKinds),
+    byCategory: countBy(rows.map((d) => d.category)),
+    byType: countBy(rows.map((d) => String(d.type))),
     divergences,
     closedPendencies,
   });
@@ -1429,12 +1433,14 @@ app.get("/api/reports.csv", async (req: any, res) => {
     .send(
       "\uFEFF" +
         [
-          ["Demanda", "Escola", "Etapa", "Tipo", "Prazo", "Responsável"],
+          ["Demanda", "Escola", "Etapa", "Tipo", "Natureza", "Categoria GLPI", "Prazo", "Responsável"],
           ...rows.map((r) => [
             r.id,
             r.school,
             r.stage,
             r.type,
+            r.kind,
+            r.category,
             r.due,
             r.owner_name,
           ]),

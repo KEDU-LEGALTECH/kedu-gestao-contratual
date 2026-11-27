@@ -117,6 +117,38 @@ export function Reports({
           </div>
           <div className="two-columns">
             <section className="panel">
+              <h2>Chamados por natureza</h2>
+              {!report.byKind.length && <p className="muted">Nenhuma demanda no período.</p>}
+              {report.byKind.map((r: any) => (
+                <div className="report-row" key={r.name}>
+                  <span>{r.name}</span>
+                  <strong>{r.count} <small className="muted">({Math.round((r.count / report.volume) * 100)}%)</small></strong>
+                </div>
+              ))}
+            </section>
+            <section className="panel">
+              <h2>Por categoria do GLPI</h2>
+              {report.byCategory.map((r: any) => (
+                <div className="report-row" key={r.name}>
+                  <span>{r.name}</span>
+                  <strong>{r.count}</strong>
+                </div>
+              ))}
+              {report.byType.length > 0 && (
+                <details>
+                  <summary>Tipos identificados ({report.byType.length})</summary>
+                  {report.byType.map((r: any) => (
+                    <div className="report-row" key={r.name}>
+                      <span>{r.name}</span>
+                      <strong>{r.count}</strong>
+                    </div>
+                  ))}
+                </details>
+              )}
+            </section>
+          </div>
+          <div className="two-columns">
+            <section className="panel">
               <h2>Volume por responsável</h2>
               {report.byOwner.map((r: any) => (
                 <div className="report-row" key={r.name}>
@@ -184,7 +216,11 @@ export function Reports({
               As etapas acompanham a lista de Demandas. Pendências: resultado atual
               da leitura e validação automática das demandas abertas; nos fluxos
               administrativos, última conferência da última versão, sem somar
-              versões antigas.
+              versões antigas. Natureza: a categoria do GLPI decide primeiro
+              (REVISÃO é consultivo; DESCREDENCIAMENTO, descredenciamento e
+              distrato); em CONTRATOS, o tipo identificado pelo portal separa
+              contrato novo, aditivo e outros. Sem tipo identificado, a demanda
+              fica em A identificar.
             </p>
           </section>
         </>
