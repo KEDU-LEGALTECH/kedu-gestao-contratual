@@ -149,6 +149,36 @@ export function Reports({
           </div>
           <div className="two-columns">
             <section className="panel">
+              <h2>Prazo de solução (SLA do GLPI)</h2>
+              {!report.sla.byStatus.length && <p className="muted">Nenhuma demanda no período.</p>}
+              {report.sla.byStatus.map((r: any) => (
+                <div className="report-row" key={r.name}>
+                  <span>{r.name}</span>
+                  <strong>{r.count}</strong>
+                </div>
+              ))}
+              {report.sla.concluded > 0 && (
+                <p className="muted">
+                  Tempo até a solução: média de {String(report.sla.averageDays).replace(".", ",")} dias,
+                  mediana de {String(report.sla.medianDays).replace(".", ",")} dias ({report.sla.concluded} concluídos).
+                </p>
+              )}
+            </section>
+            <section className="panel">
+              <h2>Tempo médio por natureza</h2>
+              {report.sla.byKind.map((r: any) => (
+                <div className="report-row" key={r.name}>
+                  <span>
+                    {r.name}
+                    <small className="muted"> · {r.concluded} de {r.total} concluídos{r.late ? ` · ${r.late} fora do prazo` : ""}</small>
+                  </span>
+                  <strong>{r.averageDays === null ? "—" : String(r.averageDays).replace(".", ",") + " dias"}</strong>
+                </div>
+              ))}
+            </section>
+          </div>
+          <div className="two-columns">
+            <section className="panel">
               <h2>Volume por responsável</h2>
               {report.byOwner.map((r: any) => (
                 <div className="report-row" key={r.name}>
@@ -220,7 +250,11 @@ export function Reports({
               (REVISÃO é consultivo; DESCREDENCIAMENTO, descredenciamento e
               distrato); em CONTRATOS, o tipo identificado pelo portal separa
               contrato novo, aditivo e outros. Sem tipo identificado, a demanda
-              fica em A identificar.
+              fica em A identificar. Prazo de solução: o prazo é o que o GLPI
+              calculou para cada chamado pelo SLA configurado lá; a solução é a
+              data de solução do GLPI (ou de fechamento, quando não houver).
+              Tempo até a solução: dias corridos entre a abertura e a solução
+              no GLPI. Chamados sem prazo no GLPI aparecem à parte.
             </p>
           </section>
         </>

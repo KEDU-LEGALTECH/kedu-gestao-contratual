@@ -1,5 +1,6 @@
 import {isOpenDemand,demandDisplayStage} from "../shared/glpi-ticket-meta.js";
 import {demandKind,demandKinds,glpiCategoryName,countBy} from "../shared/demand-kind.js";
+import {slaSummary,slaStatus,resolutionDays} from "../shared/demand-sla.js";
 import "dotenv/config";
 import {acquireBackendInstance,backendVersion} from './backend-instance.js';
 import { runsBackground, servesHttp, role } from "./role.js";
@@ -1359,7 +1360,7 @@ async function reportRows(req: any) {
     to = req.query.to ? z.iso.date().parse(req.query.to) : "2100-12-31";
   if (from > to) throw Error("O início do período deve ser anterior ao fim.");
   const rows: any[] = [], summaries = await processingSummaries();
-  for (const d of await sql.all("SELECT d.id,d.created,d.completed,d.due,d.owner,d.stage,d.type,COALESCE(s.name,json_extract(d.data,'$.razaoSocial'),'Organização a identificar') AS school,COALESCE(u.name,'Não atribuído') AS owner_name,(SELECT t.status FROM glpi_tickets t WHERE t.external_id=d.glpi_id) AS glpi_status,(SELECT json_extract(t.payload,'$.category') FROM glpi_tickets t WHERE t.external_id=d.glpi_id) AS glpi_category FROM demands d LEFT JOIN schools s ON s.id=d.school_id LEFT JOIN users u ON u.id=d.owner ORDER BY d.rowid")) {const glpiOrigin=d.glpi_status?{status:d.glpi_status}:null;rows.push({...d,workflow_stage:d.stage,glpiOrigin,kind:demandKind(d.type,d.glpi_category),category:d.glpi_status?glpiCategoryName(d.glpi_category):"Sem chamado no GLPI",stage:demandDisplayStage({stage:d.stage,glpiOrigin,processing:summaries.get(d.id) ?? null})});}
+  for (const d of await sql.all("SELECT d.id,d.created,d.completed,d.due,d.owner,d.stage,d.type,COALESCE(s.name,json_extract(d.data,'$.razaoSocial'),'Organização a identificar') AS school,COALESCE(u.name,'Não atribuído') AS owner_name,(SELECT t.status FROM glpi_tickets t WHERE t.external_id=d.glpi_id) AS glpi_status,(SELECT json_extract(t.payload,'$.category') FROM glpi_tickets t WHERE t.external_id=d.glpi_id) AS glpi_category,(SELECT json_extract(t.payload,'$.created') FROM glpi_tickets t WHERE t.external_id=d.glpi_id) AS glpi_created,(SELECT json_extract(t.payload,'$.solved') FROM glpi_tickets t WHERE t.external_id=d.glpi_id) AS glpi_solved,(SELECT json_extract(t.payload,'$.closed') FROM glpi_tickets t WHERE t.external_id=d.glpi_id) AS glpi_closed,(SELECT json_extract(t.payload,'$.slaDue') FROM glpi_tickets t WHERE t.external_id=d.glpi_id) AS glpi_sla_due FROM demands d LEFT JOIN schools s ON s.id=d.school_id LEFT JOIN users u ON u.id=d.owner ORDER BY d.rowid")) {const glpiOrigin=d.glpi_status?{status:d.glpi_status}:null;rows.push({...d,workflow_stage:d.stage,glpiOrigin,kind:demandKind(d.type,d.glpi_category),category:d.glpi_status?glpiCategoryName(d.glpi_category):"Sem chamado no GLPI",stage:demandDisplayStage({stage:d.stage,glpiOrigin,processing:summaries.get(d.id) ?? null})});}
   return rows.filter(
     (d) =>
       localDate(d.created) >= from &&
@@ -1420,6 +1421,7 @@ app.get("/api/reports", async (req: any, res) => {
     byKind: countBy(rows.map((d) => d.kind), demandKinds),
     byCategory: countBy(rows.map((d) => d.category)),
     byType: countBy(rows.map((d) => String(d.type))),
+    sla: slaSummary(rows.map((d) => ({ kind: d.kind, created: d.glpi_created, solved: d.glpi_solved, closed: d.glpi_closed, slaDue: d.glpi_sla_due })), demandKinds),
     divergences,
     closedPendencies,
   });
@@ -1433,17 +1435,25 @@ app.get("/api/reports.csv", async (req: any, res) => {
     .send(
       "\uFEFF" +
         [
-          ["Demanda", "Escola", "Etapa", "Tipo", "Natureza", "Categoria GLPI", "Prazo", "Responsável"],
-          ...rows.map((r) => [
-            r.id,
-            r.school,
-            r.stage,
-            r.type,
-            r.kind,
-            r.category,
-            r.due,
-            r.owner_name,
-          ]),
+          ["Demanda", "Escola", "Etapa", "Tipo", "Natureza", "Categoria GLPI", "Prazo", "Responsável", "Aberto no GLPI", "Solucionado no GLPI", "Prazo do SLA", "SLA", "Dias até a solução"],
+          ...rows.map((r) => {
+            const dates = { created: r.glpi_created, solved: r.glpi_solved, closed: r.glpi_closed, slaDue: r.glpi_sla_due };
+            return [
+              r.id,
+              r.school,
+              r.stage,
+              r.type,
+              r.kind,
+              r.category,
+              r.due,
+              r.owner_name,
+              r.glpi_created || "",
+              r.glpi_solved || r.glpi_closed || "",
+              r.glpi_sla_due || "",
+              slaStatus(dates),
+              String(resolutionDays(dates) ?? "").replace(".", ","),
+            ];
+          }),
         ]
           .map((r) => r.map(csvCell).join(";"))
           .join("\r\n"),

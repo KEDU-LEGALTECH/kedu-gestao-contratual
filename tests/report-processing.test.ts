@@ -26,6 +26,7 @@ test("Relatório e CSV mostram a etapa de processamento e preservam cancelamento
  assert.deepEqual(body.byKind,[{name:"Contrato novo",count:4}]);
  assert.deepEqual(body.byCategory,[{name:"Sem categoria",count:4}]);
  assert.deepEqual(body.byType,[{name:"Contrato educacional",count:4}]);
+ assert.deepEqual(body.sla.byStatus,[{name:"Sem prazo no GLPI",count:4}]);assert.equal(body.sla.concluded,0);
  const csv=await fetch(base+"/api/reports.csv",{headers});assert.equal(csv.status,200);const text=await csv.text();assert.match(text,/Aguardando análise/);assert.match(text,/Cancelado/);
 });
 test("Relatório separa chamados encerrados no GLPI sem apagar suas pendências",async()=>{
