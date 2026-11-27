@@ -37,7 +37,18 @@ export type RawTicket = {
   documentsAvailable: boolean;
   approvalCoverage?: "not_required" | "complete" | "partial";
   timelineCoverage?: "complete" | "partial";
+  /** GLPI solution and closing dates, and the SLA deadline for the solution (time_to_resolve), as GLPI writes them. */
+  solved?: string;
+  closed?: string;
+  slaDue?: string;
+  slaName?: string;
 };
+const glpiDate = (value: unknown) => (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(String(value ?? "")) ? String(value) : "");
+/** Dates are outside ticketHash: a new SLA deadline or solution date never marks the ticket as changed. */
+export function ticketDeadlines(t: any): Pick<RawTicket, "solved" | "closed" | "slaDue" | "slaName"> {
+  const slaName = String(t?.slas_id_ttr ?? "");
+  return { solved: glpiDate(t?.solvedate), closed: glpiDate(t?.closedate), slaDue: glpiDate(t?.time_to_resolve), slaName: /^\d*$/.test(slaName) ? "" : slaName };
+}
 function preserveTimeline(current: RawTicket, previous: RawTicket, approvalsOnly: boolean) {
   const approval = (id: string) => id.startsWith("TicketValidation:");
   const messages = new Map(previous.followups.filter(entry => !approvalsOnly || approval(entry.id)).map(entry => [entry.id, entry]));
@@ -641,7 +652,7 @@ export class RealGlpiSource implements TicketSource {
     // Approvals once refused (403) are read again: the token's rights may change without the ticket changing.
     if (previous?.timelineCoverage === "complete" && previous.approvalCoverage !== "partial" && updated && previous.updated === updated) {
       this.reused++;
-      return { ...previous, groups, status: String(t.status ?? ""), priority: String(t.priority ?? "") };
+      return { ...previous, groups, status: String(t.status ?? ""), priority: String(t.priority ?? ""), ...ticketDeadlines(t) };
     }
     const timeline = await readTicketTimeline(client, id, signal, t.global_validation);
     const documents: RawTicket["documents"] = [];
@@ -681,6 +692,7 @@ export class RealGlpiSource implements TicketSource {
       documentsAvailable: !incomplete,
       approvalCoverage: timeline.approvalCoverage,
       timelineCoverage: incomplete ? "partial" : "complete",
+      ...ticketDeadlines(t),
     };
     return previous && (incomplete || timeline.approvalCoverage === "partial")
       ? preserveTimeline(result, previous, !incomplete) : result;
